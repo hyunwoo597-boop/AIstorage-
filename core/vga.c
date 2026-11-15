@@ -61,10 +61,15 @@ uint8_t vga_read(Machine *m, uint32_t off) {
  * every write except those character blits, so "plane differs from bgplane" marks exactly the character pixels. */
 #define CHAR_BLIT_IP_LO 0x1D00
 #define CHAR_BLIT_IP_HI 0x1D80
+/* The animated parts of a character (eyes blinking, mouth moving: a rectangle patched over the face) are drawn by a third routine, a
+ * per-plane compositing loop whose four VRAM stores are at IP 2985/2990/299B/29A6 of SILV1.COM.  Without these, the face area counted as
+ * background, stayed put in the "characters only" 3D view and looked detached from the body. */
+#define FACE_BLIT_IP_LO 0x2980
+#define FACE_BLIT_IP_HI 0x29B0
 void vga_write(Machine *m, uint32_t off, uint8_t val) {
     if (m->vga_wr_dbg) m->vga_wr_dbg(m, off);
     VGA *v = &m->vga; off &= 0xFFFF;
-    const int chr = m->cpu.ip >= CHAR_BLIT_IP_LO && m->cpu.ip < CHAR_BLIT_IP_HI;
+    const int chr = (m->cpu.ip >= CHAR_BLIT_IP_LO && m->cpu.ip < CHAR_BLIT_IP_HI) || (m->cpu.ip >= FACE_BLIT_IP_LO && m->cpu.ip < FACE_BLIT_IP_HI);
     if (chr) v->char_gen++; else if (off < 28160) v->pic_gen++;
     uint8_t mask = v->seq[2] & 0xF, wm = v->gc[5] & 3, func = (v->gc[3] >> 3) & 3, rot = v->gc[3] & 7;
     uint8_t bm = v->gc[8], sr = v->gc[0], esr = v->gc[1];
