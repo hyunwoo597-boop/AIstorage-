@@ -15,7 +15,7 @@
 #include <math.h>
 #include <stdio.h>
 
-#define RING_FRAMES 16384            /* power of two */
+#define RING_FRAMES 65536            /* power of two (2 s: the player may run well ahead of the DSP, see LEAD_MAX in ctr/source/main.c) */
 #define CHIP_RATE   49716.0
 #define ENV_DIV     4                /* envelopes advance every 4th chip sample (12.4 kHz: far finer than any envelope) */
 #define NT          24               /* resampler taps */

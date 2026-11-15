@@ -189,12 +189,12 @@ static void message_screen(const char *title, const char *body) {
 #define NDSP_SAMPLE_RATE 32728.498          /* the DSP's own rate: playing at exactly this rate needs no resampling on the DSP side */
 #endif
 #define AUD_RATE 32728                       /* synth output rate (integer; the DSP consumes 0.0015% faster, which the pump absorbs) */
-#define NWB 32
+#define NWB 96                               /* wave buffer slots: 96 x (one frame of sound, ~550 samples) holds ~1.6 s, more than LEAD_MAX */
 #define AFRAMES 1024
 /* The emulation runs LEAD_S ahead of real time, so that much sound is always queued at the DSP.  A frame that takes
  * long (SD card access, a big redraw, a save) then only eats into that reserve instead of making the music stop. */
-#define LEAD_S 0.25
-#define LEAD_MAX 0.60
+#define LEAD_S 0.40
+#define LEAD_MAX 0.90
 /* The reserve grows by 0.1 s whenever the music still ran dry (this device stalls longer than the reserve) and shrinks slowly while all is calm. */
 static double lead_s = LEAD_S;
 #define START_FRAMES (AUD_RATE * 15 / 100)  /* playback (re)starts once this much is queued */
@@ -244,15 +244,16 @@ static void audio_set_speed(double ratio) {
     float r = ratio >= 0.93 ? (float)NDSP_SAMPLE_RATE : (float)(NDSP_SAMPLE_RATE * ratio);
     if (r != audio_rate) { audio_rate = r; ndspChnSetRate(0, r); }
 }
+static double now_ms(void) { return (double)svcGetSystemTick() * 1000.0 / TICKS_PER_SEC; }
 static void audio_pump(Machine *m) {
     opl_sync(m->opl);
     uint32_t n = opl_available(m->opl);
     if (!audio_ok) { opl_discard(m->opl, n); return; }
     /* the DSP ran completely dry since the last frame: stop, and wait until a reserve has been rebuilt */
     if (audio_started && audio_queued() == 0) { ndspChnSetPaused(0, true); audio_started = 0; aud_underruns++; lead_s += 0.10; if (lead_s > LEAD_MAX) lead_s = LEAD_MAX; }
-    /* never throw samples away just because every buffer is busy: they wait in the synth ring for the next frame.
-     * Only an absurd backlog is trimmed (keeping the newest 0.25 s). */
-    if (n > AUD_RATE * 7 / 10) { opl_discard(m->opl, n - AUD_RATE / 4); n = AUD_RATE / 4; aud_dropped++; }
+    /* never throw samples away just because every buffer is busy: they wait in the synth ring (2 s) for the next frame.
+     * Only an absurd backlog is trimmed (keeping the newest 0.4 s). */
+    if (n > AUD_RATE * 17 / 10) { opl_discard(m->opl, n - AUD_RATE * 4 / 10); n = AUD_RATE * 4 / 10; aud_dropped++; }
     while (n) {
         ndspWaveBuf *wb = NULL;
         for (int i = 0; i < NWB; i++)
@@ -743,6 +744,7 @@ int main(void) {
     fb_get(); fill(fbBot, 320, C565(10, 10, 30));
     { const char *lt = "불러오는 중..."; ktext(fbBot, 320, (320 - kwidth(lt) - 2) / 2, 108, 304, lt, C565(230, 230, 230), 1); }
     fill(fbTop, 400, 0); present(); fb_get(); fill(fbTop, 400, 0); present();
+    dos_now_ms = now_ms;
     dos_cache_preload(m);              /* the big data files go into RAM: no SD-card stalls (and sound dropouts) while playing */
     LOG("data cached");
 
@@ -758,9 +760,10 @@ int main(void) {
     u64 pace_last = svcGetSystemTick(), pace_v0 = machine_vtime_ns(m);
     double pace_clock = 0, pace_total = 0, pace_adj = 0, aq_ema = lead_s + 0.015;   /* pace_clock: virtual seconds earned so far (reduced when a backlog is forgiven); pace_total: same, never reduced */
     u64 prev_f0 = 0; double stat_maxfr = 0, win_maxfr = 0, win_pt0 = 0; unsigned slow100 = 0, slow250 = 0;
+    double pt[5] = {0}, worst_pt[5] = {0}, worst_ft = 0, worst_at = 0, other_w = 0; u64 tk;     /* ms spent in: emulation, sound, top picture, bottom screen, vblank wait - for the slowest frame so far */
     double pace_lead = audio_ok ? lead_s : 0, last_lead = lead_s; int calm_secs = 0; unsigned last_under = 0;      /* how far the emulation runs ahead of real time (see LEAD_S) */
     uint32_t last_dirty = ~0u, last_gen = ~0u, bot_dirty = ~0u; int last_bot_frame = -100;
-    int quit = 0;
+    int quit = 0; u64 t_game0 = svcGetSystemTick();
 
     while (aptMainLoop() && !quit) {
         u64 f0 = svcGetSystemTick();
@@ -780,6 +783,7 @@ int main(void) {
         if (prev_f0) {                                  /* frame-time statistics (for the SELECT overlay) */
             double ft = (double)(f0 - prev_f0) / TICKS_PER_SEC * 1000.0;
             if (ft > win_maxfr) win_maxfr = ft;
+            if (ft > worst_ft) { worst_ft = ft; memcpy(worst_pt, pt, sizeof pt); other_w = ft - (pt[0] + pt[1] + pt[2] + pt[3] + pt[4]); worst_at = (double)(f0 - t_game0) / TICKS_PER_SEC; }
             if (ft > 100.0) slow100++;
             if (ft > 250.0) slow250++;
         }
@@ -804,7 +808,9 @@ int main(void) {
         }
         int lagged = done < want;
         lag_frames = lagged ? lag_frames + 1 : 0;
+        tk = svcGetSystemTick(); pt[0] = (double)(tk - f0) * 1000.0 / TICKS_PER_SEC; u64 tk0 = tk;
         audio_pump(m);
+        tk = svcGetSystemTick(); pt[1] = (double)(tk - tk0) * 1000.0 / TICKS_PER_SEC; tk0 = tk;
         /* Keep the queued sound at its target: if the DSP clock and the system clock disagree a little, or a hiccup left the queue
          * fuller or emptier than planned, the game is run a hair slower or faster until the queue is back (no pitch change, no dropped sound). */
         if (audio_ok && audio_started) {
@@ -822,11 +828,13 @@ int main(void) {
             last_dirty = m->vga.dirty; win_force = 0;
         }
         top_present(m);
+        tk = svcGetSystemTick(); pt[2] = (double)(tk - tk0) * 1000.0 / TICKS_PER_SEC; tk0 = tk;
         if (hidKeysHeld() & KEY_SELECT) {               /* hold SELECT: live performance numbers (for bug reports) */
-            char t[200];
-            snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %dms lead %d\nunder %u drop %u tc %d\nfrm max %.0fms >100:%u >250:%u adj %+.1f%%",
+            char t[320];
+            snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %dms lead %d\nunder %u drop %u tc %d\nfrm max %.0fms >100:%u >250:%u adj %+.1f%%\nworst %.0fms @%.0fs: emu %.0f snd %.0f\n  top %.0f bot %.0f vb %.0f etc %.0f\ndos max %.0fms (AH %02X) >50ms:%u",
                      stat_speed * 100.0, stat_busy * 100.0, stat_mips, m->ips / 1e6, stat_skip * 100.0, (int)(audio_queued_frames() * 1000ull / AUD_RATE), (int)(lead_s * 1000), aud_underruns, aud_dropped, textcap_active(m),
-                     stat_maxfr, slow100, slow250, pace_adj * 100.0);
+                     stat_maxfr, slow100, slow250, pace_adj * 100.0,
+                     worst_ft, worst_at, worst_pt[0], worst_pt[1], worst_pt[2], worst_pt[3], worst_pt[4], other_w, dos_io_max_ms, (unsigned)dos_io_max_ah, dos_io_slow);
             gtext(fbTop, 400, 2, 2, 46, t, C565(255, 255, 0), C565(0, 0, 0), 1);
             if (s3d_on) gtext(fbTopR, 400, 2, 2, 46, t, C565(255, 255, 0), C565(0, 0, 0), 1);
         }
@@ -839,8 +847,10 @@ int main(void) {
             last_gen = gen; bot_dirty = m->vga.dirty; last_bot_frame = frame; bot_force = 0;
         }
         u64 f1 = svcGetSystemTick();
+        pt[3] = (double)(f1 - tk0) * 1000.0 / TICKS_PER_SEC;
         win_busy += f1 - f0;
         gfxFlushBuffers(); gfxSwapBuffers(); gspWaitForVBlank();
+        pt[4] = (double)(svcGetSystemTick() - f1) * 1000.0 / TICKS_PER_SEC;
         frame++; win_frames++;
 
         /* once a second: compare virtual time with real time and adapt the emulated CPU speed */

@@ -124,6 +124,9 @@ void vga_set_mode(Machine *m, int mode);
 void vga_render(Machine *m, uint8_t *rgb565_or_idx, int *w, int *h);
 /* dos */
 void dos_init(Machine *m);
+/* optional timing of DOS calls (the 3DS front end sets dos_now_ms): the slowest single INT 21h call and how many took > 50 ms */
+extern double (*dos_now_ms)(void);
+extern double dos_io_max_ms; extern int dos_io_max_ah; extern unsigned dos_io_slow;
 void dos_cache_preload(Machine *m);     /* read the big read-only data files into RAM (no SD-card stalls while playing) */
 int  dos_exec(Machine *m, const char *name, const char *args);
 void hle_call(Machine *m, int id);

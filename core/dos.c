@@ -336,6 +336,16 @@ void machine_con_putc(Machine *m, uint8_t ch) {
     m->con[m->con_len++] = (char)ch; m->con[m->con_len] = 0;
 }
 
+double (*dos_now_ms)(void); double dos_io_max_ms; int dos_io_max_ah; unsigned dos_io_slow;
+static void int21(Machine *m);
+static void int21_timed(Machine *m) {
+    if (!dos_now_ms) { int21(m); return; }
+    int ah = R8(C(m), 4); double t0 = dos_now_ms();
+    int21(m);
+    double dt = dos_now_ms() - t0;
+    if (dt > dos_io_max_ms) { dos_io_max_ms = dt; dos_io_max_ah = ah; }
+    if (dt > 50.0) dos_io_slow++;
+}
 static void int21(Machine *m) {
     CPU *c = C(m); uint8_t ah = R8(c, 4), al = R8(c, 0);
     char name[300], host[600];
@@ -760,7 +770,7 @@ void hle_call(Machine *m, int id) {
     case 0x16: bios_int16(m); break;
     case 0x1A: bios_int1a(m); break;
     case 0x20: dos_terminate(m, 0, -1); break;
-    case 0x21: int21(m); break;
+    case 0x21: int21_timed(m); break;
     case 0x29: machine_con_putc(m, R8(C(m), 0)); hret(m, -1); break;
     case 0x2F: int2f(m); break;
     case 0x33: mouse(m); break;
