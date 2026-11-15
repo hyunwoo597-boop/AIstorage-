@@ -46,7 +46,7 @@ enum { NDSP_WBUF_FREE, NDSP_WBUF_QUEUED, NDSP_WBUF_PLAYING, NDSP_WBUF_DONE };
 enum { NDSP_OUTPUT_STEREO, NDSP_INTERP_LINEAR, NDSP_FORMAT_STEREO_PCM16 };
 static long _audio_frames; static int _wb_age[16];
 static inline Result ndspInit(void) { return 0; } static inline void ndspExit(void) {}
-static inline void ndspSetOutputMode(int m) {} static inline void ndspChnReset(int c) {} static inline void ndspChnSetInterp(int c, int t) {}
+static inline void ndspSetOutputMode(int m) {} static inline void ndspChnReset(int c) {} static inline void ndspChnSetInterp(int c, int t) {} static inline void ndspChnSetPaused(int c, bool p) {}
 static inline void ndspChnSetRate(int c, float r) {} static inline void ndspChnSetFormat(int c, u16 f) {} static inline void ndspChnSetMix(int c, float *m) {}
 static inline void ndspChnWaveBufAdd(int c, ndspWaveBuf *b) { _audio_frames += b->nsamples; b->status = NDSP_WBUF_DONE; }
 static inline void *linearAlloc(size_t n) { return malloc(n); } static inline void linearFree(void *p) { free(p); }

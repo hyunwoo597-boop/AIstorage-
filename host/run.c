@@ -75,7 +75,7 @@ int main(int argc, char **argv) {
     Machine *m = machine_new(argv[1]);
     m->verbose = getenv("NV") ? atoi(getenv("NV")) : 0;
     m->opl = opl_new(22050); opl_attach(m->opl, (opl_clock_fn)machine_vtime_ns, m);
-    textcap_init(m);
+    textcap_init(m); if (!getenv("NOIDLE")) idle_init(m);
     if (dos_exec(m, "MUSICV.COM", "") < 0) return 2;
     long total = 0; int guard = 0;
     while (!m->exited && total < 20000000) { total += machine_run(m, 100000); if (++guard > 400) break; }

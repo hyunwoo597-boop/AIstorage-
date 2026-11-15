@@ -391,7 +391,7 @@ int cpu_step(CPU *c) {
     if (c->halted) return 0;
     if (c->nbp) {
         uint32_t la = LIN(c->seg[CS], c->ip);
-        for (int i = 0; i < c->nbp; i++) if (c->bp[i] == la && c->bp_cb) c->bp_cb(c, i);
+        for (int i = 0; i < c->nbp; i++) if (c->bp[i] == la) { if (c->bp_fn[i]) c->bp_fn[i](c, i); else if (c->bp_cb) c->bp_cb(c, i); }
     }
     c->segov = -1; c->osz32 = c->asz32 = 0;
     int rep = 0; /* 1 = REPNE, 2 = REPE/REP */

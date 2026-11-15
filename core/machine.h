@@ -42,6 +42,11 @@ struct Machine {
     struct { uint8_t *p; uint32_t kb; } xms[64]; uint32_t xms_total_kb, xms_used_kb;
     void (*vga_wr_dbg)(Machine *, uint32_t off);
     void (*on_load)(Machine *, uint16_t load_seg);   /* called after INT 21h/4B01 loaded a child program */
+    void (*on_load2)(Machine *, uint16_t load_seg);  /* second hook (idle detection) */
+    int poll_force;                                  /* frontend: CPU is struggling, accelerate idle polls even without text */
+    int text_on;                                     /* the engine has text on screen (set by textcap) */
+    int poll_streak;                                 /* consecutive input polls that found nothing new */
+    uint64_t skip_acc, skipped_total;                /* virtual instructions skipped by idle detection */
     struct TextCap *tc;
     /* devices */
     VGA vga;
@@ -95,7 +100,11 @@ Machine *machine_new(const char *gamedir);
 void     machine_free(Machine *m);
 void machine_con_putc(Machine *m, uint8_t ch);
 uint64_t machine_vtime_ns(Machine *m);       /* emulated time since start, in ns */
-void machine_set_ips(Machine *m, uint32_t ips); /* change emulated CPU speed without disturbing virtual time */
+void machine_set_ips(Machine *m, uint32_t ips);
+void machine_skip(Machine *m, uint32_t instr);          /* burn `instr` virtual instructions without executing them (idle loops) */
+void machine_skip_to_tick(Machine *m);
+void machine_poll(Machine *m, int changed);            /* input poll result: after a long streak of idle polls, burn a slice of virtual time */                  /* burn virtual time up to the next timer tick */
+void idle_init(Machine *m);                              /* install the game-specific idle-loop detector */ /* change emulated CPU speed without disturbing virtual time */
 int      machine_run(Machine *m, int max_instr);   /* returns instructions executed */
 void     machine_key(Machine *m, uint8_t scancode, int down, uint8_t ascii);
 void     pic_raise(Machine *m, int irq);

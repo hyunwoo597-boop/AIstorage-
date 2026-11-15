@@ -30,6 +30,27 @@ static const char *GAME_DIRS[] = { GAME_DIR0, "sdmc:/nonomura", NULL };
 static const uint32_t CPU_FIXED[] = { 0, 2000000, 3000000, 4000000, 5000000, 6000000 };   /* 0 = auto */
 #define N_CPU_MODES 6
 static int cpu_mode = 0, mouse_level = 3;
+static int top_zoom = 1;              /* 1: 640x400 game area stretched over the whole top screen, 0: original 4:3 picture */
+static int text_size = 1;             /* bottom-screen text: 0 large, 1 medium, 2 small, 3 tiny */
+static const float TEXT_SCALE[] = { 2.0f, 1.5f, 1.25f, 1.0f };
+static const char *TEXT_NAME[] = { "Large", "Medium", "Small", "Tiny" };
+static char cfg_path[320];
+static void cfg_save(void) {
+    FILE *f = fopen(cfg_path, "w"); if (!f) return;
+    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\n", cpu_mode, mouse_level, top_zoom, text_size);
+    fclose(f);
+}
+static void cfg_load(void) {
+    FILE *f = fopen(cfg_path, "r"); if (!f) return;
+    char line[64]; int v;
+    while (fgets(line, sizeof line, f)) {
+        if (sscanf(line, "cpu_mode=%d", &v) == 1 && v >= 0 && v < 6) cpu_mode = v;
+        else if (sscanf(line, "mouse_level=%d", &v) == 1 && v >= 1 && v <= 5) mouse_level = v;
+        else if (sscanf(line, "top_zoom=%d", &v) == 1) top_zoom = v ? 1 : 0;
+        else if (sscanf(line, "text_size=%d", &v) == 1 && v >= 0 && v < 4) text_size = v;
+    }
+    fclose(f);
+}
 static const float MOUSE_SPEED[] = { 0, 5.f, 8.f, 11.f, 15.f, 20.f };   /* pixels per frame at full circle-pad deflection */
 
 /* ------------------------------------------------------------------ log */
@@ -109,9 +130,25 @@ static void audio_init(void) {
     ndspChnSetFormat(0, NDSP_FORMAT_STEREO_PCM16);
     float mix[12] = { 0 }; mix[0] = mix[1] = 1.0f;
     ndspChnSetMix(0, mix);
+    ndspChnSetPaused(0, true);
     memset(wbuf, 0, sizeof wbuf);
     for (int i = 0; i < NWB; i++) wbuf[i].data_pcm16 = abuf + (size_t)i * AFRAMES * 2;
     audio_ok = 1;
+}
+static int audio_started;
+static float audio_rate = 22050.0f;
+static int audio_queued(void) {
+    int n = 0;
+    for (int i = 0; i < NWB; i++) if (wbuf[i].status == NDSP_WBUF_QUEUED || wbuf[i].status == NDSP_WBUF_PLAYING) n++;
+    return n;
+}
+/* playback speed follows the emulation speed, so a machine that cannot keep up sounds slow instead of crackling */
+static void audio_set_speed(double ratio) {
+    if (!audio_ok) return;
+    if (ratio > 1.0) ratio = 1.0;
+    if (ratio < 0.5) ratio = 0.5;
+    float r = ratio >= 0.97 ? 22050.0f : (float)(22050.0 * ratio);
+    if (r != audio_rate) { audio_rate = r; ndspChnSetRate(0, r); }
 }
 static void audio_pump(Machine *m) {
     static int16_t scratch[AFRAMES * 2];
@@ -130,6 +167,11 @@ static void audio_pump(Machine *m) {
         ndspChnWaveBufAdd(0, wb);
         n -= c;
     }
+    if (!audio_ok) return;
+    /* keep ~3 chunks in flight before (re)starting playback, so ordinary frame-time jitter cannot cause gaps */
+    int q = audio_queued();
+    if (audio_started && q == 0) { ndspChnSetPaused(0, true); audio_started = 0; }
+    else if (!audio_started && q >= 3) { ndspChnSetPaused(0, false); audio_started = 1; }
 }
 
 /* ------------------------------------------------------------------ input */
@@ -142,6 +184,8 @@ static const KeyMap KEYS[] = {
     { KEY_R, 0x39, ' ' }, /* Space */
 };
 static uint32_t prev_held;
+static int key_age[sizeof KEYS / sizeof KEYS[0]];      /* frames since the key went down (-1: up) */
+static uint32_t key_sent;                               /* bit i: key i is currently down in the emulated keyboard */
 static float mx_acc, my_acc;
 static int lb_frames, rb_frames;          /* remaining frames a click is held (min press length) */
 static int touch_active, touch_x0, touch_y0, touch_lx, touch_ly, touch_age, touch_moved;
@@ -159,11 +203,15 @@ static void mouse_move(Machine *m, float dx, float dy) {
 
 static void input_frame(Machine *m) {
     uint32_t held = hidKeysHeld();
-    /* keyboard keys: send edges */
+    /* keyboard keys: press edges immediately; releases only after >= 4 frames so the game's tick-rate polling never misses a tap */
     for (unsigned i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++) {
-        uint32_t k = KEYS[i].key;
-        if ((held & k) && !(prev_held & k)) machine_key(m, KEYS[i].sc, 1, KEYS[i].ascii);
-        if (!(held & k) && (prev_held & k)) machine_key(m, KEYS[i].sc, 0, KEYS[i].ascii);
+        uint32_t k = KEYS[i].key; uint32_t bit = 1u << i;
+        if (key_sent & bit) key_age[i]++;
+        if (held & k) {
+            if (!(key_sent & bit)) { machine_key(m, KEYS[i].sc, 1, KEYS[i].ascii); key_sent |= bit; key_age[i] = 0; }
+        } else if ((key_sent & bit) && key_age[i] >= 4) {
+            machine_key(m, KEYS[i].sc, 0, KEYS[i].ascii); key_sent &= ~bit;
+        }
     }
     /* mouse buttons with a minimum press length so a quick tap is never missed by the game's polling */
     if ((held & KEY_A) && !(prev_held & KEY_A)) lb_frames = 3;
@@ -207,12 +255,17 @@ static void input_frame(Machine *m) {
 
 static void input_release_all(Machine *m) {
     for (unsigned i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++)
-        if (prev_held & KEYS[i].key) machine_key(m, KEYS[i].sc, 0, KEYS[i].ascii);
-    prev_held = 0; m->mouse_btn = 0; lb_frames = rb_frames = 0; touch_active = 0;
+        if (key_sent & (1u << i)) machine_key(m, KEYS[i].sc, 0, KEYS[i].ascii);
+    key_sent = 0; prev_held = 0; m->mouse_btn = 0; lb_frames = rb_frames = 0; touch_active = 0;
 }
 
 /* ------------------------------------------------------------------ rendering */
-static uint16_t topimg[320 * 240];      /* last rendered game frame (column-major) */
+static uint16_t topimg[400 * 240];      /* last rendered game frame for the top screen (column-major, 400x240) */
+static void top_render(Machine *m) {
+    if (top_zoom) vgascale_render_zoom(m, topimg);
+    else vgascale_render(m, topimg, 40);                  /* 320x240 picture centred in the 400-wide screen */
+}
+static void top_clear(void) { memset(topimg, 0, sizeof topimg); }
 static uint8_t botrgb[320 * 240 * 3];
 static int last_glyphs;
 
@@ -229,8 +282,8 @@ static void bottom_render(Machine *m) {
 }
 
 /* ------------------------------------------------------------------ pause menu */
-enum { MI_RESUME, MI_CPU, MI_MOUSE, MI_QUIT, MI_COUNT };
-static double stat_speed = 1.0, stat_mips = 0;
+enum { MI_RESUME, MI_TEXT, MI_TOP, MI_CPU, MI_MOUSE, MI_QUIT, MI_COUNT };
+static double stat_speed = 1.0, stat_mips = 0, stat_busy = 0;
 
 static void menu_draw(Machine *m, int sel) {
     const uint16_t fg = C565(235, 235, 235), hi = C565(255, 220, 80), dim = C565(140, 150, 180);
@@ -246,6 +299,8 @@ static void menu_draw(Machine *m, int sel) {
             else snprintf(line, sizeof line, "CPU speed: %.0f MIPS fixed", CPU_FIXED[cpu_mode] / 1e6);
             break;
         case MI_MOUSE: snprintf(line, sizeof line, "Mouse speed: %d", mouse_level); break;
+        case MI_TEXT: snprintf(line, sizeof line, "Bottom text size: %s", TEXT_NAME[text_size]); break;
+        case MI_TOP: snprintf(line, sizeof line, "Top screen: %s", top_zoom ? "Zoom (fill)" : "Original 4:3"); break;
         default: snprintf(line, sizeof line, "Quit game"); break;
         }
         char buf[72]; snprintf(buf, sizeof buf, "%c %s", i == sel ? '>' : ' ', line);
@@ -253,13 +308,14 @@ static void menu_draw(Machine *m, int sel) {
         y += 14;
     }
     char st[200];
-    snprintf(st, sizeof st, "Speed %3.0f%%   host %.1f MIPS\nunhandled ops: %u   capture: %s\nSaves + log: SD:/3ds/nonomura/",
-             stat_speed * 100.0, stat_mips, (unsigned)m->stat_unhandled, textcap_active(m) ? "on" : "OFF");
+    snprintf(st, sizeof st, "Speed %3.0f%%   CPU %2.0f%%   %.1f MIPS\nunhandled ops: %u   capture: %s\nSaves + log: SD:/3ds/nonomura/",
+             stat_speed * 100.0, stat_busy * 100.0, stat_mips, (unsigned)m->stat_unhandled, textcap_active(m) ? "on" : "OFF");
     gtext(fbBot, 320, 8, 176, 38, st, dim, -1, 1);
     gtext(fbBot, 320, 8, 224, 38, "D-pad: select  A: ok  B/START: resume", dim, -1, 1);
 }
 
 /* returns 1 to quit */
+static int text_changed;
 static int pause_menu(Machine *m) {
     int sel = 0;
     input_release_all(m);
@@ -267,11 +323,11 @@ static int pause_menu(Machine *m) {
         fb_get();
         menu_draw(m, sel);
         /* keep showing the last game frame on top */
-        memcpy(fbTop + 40 * 240, topimg, sizeof topimg);
+        memcpy(fbTop, topimg, sizeof topimg);
         present();
         hidScanInput();
         uint32_t d = hidKeysDown();
-        if (d & (KEY_START | KEY_B)) return 0;
+        if (d & (KEY_START | KEY_B)) { cfg_save(); return 0; }
         if (d & KEY_DDOWN) sel = (sel + 1) % MI_COUNT;
         if (d & KEY_DUP) sel = (sel + MI_COUNT - 1) % MI_COUNT;
         int dir = ((d & KEY_DRIGHT) ? 1 : 0) - ((d & KEY_DLEFT) ? 1 : 0);
@@ -280,8 +336,10 @@ static int pause_menu(Machine *m) {
             if (cpu_mode) machine_set_ips(m, CPU_FIXED[cpu_mode]);
         }
         if (sel == MI_MOUSE && (dir || (d & KEY_A))) { mouse_level += dir ? dir : 1; if (mouse_level > 5) mouse_level = 1; if (mouse_level < 1) mouse_level = 5; }
-        if (sel == MI_RESUME && (d & KEY_A)) return 0;
-        if (sel == MI_QUIT && (d & KEY_A)) return 1;
+        if (sel == MI_TEXT && (dir || (d & KEY_A))) { text_size = (text_size + (dir ? dir : 1) + 4) % 4; textcap_set_max_scale(TEXT_SCALE[text_size]); text_changed = 1; }
+        if (sel == MI_TOP && (dir || (d & KEY_A))) { top_zoom ^= 1; top_clear(); top_render(m); }
+        if (sel == MI_RESUME && (d & KEY_A)) { cfg_save(); return 0; }
+        if (sel == MI_QUIT && (d & KEY_A)) { cfg_save(); return 1; }
     }
     return 1;
 }
@@ -308,6 +366,9 @@ int main(void) {
     }
     char logpath[300]; snprintf(logpath, sizeof logpath, "%s/nono_log.txt", gdir);
     logfp = fopen(logpath, "w");
+    snprintf(cfg_path, sizeof cfg_path, "%s/nono_cfg.txt", gdir);
+    cfg_load();
+    textcap_set_max_scale(TEXT_SCALE[text_size]);
     bool is_new = false; APT_CheckNew3DS(&is_new);
     LOG("Nonomura 3DS native v%s  new3ds=%d  gamedir=%s", APP_VERSION, (int)is_new, gdir);
 
@@ -320,6 +381,7 @@ int main(void) {
     m->opl = opl_new(22050);
     opl_attach(m->opl, (opl_clock_fn)machine_vtime_ns, m);
     textcap_init(m);
+    idle_init(m);
     uint32_t ips = is_new ? 4000000u : 1500000u;
     machine_set_ips(m, ips);
 
@@ -331,9 +393,10 @@ int main(void) {
     { long total = 0; int guard = 0; while (!m->exited && total < 20000000 && ++guard < 400) total += machine_run(m, 100000);
       LOG("MUSICV done: exited=%d tsr=%d instr=%ld", m->exited, m->tsr_kept, total); }
     if (dos_exec(m, "SILV1.COM", "main.mes D D") < 0) { LOG("SILV1.COM launch failed"); message_screen("SILV1.COM failed", "Could not start SILV1.COM / SILV.EXE.\nCheck that all game files were copied."); goto done; }
-    LOG("game started");
+    LOG("game started  top_zoom=%d text_size=%d cpu_mode=%d", top_zoom, text_size, cpu_mode);
+    top_clear();
 
-    u64 win_t0 = svcGetSystemTick(), win_busy = 0, win_v0 = machine_vtime_ns(m), win_i0 = m->icount;
+    u64 win_t0 = svcGetSystemTick(), win_busy = 0, win_v0 = machine_vtime_ns(m), win_i0 = m->icount, win_s0 = m->skipped_total;
     int win_frames = 0, frame = 0, lag_frames = 0, bot_force = 1;
     uint32_t last_dirty = ~0u, last_gen = ~0u, bot_dirty = ~0u; int last_bot_frame = -100;
     int quit = 0;
@@ -343,7 +406,7 @@ int main(void) {
         hidScanInput();
         if (hidKeysDown() & KEY_START) {
             if (pause_menu(m)) break;
-            bot_force = 1; win_t0 = svcGetSystemTick(); win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_frames = 0;
+            bot_force = 1; win_t0 = svcGetSystemTick(); win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;
             continue;
         }
         if (m->exited) break;
@@ -365,10 +428,10 @@ int main(void) {
         /* top screen: re-render the picture when VRAM / palette changed (every other frame if we are struggling) */
         fb_get();
         if (m->vga.dirty != last_dirty && (!lagged || (frame & 1) == 0)) {
-            vgascale_render(m, topimg, 0);
+            top_render(m);
             last_dirty = m->vga.dirty;
         }
-        memcpy(fbTop + 40 * 240, topimg, sizeof topimg);
+        memcpy(fbTop, topimg, sizeof topimg);
 
         /* bottom screen: large dialogue text (rate limited) */
         uint32_t gen = textcap_gen(m);
@@ -388,11 +451,13 @@ int main(void) {
             double virt = (double)(machine_vtime_ns(m) - win_v0) / 1e9;
             double ratio = real > 0 ? virt / real : 1.0;
             double busy = real > 0 ? (double)win_busy / TICKS_PER_SEC / real : 1.0;
-            stat_speed = ratio; stat_mips = (double)(m->icount - win_i0) / real / 1e6;
+            stat_speed = ratio; stat_mips = (double)((m->icount - win_i0) - (m->skipped_total - win_s0)) / real / 1e6;   /* instructions really executed */
+            stat_busy = busy;
+            audio_set_speed(ratio);
             if (cpu_mode == 0) {
                 uint32_t n = m->ips;
                 static int cooldown;
-                if (ratio < 0.97) { double k = ratio < 0.5 ? 0.5 : ratio; n = (uint32_t)(m->ips * k * 0.97); cooldown = 6; }
+                if (ratio < 0.97) { double k = ratio < 0.5 ? 0.5 : ratio; n = (uint32_t)(m->ips * k * 0.97); cooldown = 6; m->poll_force = 1; }
                 else if (cooldown > 0) cooldown--;
                 else if (busy < 0.60 && m->ips < IPS_MAX) n = (uint32_t)(m->ips * 1.06);
                 if (n < IPS_MIN) n = IPS_MIN;
@@ -401,10 +466,10 @@ int main(void) {
             }
             static int logn;
             if (logn < 40 || (logn % 10) == 0)
-                LOG("speed=%.0f%% busy=%.0f%% host=%.2f MIPS ips=%u mouse=%d,%d unhandled=%u glyphs=%d tc=%d pc=%04X:%04X mode=%02X vdirty=%u", ratio * 100, busy * 100, stat_mips, m->ips, m->mouse_x, m->mouse_y, (unsigned)m->stat_unhandled, last_glyphs, textcap_active(m), m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, (unsigned)m->vga.dirty);
+                LOG("speed=%.0f%% busy=%.0f%% exec=%.2f MIPS ips=%u mouse=%d,%d unhandled=%u glyphs=%d tc=%d pc=%04X:%04X mode=%02X vdirty=%u", ratio * 100, busy * 100, stat_mips, m->ips, m->mouse_x, m->mouse_y, (unsigned)m->stat_unhandled, last_glyphs, textcap_active(m), m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, (unsigned)m->vga.dirty);
             if (m->con_len) { static int lastcl; if (m->con_len != lastcl) { LOG("console: %s", m->con); lastcl = m->con_len; } }
             logn++;
-            win_t0 = now; win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_frames = 0;
+            win_t0 = now; win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;
         }
     }
 

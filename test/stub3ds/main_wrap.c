@@ -1,6 +1,6 @@
 #include "3ds.h"
 #define main app_main
-#include "../../ctr/source/main.c"
+#include "/home/claude/work/nono/ctr/source/main.c"
 #undef main
 #include <stdio.h>
 static void dump(const char *p, u16 *fb, int w) { FILE *f = fopen(p, "wb"); fprintf(f, "P6\n%d 240\n255\n", w);

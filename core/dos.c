@@ -302,11 +302,11 @@ static void int21(Machine *m) {
     case 0x00: dos_terminate(m, 0, -1); return;
     case 0x02: case 0x06: machine_con_putc(m, R8(c, 2)); hret(m, -1); return;
     case 0x01: case 0x07: case 0x08: {
-        if (m->bk_h == m->bk_t) { c->ip -= 2; return; }
+        if (m->bk_h == m->bk_t) { machine_skip(m, m->ips / 400); c->ip -= 2; return; }
         uint16_t k = m->bios_kbuf[m->bk_h]; m->bk_h = (m->bk_h + 1) & 15; SETR8(c, 0, k & 0xFF); hret(m, -1); return; }
     case 0x09: { for (int i = 0; i < 500; i++) { uint8_t b = rd8(m, c->seg[DS], c->r[DX] + i); if (b == '$') break; machine_con_putc(m, b); } hret(m, -1); return; }
     case 0x0A: wr8(m, c->seg[DS], c->r[DX] + 1, 0); hret(m, -1); return;
-    case 0x0B: SETR8(c, 0, m->bk_h != m->bk_t ? 0xFF : 0); hret(m, -1); return;
+    case 0x0B: machine_poll(m, m->bk_h != m->bk_t); SETR8(c, 0, m->bk_h != m->bk_t ? 0xFF : 0); hret(m, -1); return;
     case 0x0C: if (al == 0x0B) SETR8(c, 0, 0); hret(m, -1); return;
     case 0x0D: hret(m, -1); return;
     case 0x0E: SETR8(c, 0, 5); hret(m, -1); return;
@@ -422,7 +422,7 @@ static void int21(Machine *m) {
             LoadInfo li;
             if (load_prog(m, name, args, &li)) { dos_err(m, 2); return; }
             wr16(m, bs, bo + 0x0E, li.sp); wr16(m, bs, bo + 0x10, li.ss); wr16(m, bs, bo + 0x12, li.ip); wr16(m, bs, bo + 0x14, li.cs);
-            m->cur_psp = li.psp; if (m->on_load) m->on_load(m, li.psp + 0x10); hret(m, 0); return;
+            m->cur_psp = li.psp; if (m->on_load) m->on_load(m, li.psp + 0x10); if (m->on_load2) m->on_load2(m, li.psp + 0x10); hret(m, 0); return;
         } else if (al == 3) {
             if (load_overlay(m, name, rd16(m, bs, bo), rd16(m, bs, bo + 2))) { dos_err(m, 2); return; }
             hret(m, 0); return;
@@ -483,10 +483,10 @@ static void bios_int16(Machine *m) {
     CPU *c = C(m); uint8_t ah = R8(c, 4);
     switch (ah) {
     case 0x00: case 0x10:
-        if (m->bk_h == m->bk_t) { c->ip -= 2; return; }
+        if (m->bk_h == m->bk_t) { machine_skip(m, m->ips / 400); c->ip -= 2; return; }
         c->r[AX] = m->bios_kbuf[m->bk_h]; m->bk_h = (m->bk_h + 1) & 15; hret(m, -1); return;
     case 0x01: case 0x11:
-        if (m->bk_h == m->bk_t) { hret(m, -1); c->zf = 1; } else { c->r[AX] = m->bios_kbuf[m->bk_h]; hret(m, -1); c->zf = 0; } return;
+        if (m->bk_h == m->bk_t) { machine_poll(m, 0); hret(m, -1); c->zf = 1; } else { machine_poll(m, 1); c->r[AX] = m->bios_kbuf[m->bk_h]; hret(m, -1); c->zf = 0; } return;
     case 0x02: case 0x12: SETR8(c, 0, m->shift_state); hret(m, -1); return;
     case 0x05: { int nt = (m->bk_t + 1) & 15; if (nt != m->bk_h) { m->bios_kbuf[m->bk_t] = c->r[CX]; m->bk_t = nt; } SETR8(c, 0, 0); hret(m, -1); return; }
     default: hret(m, -1); return;
@@ -538,7 +538,12 @@ static void mouse(Machine *m) {
         m->mouse_visible = 0; m->mouse_minx = 0; m->mouse_maxx = 639; m->mouse_miny = 0; m->mouse_maxy = 479; break;
     case 0x01: m->mouse_visible++; break;
     case 0x02: m->mouse_visible--; break;
-    case 0x03: c->r[BX] = m->mouse_btn; c->r[CX] = m->mouse_x; c->r[DX] = m->mouse_y; break;
+    case 0x03: {
+        /* a poll that sees no change is idle time: burn a slice of virtual time instead of spinning on it */
+        static int lx = -1, ly = -1, lb = -1;
+        machine_poll(m, !(m->mouse_x == lx && m->mouse_y == ly && m->mouse_btn == lb));
+        lx = m->mouse_x; ly = m->mouse_y; lb = m->mouse_btn;
+        c->r[BX] = m->mouse_btn; c->r[CX] = m->mouse_x; c->r[DX] = m->mouse_y; break; }
     case 0x04: m->mouse_x = c->r[CX]; m->mouse_y = c->r[DX]; break;
     case 0x07: m->mouse_minx = (int16_t)c->r[CX]; m->mouse_maxx = (int16_t)c->r[DX]; break;
     case 0x08: m->mouse_miny = (int16_t)c->r[CX]; m->mouse_maxy = (int16_t)c->r[DX]; break;

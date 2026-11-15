@@ -11,4 +11,6 @@ uint32_t textcap_gen(Machine *m);              /* increments whenever the captur
 int  textcap_active(Machine *m);               /* 1 if the engine's glyph routine was found and hooked */
 /* Draw the captured text, large, into an RGB888 buffer (w*h*3 bytes). Returns number of glyphs drawn. */
 int  textcap_render(Machine *m, uint8_t *rgb, int w, int h);
+/* Largest magnification the bottom-screen layout may use (default 1.5; the engine's glyphs are 16 px). */
+void textcap_set_max_scale(float s);
 #endif

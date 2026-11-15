@@ -26,6 +26,7 @@ typedef struct CPU {
     uint32_t bp[8];
     int nbp;
     int (*bp_cb)(struct CPU *, int idx);
+    int (*bp_fn[8])(struct CPU *, int idx);   /* optional per-breakpoint callback (overrides bp_cb) */
 } CPU;
 
 #define R8(c, i) (((i) & 4) ? ((uint8_t *)&(c)->r[(i) & 3])[1] : ((uint8_t *)&(c)->r[(i)])[0])
