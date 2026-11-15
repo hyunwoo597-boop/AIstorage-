@@ -321,7 +321,7 @@ static inline int limit(int x) {
 }
 
 static void push_out(OPL *o, int l, int r) {
-    l = limit(l * 2); r = limit(r * 2);
+    l = limit(l * 3); r = limit(r * 3);
     uint32_t w = o->wr & (RING_FRAMES - 1);
     o->ring[w * 2] = (int16_t)l; o->ring[w * 2 + 1] = (int16_t)r;
     o->wr++;
