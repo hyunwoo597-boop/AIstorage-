@@ -8,6 +8,7 @@ static void dump(const char *p, u16 *fb, int w) { FILE *f = fopen(p, "wb"); fpri
 static void hook(int scan) { char p[64]; snprintf(p, sizeof p, "/tmp/st_top_%04d.ppm", scan); dump(p, _fb[0][_cur[0] ^ 1], 400); snprintf(p, sizeof p, "/tmp/st_bot_%04d.ppm", scan); dump(p, _fb[1][_cur[1]], 320); }
 int main(int argc, char **argv) {
     if (getenv("STUB_DUMP")) _dump_hook = hook;
+    if (getenv("STUB_FRAMECLOCK")) _frameclock = 1;
     if (getenv("STUB_SLOW")) _slow = atof(getenv("STUB_SLOW"));
     _script_frames = argc > 1 ? atoi(argv[1]) : 900;
     app_main();

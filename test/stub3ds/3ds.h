@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <stdlib.h>
 /* minimal host stub of the libctru calls used by main.c - for logic testing only */
 #pragma once
 #include <stdint.h>
@@ -9,7 +11,7 @@ typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t
 #define R_FAILED(x) ((x) < 0)
 #define BIT(n) (1u << (n))
 #define SYSCLOCK_ARM11 268111856ull
-enum { KEY_A = BIT(0), KEY_B = BIT(1), KEY_START = BIT(3), KEY_DRIGHT = BIT(4), KEY_DLEFT = BIT(5), KEY_DUP = BIT(6), KEY_DDOWN = BIT(7),
+enum { KEY_A = BIT(0), KEY_B = BIT(1), KEY_SELECT = BIT(2), KEY_START = BIT(3), KEY_DRIGHT = BIT(4), KEY_DLEFT = BIT(5), KEY_DUP = BIT(6), KEY_DDOWN = BIT(7),
        KEY_R = BIT(8), KEY_L = BIT(9), KEY_X = BIT(10), KEY_Y = BIT(11), KEY_ZL = BIT(14), KEY_ZR = BIT(15), KEY_TOUCH = BIT(20) };
 typedef struct { u16 px, py; } touchPosition; typedef struct { s16 dx, dy; } circlePosition;
 typedef enum { GFX_TOP, GFX_BOTTOM } gfxScreen_t; typedef enum { GFX_LEFT, GFX_RIGHT } gfx3dSide_t;
@@ -18,7 +20,8 @@ typedef int GSPGPU_FramebufferFormat;
 static u16 _fb[2][2][400 * 240]; static int _cur[2], _dbl[2] = {1, 1};
 static int _frame; static u64 _t0;
 static double _slow = 1;
-static inline u64 svcGetSystemTick(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (u64)((double)(ts.tv_sec * 1e9 + ts.tv_nsec) * 0.268111856 * _slow); }
+static int _frameclock;
+static inline u64 svcGetSystemTick(void) { if (_frameclock) return (u64)((double)_frame * (double)SYSCLOCK_ARM11 / 59.83); struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (u64)((double)(ts.tv_sec * 1e9 + ts.tv_nsec) * 0.268111856 * _slow); }
 /* host is far faster than a 3DS: slow the stub clock-independent work isn't needed, just report real time */
 static inline void gfxInit(GSPGPU_FramebufferFormat a, GSPGPU_FramebufferFormat b, bool c) {}
 static inline void gfxExit(void) {}
@@ -48,6 +51,7 @@ static long _audio_frames; static int _wb_age[16];
 static inline Result ndspInit(void) { return 0; } static inline void ndspExit(void) {}
 static inline void ndspSetOutputMode(int m) {} static inline void ndspChnReset(int c) {} static inline void ndspChnSetInterp(int c, int t) {} static inline void ndspChnSetPaused(int c, bool p) {}
 static inline void ndspChnSetRate(int c, float r) {} static inline void ndspChnSetFormat(int c, u16 f) {} static inline void ndspChnSetMix(int c, float *m) {}
-static inline void ndspChnWaveBufAdd(int c, ndspWaveBuf *b) { _audio_frames += b->nsamples; b->status = NDSP_WBUF_DONE; }
+static inline void ndspChnWaveBufAdd(int c, ndspWaveBuf *b) { _audio_frames += b->nsamples; b->status = NDSP_WBUF_DONE;
+    { static FILE *af; if (!af && getenv("STUB_AUDIO")) af = fopen(getenv("STUB_AUDIO"), "wb"); if (af) fwrite(b->data_pcm16, 4, b->nsamples, af); } }
 static inline void *linearAlloc(size_t n) { return malloc(n); } static inline void linearFree(void *p) { free(p); }
 static inline Result DSP_FlushDataCache(const void *a, u32 n) { return 0; }

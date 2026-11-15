@@ -13,7 +13,7 @@
 #define TC_MAX   512
 #define SCR_BYTES 80
 
-typedef struct { int16_t x, y; uint8_t cx, rows, fg, bg; uint8_t bits[64]; } Cell;
+typedef struct { int16_t x, y; uint8_t cx, rows, fg, bg; uint8_t tile, hl, ca, cb; uint64_t born; uint8_t bits[64]; } Cell;
 
 typedef struct TextCap {
     Cell c[TC_MAX]; int n;
@@ -22,6 +22,9 @@ typedef struct TextCap {
     uint16_t seg;
     int16_t lead_y[8]; int n_lead;          /* rows whose text line begins with a blank (a space pushed over a wrap) */
     int16_t last_blank_x, last_blank_y;
+    uint64_t pg_t[4]; uint8_t pg_fg[4];     /* last glyph drawn into an off-screen page: when, and in which colour */
+    struct Strip { int16_t col, row; uint8_t cx, rows, ink; uint8_t keep[80]; uint8_t tile[80][32]; } strip[16];
+    int nstrip;                              /* text strips copied to the screen, waiting to be checked against VRAM */
 } TextCap;
 
 /* signature of the glyph-blit routine entry:  cmp word [e262],0 ; je +2 ; jmp +0x66 ; call 1e6b */
@@ -39,25 +42,11 @@ static void lead_add(TextCap *tc, int y) {
 }
 
 /* ------------------------------------------------------------------ capture */
-static int tc_cb(CPU *c, int idx) {
-    (void)idx;
-    Machine *m = c->m; TextCap *tc = m->tc;
-    if (!tc) return 0;
-    uint16_t ds = c->seg[DS];
-    if (mem_rw(m, LIN(ds, 0xE262)) != 0) return 0;               /* only the visible page */
-    uint16_t seg = mem_rw(m, LIN(ds, 0xE2D0));
-    if (seg < 0xA000 || seg >= 0xB000) return 0;
-    uint32_t off = ((uint32_t)(seg - 0xA000) << 4) + c->r[DI];
-    int cx = c->r[CX], rows = c->r[DX];
-    if (cx < 1 || cx > 4 || rows < 1 || rows > 32) return 0;
-    int x = (int)(off % SCR_BYTES) * 8, y = (int)(off / SCR_BYTES);
-    uint8_t col = mem_rb(m, LIN(ds, 0xE27C));
-    int bx = x / 8, ink = 0;
-    uint8_t bits[64];
-    for (int i = 0; i < cx * rows; i++) { bits[i] = mem_rb(m, LIN(ds, (uint16_t)(c->r[SI] + i))); ink |= bits[i]; }
-    /* paint over what was there: clear covered byte columns of existing cells */
+/* paint over what was there: clear covered byte columns of existing cells */
+static void paint_over(TextCap *tc, int bx, int cx, int y, int rows, int only_tiles) {
     for (int i = 0; i < tc->n; i++) {
         Cell *e = &tc->c[i]; int any = 0, ebx = e->x / 8;
+        if (only_tiles && !e->tile) continue;
         for (int r = 0; r < e->rows; r++) {
             int ay = e->y + r;
             if (ay < y || ay >= y + rows) { for (int k = 0; k < e->cx; k++) any |= e->bits[r * e->cx + k]; continue; }
@@ -69,6 +58,29 @@ static int tc_cb(CPU *c, int idx) {
         }
         if (!any) { cell_remove(tc, i); i--; }
     }
+}
+
+static int tc_cb(CPU *c, int idx) {
+    (void)idx;
+    Machine *m = c->m; TextCap *tc = m->tc;
+    if (!tc) return 0;
+    uint16_t ds = c->seg[DS];
+    int pgn = mem_rw(m, LIN(ds, 0xE262));
+    if (pgn != 0) {                                              /* off-screen page: remember that text is being composed there */
+        if (pgn >= 1 && pgn <= 3) { tc->pg_t[pgn] = m->icount; tc->pg_fg[pgn] = mem_rb(m, LIN(ds, 0xE27C)) & 0x0F; }
+        return 0;
+    }
+    uint16_t seg = mem_rw(m, LIN(ds, 0xE2D0));
+    if (seg < 0xA000 || seg >= 0xB000) return 0;
+    uint32_t off = ((uint32_t)(seg - 0xA000) << 4) + c->r[DI];
+    int cx = c->r[CX], rows = c->r[DX];
+    if (cx < 1 || cx > 4 || rows < 1 || rows > 32) return 0;
+    int x = (int)(off % SCR_BYTES) * 8, y = (int)(off / SCR_BYTES);
+    uint8_t col = mem_rb(m, LIN(ds, 0xE27C));
+    int bx = x / 8, ink = 0;
+    uint8_t bits[64];
+    for (int i = 0; i < cx * rows; i++) { bits[i] = mem_rb(m, LIN(ds, (uint16_t)(c->r[SI] + i))); ink |= bits[i]; }
+    paint_over(tc, bx, cx, y, rows, 0);
     tc->gen++;
     m->text_on = tc->n > 0;
     /* a blank glyph at the very start of a row = the game carried a space over the wrap point */
@@ -76,10 +88,85 @@ static int tc_cb(CPU *c, int idx) {
     if (x <= 32 && !(tc->last_blank_y == y && tc->last_blank_x + 8 <= x && x - tc->last_blank_x <= 16)) lead_del(tc, y);
     if (tc->n >= TC_MAX) return 0;
     Cell *e = &tc->c[tc->n++];
+    memset(e, 0, sizeof *e);
+    e->born = m->icount;
     e->x = (int16_t)x; e->y = (int16_t)y; e->cx = (uint8_t)cx; e->rows = (uint8_t)rows;
     e->fg = col & 0x0F; e->bg = col >> 4;
     memcpy(e->bits, bits, (size_t)cx * rows);
     m->text_on = 1;
+    return 0;
+}
+
+
+/* Choice menus are composed in an off-screen page and then copied to the screen, so the glyph hook never sees them.
+ * When such a copy brings text to the visible page we read the text pixels out of the source page. */
+static int tc_copy_cb(CPU *c, int idx) {
+    (void)idx;
+    Machine *m = c->m; TextCap *tc = m->tc;
+    if (!tc) return 0;
+    int sp = (c->r[AX] >> 8) & 0xFF, dp = c->r[AX] & 0xFF;
+    if (dp != 0 || sp < 1 || sp > 3) return 0;
+    int cx = c->r[CX], rows = c->r[DX];
+    if (cx < 1 || cx > 80 || rows < 1 || rows > 32) return 0;
+    if (m->icount - tc->pg_t[sp] > (uint64_t)m->ips / 3) return 0;          /* no text was drawn there just now */
+    uint16_t ds = c->seg[DS];
+    uint16_t tbl = (uint16_t)(0xE2D0 + 0x10 * sp);
+    uint16_t pseg[4]; for (int p = 0; p < 4; p++) pseg[p] = mem_rw(m, LIN(ds, (uint16_t)(tbl + 4 * p)));
+    uint16_t dseg = mem_rw(m, LIN(ds, 0xE2D0));
+    if (dseg < 0xA000 || dseg >= 0xB000) return 0;
+    uint32_t doff = ((uint32_t)(dseg - 0xA000) << 4) + c->r[DI];
+    int dcol = (int)(doff % SCR_BYTES), drow = (int)(doff / SCR_BYTES);
+    if (dcol + cx > SCR_BYTES) return 0;
+    int ink = tc->pg_fg[sp];
+    uint8_t tile[80][32]; int total = 0, ninkcols = 0;
+    for (int k = 0; k < cx; k++) {
+        int any = 0;
+        for (int r = 0; r < rows; r++) {
+            uint16_t o = (uint16_t)(c->r[SI] + r * SCR_BYTES + k);
+            uint8_t b0 = mem_rb(m, LIN(pseg[0], o)), b1 = mem_rb(m, LIN(pseg[1], o)), b2 = mem_rb(m, LIN(pseg[2], o)), b3 = mem_rb(m, LIN(pseg[3], o));
+            uint8_t v = 0;
+            for (int b = 0; b < 8; b++) {
+                int col = ((b0 >> b) & 1) | (((b1 >> b) & 1) << 1) | (((b2 >> b) & 1) << 2) | (((b3 >> b) & 1) << 3);
+                if (col == ink) { v |= (uint8_t)(1 << b); total++; }
+            }
+            tile[k][r] = v; any |= v;
+        }
+        if (any) ninkcols++;
+    }
+    if (total < 6 || total * 100 > cx * rows * 8 * 45) return 0;               /* not text-like */
+    /* keep tiles that look like text: ink spread over several rows and columns (frame dots and rules are not);
+     * small punctuation tiles are accepted next to a solid one */
+    uint8_t strong[80], weak[80], keep[80]; int nstrong = 0;
+    for (int k = 0; k < cx; k++) {
+        int ink_n = 0, cols = 0, rws = 0; uint8_t colmask = 0;
+        for (int r = 0; r < rows; r++) { uint8_t v = tile[k][r]; if (v) rws++; colmask |= v; for (int b = 0; b < 8; b++) ink_n += (v >> b) & 1; }
+        for (int b = 0; b < 8; b++) cols += (colmask >> b) & 1;
+        strong[k] = ink_n >= 6 && rws >= 3 && cols >= 2;
+        weak[k] = ink_n >= 2 && rws >= 2 && cols >= 2;
+        nstrong += strong[k];
+    }
+    if (nstrong < 2) return 0;
+    for (int k = 0; k < cx; k++) keep[k] = strong[k] || (weak[k] && ((k > 0 && strong[k - 1]) || (k + 1 < cx && strong[k + 1])));
+    if (tc->nstrip >= 16) return 0;
+    struct Strip *ps = &tc->strip[tc->nstrip++];
+    ps->col = (int16_t)dcol; ps->row = (int16_t)drow; ps->cx = (uint8_t)cx; ps->rows = (uint8_t)rows; ps->ink = (uint8_t)ink;
+    memcpy(ps->keep, keep, (size_t)cx);
+    for (int k = 0; k < cx; k++) memcpy(ps->tile[k], tile[k], (size_t)rows);
+    (void)ninkcols;
+    tc->gen++;
+    return 0;
+}
+
+static const int16_t SIG_COPY[]   = {0x80, 0xFC, 0x00, 0x74, 0x09, 0x3C, 0x00, 0x75, 0x03, 0xE9, -1, -1, 0xEB, 0x07, 0x1E, 0x06};
+static const int16_t SIG_MCOPY[]  = {0x1E, 0x06, 0x56, 0x55, 0xE8, -1, -1, 0x52, 0xBA, 0xCE, 0x03, 0xB0, 0x05, 0xEE, 0xBA, 0xCF, 0x03, 0xEC};
+static uint32_t find_sig(Machine *m, uint32_t base, uint32_t hint, const int16_t *sig, int n) {
+    for (int pass = 0; pass < 2; pass++) {
+        uint32_t lo = pass == 0 ? hint : 0, hi = pass == 0 ? hint + 1 : 0xF000;
+        for (uint32_t o = lo; o < hi; o++) {
+            int ok = 1; for (int i = 0; i < n && ok; i++) if (sig[i] >= 0 && m->mem[base + o + i] != (uint8_t)sig[i]) ok = 0;
+            if (ok) return base + o;
+        }
+    }
     return 0;
 }
 
@@ -93,6 +180,10 @@ static void tc_on_load(Machine *m, uint16_t load_seg) {
     if (!found) return;
     CPU *c = &m->cpu;
     if (c->nbp < 8) { c->bp[c->nbp++] = found; c->bp_cb = tc_cb; tc->hooked = 1; tc->seg = load_seg; }
+    uint32_t cp = find_sig(m, base, 0x17AB, SIG_COPY, (int)(sizeof SIG_COPY / sizeof *SIG_COPY));
+    if (cp && c->nbp < 8) { c->bp[c->nbp] = cp; c->bp_fn[c->nbp] = tc_copy_cb; c->nbp++; }
+    uint32_t mp = find_sig(m, base, 0x1C95, SIG_MCOPY, (int)(sizeof SIG_MCOPY / sizeof *SIG_MCOPY));
+    if (mp && c->nbp < 8) { c->bp[c->nbp] = mp; c->bp_fn[c->nbp] = tc_copy_cb; c->nbp++; }
 }
 
 void textcap_init(Machine *m) {
@@ -112,18 +203,23 @@ static int vram_color(Machine *m, int px, int py) {
            (((m->vga.plane[2][off] >> b) & 1) << 2) | (((m->vga.plane[3][off] >> b) & 1) << 3);
 }
 
-/* Cell is "alive" when most of its ink pixels are still on screen in the glyph's colour. */
-static int cell_alive(Machine *m, const Cell *e) {
-    int ink = 0, ok = 0;
+/* Cell state: 0 gone, 1 shown as drawn, 2 shown inverted (the highlighted menu entry: the glyph shape is still
+ * there but in another colour on a uniform bar). */
+static int cell_state(Machine *m, Cell *e) {
+    int ink = 0, ok = 0, nn = 0, ci[16] = {0}, cn[16] = {0};
     for (int r = 0; r < e->rows; r++)
         for (int k = 0; k < e->cx; k++) {
             uint8_t v = e->bits[r * e->cx + k];
-            for (int b = 0; b < 8; b++) if ((v >> (7 - b)) & 1) {
-                ink++;
-                if (vram_color(m, e->x + k * 8 + b, e->y + r) == e->fg) ok++;
+            for (int b = 0; b < 8; b++) {
+                int col = vram_color(m, e->x + k * 8 + b, e->y + r); if (col < 0) continue;
+                if ((v >> (7 - b)) & 1) { ink++; ci[col]++; if (col == e->fg) ok++; } else { nn++; cn[col]++; }
             }
         }
-    return ink == 0 ? 0 : (ok * 100 >= ink * 60);
+    if (!ink) return 0;
+    if (ok * 100 >= ink * 60) { e->hl = 0; return 1; }
+    int a = 0, bb = 0; for (int i = 1; i < 16; i++) { if (ci[i] > ci[a]) a = i; if (cn[i] > cn[bb]) bb = i; }
+    if (a != bb && ci[a] * 100 >= ink * 70 && nn >= 8 && cn[bb] * 100 >= nn * 70) { e->hl = 1; e->ca = (uint8_t)a; e->cb = (uint8_t)bb; return 2; }
+    return 0;
 }
 
 /* ------------------------------------------------------------------ layout */
@@ -157,14 +253,21 @@ static void put(uint8_t *rgb, int W, int H, int x, int y, const uint8_t *col, fl
     for (int i = 0; i < 3; i++) p[i] = (uint8_t)(p[i] + (col[i] - p[i]) * a);
 }
 
-static void draw_cell(uint8_t *rgb, int W, int H, const Cell *e, int units, float s, float ox, float oy, const uint8_t *col) {
+static float samp3(const Cell *e, const Cell *L, const Cell *R, int x, int y) {
+    int w = e->cx * 8;
+    if (x < 0 && L) return samp(L, x + L->cx * 8, y);
+    if (x >= w && R) return samp(R, x - w, y);
+    return samp(e, x, y);
+}
+
+static void draw_cell(uint8_t *rgb, int W, int H, const Cell *e, const Cell *L, const Cell *R, int units, float s, float ox, float oy, const uint8_t *col) {
     int dw = (int)ceilf(units * 8 * s), dh = (int)ceilf(e->rows * s);
     for (int dy = 0; dy < dh; dy++) {
         float v = (dy + 0.5f) / s - 0.5f; int v0 = (int)floorf(v); float fv = v - v0;
         for (int dx = 0; dx < dw; dx++) {
             float u = (dx + 0.5f) / s - 0.5f; int u0 = (int)floorf(u); float fu = u - u0;
-            float a = samp(e, u0, v0) * (1 - fu) * (1 - fv) + samp(e, u0 + 1, v0) * fu * (1 - fv) +
-                      samp(e, u0, v0 + 1) * (1 - fu) * fv + samp(e, u0 + 1, v0 + 1) * fu * fv;
+            float a = samp3(e, L, R, u0, v0) * (1 - fu) * (1 - fv) + samp3(e, L, R, u0 + 1, v0) * fu * (1 - fv) +
+                      samp3(e, L, R, u0, v0 + 1) * (1 - fu) * fv + samp3(e, L, R, u0 + 1, v0 + 1) * fu * fv;
             /* sharpen the bilinear coverage into a soft-edged shape */
             a = (a - 0.30f) / 0.40f; if (a < 0) a = 0; if (a > 1) a = 1; a = a * a * (3 - 2 * a);
             put(rgb, W, H, (int)ox + dx, (int)oy + dy, col, a);
@@ -187,7 +290,32 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
     for (int i = 0; i < W * H; i++) { rgb[i * 3] = 12; rgb[i * 3 + 1] = 14; rgb[i * 3 + 2] = 28; }
     if (!tc) return 0;
     /* drop cells that are no longer visible */
-    for (int i = 0; i < tc->n; i++) if (!cell_alive(m, &tc->c[i])) { cell_remove(tc, i); i--; }
+    /* a glyph is recorded when its blit starts; the frontend may look at VRAM before the blit has finished,
+     * so a cell is not judged until it has had a moment to appear */
+    for (int i = 0; i < tc->n; i++) {
+        if (m->icount - tc->c[i].born < (uint64_t)m->ips / 20) continue;
+        if (!cell_state(m, &tc->c[i])) { cell_remove(tc, i); i--; }
+    }
+    /* text strips that were copied to the screen: adopt them unless glyphs we already track cover that spot */
+    for (int si = 0; si < tc->nstrip; si++) {
+        struct Strip *ps = &tc->strip[si];
+        int x0 = ps->col * 8, x1 = (ps->col + ps->cx) * 8, y0 = ps->row, y1 = ps->row + ps->rows, blocked = 0;
+        for (int i = 0; i < tc->n && !blocked; i++) {
+            const Cell *e = &tc->c[i];
+            if (!e->tile && e->x < x1 && e->x + e->cx * 8 > x0 && e->y < y1 && e->y + e->rows > y0) blocked = 1;
+        }
+        if (blocked) continue;
+        paint_over(tc, ps->col, ps->cx, ps->row, ps->rows, 1);
+        for (int k = 0; k < ps->cx; k++) {
+            if (!ps->keep[k] || tc->n >= TC_MAX) continue;
+            Cell *e = &tc->c[tc->n++];
+            memset(e, 0, sizeof *e);
+            e->x = (int16_t)((ps->col + k) * 8); e->y = ps->row; e->cx = 1; e->rows = ps->rows; e->fg = ps->ink; e->bg = 0; e->tile = 1; e->born = m->icount;
+            memcpy(e->bits, ps->tile[k], ps->rows);
+            if (!cell_state(m, e)) tc->n--;      /* (judged at once: the copy has already happened) */
+        }
+    }
+    tc->nstrip = 0;
     m->text_on = tc->n > 0;
     if (!tc->n) { tc->n_lead = 0; return 0; }
     const Cell *sorted[TC_MAX];
@@ -262,18 +390,31 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
     int drawn = 0;
     for (int li = first_line; li < ndl; li++, oy += lineh) {
         float ox = (float)MARGIN;
+        int hl = 0; uint8_t barc[3] = {235, 235, 235};
+        for (int q = dl[li].first; q < dl[li].first + dl[li].count; q++)
+            if (items[q].cell && items[q].cell->hl) {
+                hl = 1; uint8_t t[3]; rgb_of(m, items[q].cell->cb, t);
+                if ((t[0] * 3 + t[1] * 6 + t[2]) / 10 >= 150) { barc[0] = t[0]; barc[1] = t[1]; barc[2] = t[2]; }
+            }
+        if (hl) for (int dy = 0; dy < lineh; dy++) for (int dx = 4; dx < W - 4; dx++) put(rgb, W, H, dx, (int)oy + dy, barc, 1.f);
         for (int q = dl[li].first; q < dl[li].first + dl[li].count; q++) {
             const Item *it = &items[q];
             if (it->cell) {
                 uint8_t col[3]; rgb_of(m, it->cell->fg, col);
                 int lum = (col[0] * 3 + col[1] * 6 + col[2]) / 10;
-                if (lum < 170) { col[0] = col[1] = col[2] = 235; }
-                if (it->cell->bg) {
+                if (it->cell->hl) { col[0] = 20; col[1] = 20; col[2] = 40; }
+                else if (lum < 170) { col[0] = col[1] = col[2] = 235; }
+                if (it->cell->bg && !hl) {
                     uint8_t bgc[3]; rgb_of(m, it->cell->bg, bgc);
                     for (int dy = 0; dy < (int)ceilf(it->cell->rows * scale); dy++)
                         for (int dx = 0; dx < (int)ceilf(it->units * 8 * scale); dx++) put(rgb, W, H, (int)ox + dx, (int)oy + dy, bgc, 1.f);
                 }
-                draw_cell(rgb, W, H, it->cell, it->units, scale, ox, oy, col);
+                const Cell *L = NULL, *R = NULL;
+                if (it->cell->tile) {
+                    if (q > dl[li].first && items[q - 1].cell && items[q - 1].cell->tile && items[q - 1].cell->y == it->cell->y && items[q - 1].cell->x + 8 == it->cell->x) L = items[q - 1].cell;
+                    if (q + 1 < dl[li].first + dl[li].count && items[q + 1].cell && items[q + 1].cell->tile && items[q + 1].cell->y == it->cell->y && items[q + 1].cell->x == it->cell->x + 8) R = items[q + 1].cell;
+                }
+                draw_cell(rgb, W, H, it->cell, L, R, it->units, scale, ox, oy, col);
                 drawn++;
             }
             ox += it->units * 8 * scale;

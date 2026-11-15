@@ -26,7 +26,7 @@ u32 __stacksize__ = 0x40000;
 #endif
 static const char *GAME_DIRS[] = { GAME_DIR0, "sdmc:/nonomura", NULL };
 #define IPS_MIN 1200000u
-#define IPS_MAX 6000000u
+#define IPS_MAX 4000000u      /* Auto never runs the emulated CPU faster than the nominal speed: iteration-based delay loops would speed the game up */
 static const uint32_t CPU_FIXED[] = { 0, 2000000, 3000000, 4000000, 5000000, 6000000 };   /* 0 = auto */
 #define N_CPU_MODES 6
 static int cpu_mode = 0, mouse_level = 3;
@@ -114,8 +114,10 @@ static void message_screen(const char *title, const char *body) {
 }
 
 /* ------------------------------------------------------------------ audio */
-#define NWB 6
+#define NWB 8
 #define AFRAMES 1024
+#define PREBUF 4                      /* chunks queued before playback (re)starts: ~65 ms cushion against frame-time jitter */
+static unsigned aud_underruns, aud_dropped;
 static ndspWaveBuf wbuf[NWB];
 static int16_t *abuf;
 static int audio_ok;
@@ -151,27 +153,27 @@ static void audio_set_speed(double ratio) {
     if (r != audio_rate) { audio_rate = r; ndspChnSetRate(0, r); }
 }
 static void audio_pump(Machine *m) {
-    static int16_t scratch[AFRAMES * 2];
     opl_sync(m->opl);
     uint32_t n = opl_available(m->opl);
+    if (!audio_ok) { opl_discard(m->opl, n); return; }
+    /* never throw samples away just because every buffer is busy: they wait in the synth ring for the next frame.
+     * Only a really big backlog (the game ran ahead by >0.2 s) is trimmed, keeping the newest 0.1 s. */
+    if (n > 4410) { opl_discard(m->opl, n - 2205); n = 2205; aud_dropped++; }
     while (n) {
-        uint32_t c = n > AFRAMES ? AFRAMES : n;
         ndspWaveBuf *wb = NULL;
-        if (audio_ok)
-            for (int i = 0; i < NWB; i++)
-                if (wbuf[i].status == NDSP_WBUF_FREE || wbuf[i].status == NDSP_WBUF_DONE) { wb = &wbuf[i]; break; }
-        if (!wb) { opl_mix(m->opl, scratch, c); n -= c; continue; }   /* no free buffer: drop */
+        for (int i = 0; i < NWB; i++)
+            if (wbuf[i].status == NDSP_WBUF_FREE || wbuf[i].status == NDSP_WBUF_DONE) { wb = &wbuf[i]; break; }
+        if (!wb) break;
+        uint32_t c = n > AFRAMES ? AFRAMES : n;
         opl_mix(m->opl, wb->data_pcm16, c);
         DSP_FlushDataCache(wb->data_pcm16, c * 4);
         wb->nsamples = c;
         ndspChnWaveBufAdd(0, wb);
         n -= c;
     }
-    if (!audio_ok) return;
-    /* keep ~3 chunks in flight before (re)starting playback, so ordinary frame-time jitter cannot cause gaps */
     int q = audio_queued();
-    if (audio_started && q == 0) { ndspChnSetPaused(0, true); audio_started = 0; }
-    else if (!audio_started && q >= 3) { ndspChnSetPaused(0, false); audio_started = 1; }
+    if (audio_started && q == 0) { ndspChnSetPaused(0, true); audio_started = 0; aud_underruns++; }   /* ran dry: rebuild the cushion */
+    else if (!audio_started && q >= PREBUF) { ndspChnSetPaused(0, false); audio_started = 1; }
 }
 
 /* ------------------------------------------------------------------ input */
@@ -283,7 +285,7 @@ static void bottom_render(Machine *m) {
 
 /* ------------------------------------------------------------------ pause menu */
 enum { MI_RESUME, MI_TEXT, MI_TOP, MI_CPU, MI_MOUSE, MI_QUIT, MI_COUNT };
-static double stat_speed = 1.0, stat_mips = 0, stat_busy = 0;
+static double stat_speed = 1.0, stat_mips = 0, stat_busy = 0, stat_skip = 0;
 
 static void menu_draw(Machine *m, int sel) {
     const uint16_t fg = C565(235, 235, 235), hi = C565(255, 220, 80), dim = C565(140, 150, 180);
@@ -398,6 +400,7 @@ int main(void) {
 
     u64 win_t0 = svcGetSystemTick(), win_busy = 0, win_v0 = machine_vtime_ns(m), win_i0 = m->icount, win_s0 = m->skipped_total;
     int win_frames = 0, frame = 0, lag_frames = 0, bot_force = 1;
+    u64 pace_t0 = svcGetSystemTick(), pace_v0 = machine_vtime_ns(m);
     uint32_t last_dirty = ~0u, last_gen = ~0u, bot_dirty = ~0u; int last_bot_frame = -100;
     int quit = 0;
 
@@ -406,14 +409,19 @@ int main(void) {
         hidScanInput();
         if (hidKeysDown() & KEY_START) {
             if (pause_menu(m)) break;
-            bot_force = 1; win_t0 = svcGetSystemTick(); win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;
+            bot_force = 1; pace_t0 = svcGetSystemTick(); pace_v0 = machine_vtime_ns(m); win_t0 = svcGetSystemTick(); win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;
             continue;
         }
         if (m->exited) break;
         input_frame(m);
 
-        /* emulate one frame of virtual time, but never spend more than ~75% of a real frame */
-        long want = (long)(m->ips / 60), done = 0;
+        /* Emulate the virtual time that has passed in real life (not a fixed 1/60 s: the screen refreshes at 59.83 Hz and
+         * frames sometimes take longer), so game and music run at true speed and the audio never gets ahead or behind.
+         * Never spend more than ~75% of a real frame, and forget any backlog beyond 50 ms. */
+        double owe = (double)(f0 - pace_t0) / TICKS_PER_SEC - (double)(machine_vtime_ns(m) - pace_v0) / 1e9;
+        if (owe > 0.050) { pace_t0 += (u64)((owe - 0.050) * TICKS_PER_SEC); owe = 0.050; }
+        if (owe < 0) owe = 0;
+        long want = (long)(m->ips * owe), done = 0;
         u64 deadline = f0 + FRAME_TICKS * 75 / 100;
         while (done < want) {
             long c = want - done; if (c > 12000) c = 12000;
@@ -432,6 +440,12 @@ int main(void) {
             last_dirty = m->vga.dirty;
         }
         memcpy(fbTop, topimg, sizeof topimg);
+        if (hidKeysHeld() & KEY_SELECT) {               /* hold SELECT: live performance numbers (for bug reports) */
+            char t[200];
+            snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %d\nunder %u drop %u tc %d",
+                     stat_speed * 100.0, stat_busy * 100.0, stat_mips, m->ips / 1e6, stat_skip * 100.0, audio_queued(), aud_underruns, aud_dropped, textcap_active(m));
+            gtext(fbTop, 400, 2, 2, 46, t, C565(255, 255, 0), C565(0, 0, 0), 1);
+        }
 
         /* bottom screen: large dialogue text (rate limited) */
         uint32_t gen = textcap_gen(m);
@@ -453,6 +467,7 @@ int main(void) {
             double busy = real > 0 ? (double)win_busy / TICKS_PER_SEC / real : 1.0;
             stat_speed = ratio; stat_mips = (double)((m->icount - win_i0) - (m->skipped_total - win_s0)) / real / 1e6;   /* instructions really executed */
             stat_busy = busy;
+            stat_skip = (m->icount - win_i0) ? (double)(m->skipped_total - win_s0) / (double)(m->icount - win_i0) : 0;
             audio_set_speed(ratio);
             if (cpu_mode == 0) {
                 uint32_t n = m->ips;
@@ -466,7 +481,7 @@ int main(void) {
             }
             static int logn;
             if (logn < 40 || (logn % 10) == 0)
-                LOG("speed=%.0f%% busy=%.0f%% exec=%.2f MIPS ips=%u mouse=%d,%d unhandled=%u glyphs=%d tc=%d pc=%04X:%04X mode=%02X vdirty=%u", ratio * 100, busy * 100, stat_mips, m->ips, m->mouse_x, m->mouse_y, (unsigned)m->stat_unhandled, last_glyphs, textcap_active(m), m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, (unsigned)m->vga.dirty);
+                LOG("speed=%.0f%% busy=%.0f%% exec=%.2f MIPS skip=%.0f%% aq=%d under=%u drop=%u ips=%u mouse=%d,%d unhandled=%u glyphs=%d tc=%d pc=%04X:%04X mode=%02X vdirty=%u", ratio * 100, busy * 100, stat_mips, stat_skip * 100, audio_queued(), aud_underruns, aud_dropped, m->ips, m->mouse_x, m->mouse_y, (unsigned)m->stat_unhandled, last_glyphs, textcap_active(m), m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, (unsigned)m->vga.dirty);
             if (m->con_len) { static int lastcl; if (m->con_len != lastcl) { LOG("console: %s", m->con); lastcl = m->con_len; } }
             logn++;
             win_t0 = now; win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;

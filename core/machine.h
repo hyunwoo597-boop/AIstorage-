@@ -46,7 +46,7 @@ struct Machine {
     int poll_force;                                  /* frontend: CPU is struggling, accelerate idle polls even without text */
     int text_on;                                     /* the engine has text on screen (set by textcap) */
     int poll_streak;                                 /* consecutive input polls that found nothing new */
-    uint64_t skip_acc, skipped_total;                /* virtual instructions skipped by idle detection */
+    uint64_t skip_acc, skipped_total, skip_cap;                /* virtual instructions skipped by idle detection */
     struct TextCap *tc;
     /* devices */
     VGA vga;
@@ -131,4 +131,5 @@ void opl_mix(OPL *o, int16_t *out, int frames);   /* stereo interleaved */
 void opl_free(OPL *o);
 void opl_sync(OPL *o);                      /* render up to the machine's current virtual time */
 uint32_t opl_available(OPL *o);
+void opl_discard(OPL *o, uint32_t frames);    /* drop the oldest rendered frames */
 #endif

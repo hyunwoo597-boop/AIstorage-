@@ -284,6 +284,7 @@ void opl_attach(OPL *o, opl_clock_fn now_ns, void *ctx) { o->now_ns = now_ns; o-
 
 /* frames available / pull */
 uint32_t opl_available(OPL *o) { return o->wr - o->rd; }
+void opl_discard(OPL *o, uint32_t frames) { uint32_t a = o->wr - o->rd; o->rd += frames > a ? a : frames; }
 void opl_mix(OPL *o, int16_t *out, int frames) {
     for (int i = 0; i < frames; i++) {
         if (o->rd == o->wr) { out[i * 2] = out[i * 2 + 1] = 0; continue; }

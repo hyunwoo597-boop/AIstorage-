@@ -5,6 +5,7 @@
 void stub_input(int scan, u32 *held, touchPosition *tp, circlePosition *cp) {
     *held = 0; memset(tp, 0, sizeof *tp); memset(cp, 0, sizeof *cp);
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 3) return;
+    if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 5) { if (scan >= 850 && scan < 960) *held |= KEY_SELECT; return; }
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 4) {      /* open menu, move to item 2, change it, dump while open */
         if (scan >= 880 && scan < 884) *held |= KEY_START;
         if (scan >= 920 && scan < 923) *held |= KEY_DDOWN;

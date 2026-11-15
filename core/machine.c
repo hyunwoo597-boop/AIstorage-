@@ -158,7 +158,9 @@ void machine_set_ips(Machine *m, uint32_t ips) {
     m->vt_base_ns = machine_vtime_ns(m); m->ic_base = m->icount; m->ips = ips;
 }
 
-void machine_skip(Machine *m, uint32_t instr) { m->icount += instr; m->skip_acc += instr; m->skipped_total += instr; }
+void machine_skip(Machine *m, uint32_t instr) {
+    if (instr > m->skip_cap) instr = (uint32_t)m->skip_cap;
+    m->icount += instr; m->skip_acc += instr; m->skipped_total += instr; }
 /* Non-blocking input polls (mouse, key-available) that keep finding nothing mean the game is waiting for the player.
  * Loops that poll while nothing is shown (loading, intros) are left alone because some of them use the poll count as a delay. */
 #define POLL_STREAK_MIN 600
@@ -178,6 +180,7 @@ int machine_run(Machine *m, int max_instr) {
     CPU *c = &m->cpu;
     uint32_t per = pit_period(m);
     while (done < max_instr && !m->exited) {
+        m->skip_cap = (uint64_t)(max_instr - done);      /* idle skipping must not run past this frame's share of virtual time */
         int n = cpu_step(c);
         if (!n) { /* halted: skip ahead to next timer tick */
             uint64_t next = m->pit_last_irq + per;
