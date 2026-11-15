@@ -175,12 +175,16 @@ static int ktext(uint16_t *fb, int fbw, int x, int y, int maxw, const char *s, u
     return y + KF_LH;
 }
 
-/* Title picture on the top screen (240x240, centred) with a line of text on the bottom screen.  Both buffers are written (call it
- * twice while nothing else is drawing) so it stays up while the game files load. */
+/* Title picture on the top screen: a stereo pair (400x240 left-eye and right-eye images), shown in 3D when the 3D slider is up (the slider is
+ * read here too: the game's own 3D handling only starts after the title screen), plus a line of text on the bottom screen.  Both buffers
+ * are written (call it twice while nothing else is drawing) so it stays up while the game files load. */
+static int splash_3d;
 static void splash_frame(const char *bottom, const char *bottom2, uint16_t col) {
+    int on = osGet3DSliderState() > 0.02f;
+    if (on != splash_3d) { splash_3d = on; gfxSet3D(on); }
     fb_get();
-    fill(fbTop, 400, 0);
-    for (int x = 0; x < SPLASH_W; x++) memcpy(fbTop + (80 + x) * 240, SPLASH + x * 240, 240 * sizeof(uint16_t));
+    memcpy(fbTop, SPLASH_L, sizeof SPLASH_L);
+    if (on) memcpy(fbTopR, SPLASH_R, sizeof SPLASH_R);
     fill(fbBot, 320, C565(10, 10, 30));
     ktext(fbBot, 320, (320 - kwidth(bottom) - 2) / 2, bottom2 ? 96 : 108, 304, bottom, col, 1);
     if (bottom2) ktext(fbBot, 320, (320 - kwidth(bottom2) - 2) / 2, 96 + KF_LH + 8, 304, bottom2, C565(170, 190, 230), 0);
@@ -809,6 +813,7 @@ int main(void) {
             if (a_seen && !(hidKeysHeld() & (KEY_A | KEY_TOUCH))) break;
         }
     }
+    if (splash_3d) { splash_3d = 0; gfxSet3D(false); }      /* the game's own 3D switch (s3d_update) takes over from here */
     top_clear();
 
     u64 win_t0 = svcGetSystemTick(), win_busy = 0, win_v0 = machine_vtime_ns(m), win_i0 = m->icount, win_s0 = m->skipped_total;
