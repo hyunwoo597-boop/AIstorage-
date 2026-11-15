@@ -27,6 +27,8 @@ SD:/3ds/nonomura.3dsx          ← 빌드된 홈브루 파일
 SD:/3ds/nonomura/              ← 게임 파일 전부 (SILV1.COM, SILV.EXE, MUSICV.COM, SAGWA.*, FLAG*, SILK*.DAT ...)
 ```
 
+**설치형(CIA)**: `nonomura.cia`를 FBI 등으로 설치하면 HOME 메뉴에 아이콘/배너로 나타납니다(타이틀 ID `0004000000FA3D10`). 게임 파일 위치는 같습니다(`SD:/3ds/nonomura/`). CIA 는 New 3DS 804MHz·L2 캐시와 SD 카드 접근 권한을 앱 정보(`ctr/nonomura.rsf`)에 직접 적어 둡니다. 소리를 내려면 홈브루 때와 마찬가지로 `SD:/3ds/dspfirm.cdc`(DSP 펌웨어 덤프)가 있어야 합니다.
+
 세이브(FLAG0~8, SILK*.DAT)는 게임 폴더(`SD:/3ds/nonomura/`)에 그대로 저장됩니다.
 문제가 생기면 같은 폴더의 `nono_log.txt`를 확인하세요 (속도/오류 기록).
 
@@ -47,7 +49,7 @@ SD:/3ds/nonomura/              ← 게임 파일 전부 (SILV1.COM, SILV.EXE, MU
 
 ## 빌드
 
-GitHub Actions(`.github/workflows/build.yml`)가 `ctr/nonomura.3dsx`를 만들어 줍니다.
+GitHub Actions(`.github/workflows/build.yml`)가 `ctr/nonomura.3dsx`를 만들고, 이어서 같은 프로그램(ELF)을 makerom 으로 `nonomura.cia`로 감쌉니다(배너는 `ctr/banner.png`·`banner.wav` 를 bannertool 로 변환; 원래 bannertool 저장소가 사라져 `Epicpkmn11/bannertool` 포크를 받아 빌드). 두 파일 모두 릴리스 `latest`에 올라갑니다.
 로컬 빌드: devkitARM + libctru 설치 후 `make -C ctr`.
 
 ## 구조
