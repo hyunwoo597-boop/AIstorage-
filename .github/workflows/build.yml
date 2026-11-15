@@ -63,10 +63,19 @@ jobs:
       - name: Get bannertool
         run: |
           # (the original Steveice10/bannertool repository is gone; try the maintained forks in turn)
-          for repo in Epicpkmn11/bannertool carstene1ns/3ds-bannertool lifehackerhansol/bannertool Steveice10/bannertool; do
+          git config --global url."https://github.com/".insteadOf git://github.com/
+          export GIT_TERMINAL_PROMPT=0
+          for repo in Epicpkmn11/bannertool carstene1ns/3ds-bannertool; do
             echo "== $repo"
             rm -rf tools-bt
-            if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --recursive "https://github.com/$repo.git" tools-bt && make -C tools-bt -j"$(nproc)"; then
+            git clone --depth 1 "https://github.com/$repo.git" tools-bt || continue
+            if [ -f tools-bt/.gitmodules ] && ! git -C tools-bt submodule update --init --depth 1; then
+              echo "-- submodule failed, trying the buildtools fork"
+              rm -rf tools-bt/buildtools
+              git clone --depth 1 https://github.com/Epicpkmn11/buildtools.git tools-bt/buildtools || continue
+            fi
+            ls tools-bt tools-bt/buildtools 2>/dev/null | head -n 40
+            if make -C tools-bt -j"$(nproc)"; then
               bt="$(find tools-bt -type f -name bannertool -perm -u+x | head -n 1)"
               if [ -n "$bt" ]; then cp "$bt" ./bannertool && echo "using $repo" && break; fi
             fi
