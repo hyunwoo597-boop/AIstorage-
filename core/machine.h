@@ -26,8 +26,9 @@ typedef struct OPL OPL;
 /* ---------------- DOS ---------------- */
 typedef struct {
     FILE *fp;      /* NULL = closed */
-    int dev;       /* 0 none, 1 EMM device, 2 console/null */
+    int dev;       /* 0 none, 1 EMM device, 2 console/null, 3 read-only file served from the RAM cache (mem/msize/mpos) */
     uint16_t psp;
+    const uint8_t *mem; uint32_t msize, mpos;
 } DosFile;
 
 struct Machine {
@@ -119,6 +120,7 @@ void vga_set_mode(Machine *m, int mode);
 void vga_render(Machine *m, uint8_t *rgb565_or_idx, int *w, int *h);
 /* dos */
 void dos_init(Machine *m);
+void dos_cache_preload(Machine *m);     /* read the big read-only data files into RAM (no SD-card stalls while playing) */
 int  dos_exec(Machine *m, const char *name, const char *args);
 void hle_call(Machine *m, int id);
 /* opl */

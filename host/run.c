@@ -43,6 +43,10 @@ static void wr_dbg(Machine *m, uint32_t off) {
 }
 
 static FILE *glog;
+#ifdef OPL_TRACE
+static FILE *otr;
+void opl_trace_hook(uint64_t us, int bank, int reg, int val) { if (otr) fprintf(otr, "%llu %d %d %d\n", (unsigned long long)us, bank, reg, val); }
+#endif
 static int16_t *wavbuf; static long wavn, wavcap;
 static void drain_audio(Machine *m) {
     opl_sync(m->opl);
@@ -76,6 +80,7 @@ int main(int argc, char **argv) {
     m->verbose = getenv("NV") ? atoi(getenv("NV")) : 0;
     int oplrate = getenv("OPLRATE") ? atoi(getenv("OPLRATE")) : 32728; m->opl = opl_new(oplrate); opl_attach(m->opl, (opl_clock_fn)machine_vtime_ns, m);
     textcap_init(m); if (!getenv("NOIDLE")) idle_init(m);
+    if (!getenv("NOCACHE")) dos_cache_preload(m);
     if (dos_exec(m, "MUSICV.COM", "") < 0) return 2;
     long total = 0; int guard = 0;
     while (!m->exited && total < 20000000) { total += machine_run(m, 100000); if (++guard > 400) break; }
@@ -83,6 +88,9 @@ int main(int argc, char **argv) {
     if (dos_exec(m, "SILV1.COM", "main.mes D D") < 0) return 3;
     if (getenv("SCRIPT")) parse_script(getenv("SCRIPT"));
     if (getenv("WATCH")) m->vga_wr_dbg = wr_dbg;
+#ifdef OPL_TRACE
+    if (getenv("OPLTRACE")) otr = fopen(getenv("OPLTRACE"), "w");
+#endif
     int bp_set = 0; if (getenv("GLOG")) glog = fopen(getenv("GLOG"), "w");
     if (getenv("WAV")) { wavcap = (long)oplrate * 120; wavbuf = malloc(wavcap * 4); }
     long dump_every = getenv("DUMPEVERY") ? atol(getenv("DUMPEVERY")) * 1000000L : 5000000L;
@@ -106,6 +114,9 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[host] SILV1 exited=%d code=%d after %ld instr  CS:IP=%04X:%04X mode=%02X unhandled=%u\n", m->exited, m->exit_code, done, m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, m->stat_unhandled);
     dump_ppm(m, "/tmp/final.ppm");
     if (getenv("WATCH")) { fprintf(stderr, "[watch] total writes in text rows: %ld\n", wh_total); for (int i = 0; i < nwh; i++) fprintf(stderr, "[watch] %04X:%04X n=%ld off=%05X..%05X\n", wh[i].cs, wh[i].ip, wh[i].n, wh[i].omin, wh[i].omax); }
+#ifdef OPL_TRACE
+    if (otr) fclose(otr);
+#endif
     fprintf(stderr, "[host] psp=%04X opl_writes=%ld\n", m->exit_psp, opl_dbg_writes);
     if (getenv("WAV") && wavbuf) { FILE *f = fopen(getenv("WAV"), "wb"); uint32_t dl = (uint32_t)wavn * 4, v32; uint16_t v16;
         fwrite("RIFF", 1, 4, f); v32 = 36 + dl; fwrite(&v32, 4, 1, f); fwrite("WAVEfmt ", 1, 8, f); v32 = 16; fwrite(&v32, 4, 1, f);

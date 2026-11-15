@@ -6,6 +6,12 @@ void stub_input(int scan, u32 *held, touchPosition *tp, circlePosition *cp) {
     *held = 0; memset(tp, 0, sizeof *tp); memset(cp, 0, sizeof *cp);
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 3) return;
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 5) { if (scan >= 850 && scan < 960) *held |= KEY_SELECT; return; }
+    if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 8) {      /* open menu, go to "Sound test", run it, resume */
+        if (scan >= 880 && scan < 884) *held |= KEY_START;
+        for (int i = 0; i < 7; i++) if (scan >= 900 + 4 * i && scan < 902 + 4 * i) *held |= KEY_DDOWN;
+        if (scan >= 940 && scan < 942) *held |= KEY_A;
+        if (scan >= 1000 && scan < 1003) *held |= KEY_START;
+        return; }
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 4) {      /* open menu, move to item 2, change it, dump while open */
         if (scan >= 880 && scan < 884) *held |= KEY_START;
         if (scan >= 920 && scan < 923) *held |= KEY_DDOWN;

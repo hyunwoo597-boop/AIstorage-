@@ -30,7 +30,10 @@ static inline void gfxSetDoubleBuffering(gfxScreen_t s, bool e) { _dbl[s] = e; }
 static inline u8 *gfxGetFramebuffer(gfxScreen_t s, gfx3dSide_t sd, u16 *w, u16 *h) { return (u8 *)_fb[s][_cur[s]]; }
 static inline void gfxFlushBuffers(void) {}
 static inline void gfxSwapBuffers(void) { for (int s = 0; s < 2; s++) if (_dbl[s]) _cur[s] ^= 1; }
-static inline void gspWaitForVBlank(void) { _frame++; if (_slow > 1) { u64 fr = SYSCLOCK_ARM11 / 60, now = svcGetSystemTick(), nb = (now / fr + 1) * fr; while (svcGetSystemTick() < nb) usleep(200); } }
+static void _dsp_run(double dt);
+static int _stallp, _stallms, _stall_seeded;
+static inline void gspWaitForVBlank(void) { int n = 1; if (_stallp) { if (!_stall_seeded) { srand(getenv("STUB_SEED") ? atoi(getenv("STUB_SEED")) : 1); _stall_seeded = 1; } if (rand() % 1000 < _stallp) n += (int)(_stallms * 59.83 / 1000.0 + 0.5); } _frame += n; _dsp_run(n / 59.83);
+    if (_slow > 1) { u64 fr = SYSCLOCK_ARM11 / 60, now = svcGetSystemTick(), nb = (now / fr + 1) * fr; while (svcGetSystemTick() < nb) usleep(200); } }
 static inline void osSetSpeedupEnable(bool e) {}
 static inline Result APT_CheckNew3DS(bool *o) { *o = true; return 0; }
 static int _script_frames; static int _scans;
@@ -49,10 +52,29 @@ typedef struct tag_ndspWaveBuf { union { s16 *data_pcm16; const void *data_vaddr
 enum { NDSP_WBUF_FREE, NDSP_WBUF_QUEUED, NDSP_WBUF_PLAYING, NDSP_WBUF_DONE };
 enum { NDSP_OUTPUT_STEREO, NDSP_INTERP_LINEAR, NDSP_FORMAT_STEREO_PCM16 };
 static long _audio_frames; static int _wb_age[16];
+/* DSP model: consumes the queued wave buffers in real (frame-clock) time; gaps are written as silence */
+static int _dsp_paused = 1, _dsp_n, _dsp_pos, _dsp_in_under, _dsp_started; static double _dsp_rate = 32728.498, _dsp_acc; static ndspWaveBuf *_dsp_q[256];
+static long _dsp_under_events, _dsp_under_samples, _dsp_played; static FILE *_dsp_out;
+static void _dsp_run(double dt) {
+    if (!_dsp_out && getenv("STUB_AUDIO")) _dsp_out = fopen(getenv("STUB_AUDIO"), "wb");
+    if (_dsp_paused) return;
+    _dsp_acc += dt * _dsp_rate; int whole = (int)_dsp_acc; _dsp_acc -= whole;
+    while (whole > 0) {
+        if (!_dsp_n) {
+            if (_dsp_started) { _dsp_under_samples += whole; if (!_dsp_in_under) { _dsp_under_events++; _dsp_in_under = 1; } }
+            static int16_t z[2048 * 2]; while (whole > 0) { int c = whole > 2048 ? 2048 : whole; if (_dsp_out) fwrite(z, 4, c, _dsp_out); whole -= c; }
+            break; }
+        ndspWaveBuf *b = _dsp_q[0]; b->status = 2;
+        int left = (int)b->nsamples - _dsp_pos, take = whole < left ? whole : left;
+        if (_dsp_out) fwrite(b->data_pcm16 + _dsp_pos * 2, 4, take, _dsp_out);
+        _dsp_pos += take; whole -= take; _dsp_played += take; _dsp_in_under = 0; _dsp_started = 1;
+        if (_dsp_pos >= (int)b->nsamples) { b->status = 3; for (int i = 1; i < _dsp_n; i++) _dsp_q[i - 1] = _dsp_q[i]; _dsp_n--; _dsp_pos = 0; }
+    }
+}
 static inline Result ndspInit(void) { return 0; } static inline void ndspExit(void) {}
-static inline void ndspSetOutputMode(int m) {} static inline void ndspChnReset(int c) {} static inline void ndspChnSetInterp(int c, int t) {} static inline void ndspChnSetPaused(int c, bool p) {}
-static inline void ndspChnSetRate(int c, float r) {} static inline void ndspChnSetFormat(int c, u16 f) {} static inline void ndspChnSetMix(int c, float *m) {}
-static inline void ndspChnWaveBufAdd(int c, ndspWaveBuf *b) { _audio_frames += b->nsamples; b->status = NDSP_WBUF_DONE;
-    { static FILE *af; if (!af && getenv("STUB_AUDIO")) af = fopen(getenv("STUB_AUDIO"), "wb"); if (af) fwrite(b->data_pcm16, 4, b->nsamples, af); } }
+static inline void ndspSetOutputMode(int m) {} static inline void ndspChnReset(int c) {} static inline void ndspChnSetInterp(int c, int t) {}
+static inline void ndspChnSetPaused(int c, bool p) { _dsp_paused = p; }
+static inline void ndspChnSetRate(int c, float r) { _dsp_rate = r; } static inline void ndspChnSetFormat(int c, u16 f) {} static inline void ndspChnSetMix(int c, float *m) {}
+static inline void ndspChnWaveBufAdd(int c, ndspWaveBuf *b) { _audio_frames += b->nsamples; if (b->status == 1 || b->status == 2) return; b->status = 1; if (_dsp_n < 256) _dsp_q[_dsp_n++] = b; }
 static inline void *linearAlloc(size_t n) { return malloc(n); } static inline void linearFree(void *p) { free(p); }
 static inline Result DSP_FlushDataCache(const void *a, u32 n) { return 0; }

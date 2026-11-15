@@ -471,6 +471,9 @@ void opl_write(OPL *o, uint16_t port, uint8_t v) {
     if (port & 1) opl_dbg_writes++;
     if (!(port & 1)) { o->idx[hi] = v; return; }
     opl_sync(o);
+#ifdef OPL_TRACE
+    { extern void opl_trace_hook(uint64_t us, int bank, int reg, int val); opl_trace_hook(usec(o), hi, o->idx[hi], v); }
+#endif
     int bank = hi;
     int reg = o->idx[hi];
     if (!o->newmode && hi == 1 && reg != 5) { /* second bank is only reachable after OPL3 enable, but allow writing 0x105 */ }

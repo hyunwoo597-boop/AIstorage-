@@ -32,6 +32,7 @@ static const uint32_t CPU_FIXED[] = { 0, 2000000, 3000000, 4000000, 5000000, 600
 static int cpu_mode = 0, mouse_level = 3;
 static int win_hide = 1;              /* 1: while the engine's message window is up, the top screen shows only the picture (the text is on the bottom screen) */
 static int win_state, win_cand, win_cnt, win_force;   /* current view, candidate view, frames the candidate has held, redraw request */
+static int pic_mode = PIC_FILL;       /* picture-only top view: PIC_FILL / PIC_STRETCH / PIC_FIT */
 static int top_zoom = 1;              /* 1: 640x400 game area stretched over the whole top screen, 0: original 4:3 picture */
 static int text_size = 1;             /* bottom-screen text: 0 large, 1 medium, 2 small, 3 tiny */
 static const float TEXT_SCALE[] = { 2.0f, 1.5f, 1.25f, 1.0f };
@@ -39,7 +40,7 @@ static const char *TEXT_NAME[] = { "Large", "Medium", "Small", "Tiny" };
 static char cfg_path[320];
 static void cfg_save(void) {
     FILE *f = fopen(cfg_path, "w"); if (!f) return;
-    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\nwin_hide=%d\n", cpu_mode, mouse_level, top_zoom, text_size, win_hide);
+    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\nwin_hide=%d\npic_mode=%d\n", cpu_mode, mouse_level, top_zoom, text_size, win_hide, pic_mode);
     fclose(f);
 }
 static void cfg_load(void) {
@@ -50,6 +51,7 @@ static void cfg_load(void) {
         else if (sscanf(line, "mouse_level=%d", &v) == 1 && v >= 1 && v <= 5) mouse_level = v;
         else if (sscanf(line, "top_zoom=%d", &v) == 1) top_zoom = v ? 1 : 0;
         else if (sscanf(line, "win_hide=%d", &v) == 1) win_hide = v ? 1 : 0;
+        else if (sscanf(line, "pic_mode=%d", &v) == 1 && v >= 0 && v < 3) pic_mode = v;
         else if (sscanf(line, "text_size=%d", &v) == 1 && v >= 0 && v < 4) text_size = v;
     }
     fclose(f);
@@ -121,9 +123,12 @@ static void message_screen(const char *title, const char *body) {
 #define NDSP_SAMPLE_RATE 32728.498          /* the DSP's own rate: playing at exactly this rate needs no resampling on the DSP side */
 #endif
 #define AUD_RATE 32728                       /* synth output rate (integer; the DSP consumes 0.0015% faster, which the pump absorbs) */
-#define NWB 8
+#define NWB 32
 #define AFRAMES 1024
-#define PREBUF 4                      /* chunks queued before playback (re)starts: ~65 ms cushion against frame-time jitter */
+/* The emulation runs LEAD_S ahead of real time, so that much sound is always queued at the DSP.  A frame that takes
+ * long (SD card access, a big redraw, a save) then only eats into that reserve instead of making the music stop. */
+#define LEAD_S 0.25
+#define START_FRAMES (AUD_RATE * 15 / 100)  /* playback (re)starts once this much is queued */
 static unsigned aud_underruns, aud_dropped;
 static ndspWaveBuf wbuf[NWB];
 static int16_t *abuf;
@@ -151,21 +156,29 @@ static int audio_queued(void) {
     for (int i = 0; i < NWB; i++) if (wbuf[i].status == NDSP_WBUF_QUEUED || wbuf[i].status == NDSP_WBUF_PLAYING) n++;
     return n;
 }
-/* playback speed follows the emulation speed, so a machine that cannot keep up sounds slow instead of crackling */
+static uint32_t audio_queued_frames(void) {
+    uint32_t n = 0;
+    for (int i = 0; i < NWB; i++) if (wbuf[i].status == NDSP_WBUF_QUEUED || wbuf[i].status == NDSP_WBUF_PLAYING) n += wbuf[i].nsamples;
+    return n;
+}
+/* Only a machine that is chronically slower than real time gets its sound slowed down to match (short dips are
+ * absorbed by the queued reserve; changing the pitch for them would itself sound broken). */
 static void audio_set_speed(double ratio) {
     if (!audio_ok) return;
     if (ratio > 1.0) ratio = 1.0;
     if (ratio < 0.5) ratio = 0.5;
-    float r = ratio >= 0.97 ? (float)NDSP_SAMPLE_RATE : (float)(NDSP_SAMPLE_RATE * ratio);
+    float r = ratio >= 0.93 ? (float)NDSP_SAMPLE_RATE : (float)(NDSP_SAMPLE_RATE * ratio);
     if (r != audio_rate) { audio_rate = r; ndspChnSetRate(0, r); }
 }
 static void audio_pump(Machine *m) {
     opl_sync(m->opl);
     uint32_t n = opl_available(m->opl);
     if (!audio_ok) { opl_discard(m->opl, n); return; }
+    /* the DSP ran completely dry since the last frame: stop, and wait until a reserve has been rebuilt */
+    if (audio_started && audio_queued() == 0) { ndspChnSetPaused(0, true); audio_started = 0; aud_underruns++; }
     /* never throw samples away just because every buffer is busy: they wait in the synth ring for the next frame.
-     * Only a really big backlog (the game ran ahead by >0.2 s) is trimmed, keeping the newest 0.1 s. */
-    if (n > AUD_RATE / 5) { opl_discard(m->opl, n - AUD_RATE / 10); n = AUD_RATE / 10; aud_dropped++; }
+     * Only an absurd backlog is trimmed (keeping the newest 0.25 s). */
+    if (n > AUD_RATE * 2 / 5) { opl_discard(m->opl, n - AUD_RATE / 4); n = AUD_RATE / 4; aud_dropped++; }
     while (n) {
         ndspWaveBuf *wb = NULL;
         for (int i = 0; i < NWB; i++)
@@ -178,9 +191,46 @@ static void audio_pump(Machine *m) {
         ndspChnWaveBufAdd(0, wb);
         n -= c;
     }
-    int q = audio_queued();
-    if (audio_started && q == 0) { ndspChnSetPaused(0, true); audio_started = 0; aud_underruns++; }   /* ran dry: rebuild the cushion */
-    else if (!audio_started && q >= PREBUF) { ndspChnSetPaused(0, false); audio_started = 1; }
+    if (!audio_started && audio_queued_frames() >= START_FRAMES) { ndspChnSetPaused(0, false); audio_started = 1; }
+}
+/* the pause menu does not run the emulator: let the queue play out silently and start clean afterwards */
+static void audio_hold(void) {
+    if (!audio_ok) return;
+    ndspChnSetPaused(0, true); audio_started = 0;
+}
+/* Sound test (pause menu): a clean tone sequence straight through the same DSP path, independent of the emulation.
+ * Clean here but distorted in the game = the problem is in the emulated music, not in the 3DS audio output. */
+static void audio_test(void) {
+    if (!audio_ok) return;
+    u64 t0 = svcGetSystemTick();
+    ndspChnSetPaused(0, false); audio_started = 0;                       /* let whatever is still queued play out first */
+    while (audio_queued() && svcGetSystemTick() - t0 < TICKS_PER_SEC) gspWaitForVBlank();
+    ndspChnSetPaused(0, true);
+    static const float notes[] = { 261.63f, 329.63f, 392.00f, 523.25f, 392.00f, 329.63f, 261.63f };
+    const int per = AUD_RATE * 4 / 10;                                   /* 0.4 s per note */
+    double ph = 0; int idx = 0, left = per, nn = (int)(sizeof notes / sizeof notes[0]), bi = 0, queued = 0;
+    while (idx < nn) {
+        ndspWaveBuf *wb = &wbuf[bi % NWB];
+        u64 w0 = svcGetSystemTick();
+        while ((wb->status == NDSP_WBUF_QUEUED || wb->status == NDSP_WBUF_PLAYING) && svcGetSystemTick() - w0 < TICKS_PER_SEC) gspWaitForVBlank();
+        int c = left < AFRAMES ? left : AFRAMES;
+        for (int i = 0; i < c; i++) {
+            float env = 1.0f; int pos = per - left + i;
+            if (pos < 1500) env = pos / 1500.0f;
+            if (per - pos < 1500) env = (per - pos) / 1500.0f;
+            int16_t v = (int16_t)(sinf((float)ph) * 9000.0f * env);
+            ph += 2.0 * 3.14159265358979 * notes[idx] / AUD_RATE;
+            wb->data_pcm16[i * 2] = wb->data_pcm16[i * 2 + 1] = v;
+        }
+        if (ph > 1e6) ph = fmod(ph, 2.0 * 3.14159265358979);
+        DSP_FlushDataCache(wb->data_pcm16, (u32)c * 4);
+        wb->nsamples = c; ndspChnWaveBufAdd(0, wb); bi++; queued++;
+        if (queued == 3) ndspChnSetPaused(0, false);
+        left -= c; if (left <= 0) { idx++; left = per; ph = 0; }
+    }
+    t0 = svcGetSystemTick();
+    while (audio_queued() && svcGetSystemTick() - t0 < 4 * TICKS_PER_SEC) gspWaitForVBlank();
+    ndspChnSetPaused(0, true); audio_started = 0;
 }
 
 /* ------------------------------------------------------------------ input */
@@ -272,7 +322,7 @@ static void input_release_all(Machine *m) {
 static uint16_t topimg[400 * 240];      /* last rendered game frame for the top screen (column-major, 400x240) */
 static void top_render(Machine *m) {
     if (win_hide && win_state) {                          /* message window up: picture only, the text lives on the bottom screen */
-        if (top_zoom) vgascale_render_picture(m, topimg);
+        if (top_zoom) vgascale_render_picture(m, topimg, pic_mode);
         else {
             vgascale_render(m, topimg, 40);
             for (int x = 0; x < 400; x++) memset(topimg + x * 240, 0, 64 * sizeof(uint16_t));      /* picture rows 176..239 = the window strip */
@@ -298,15 +348,11 @@ static void bottom_render(Machine *m) {
     const uint8_t *p = botrgb;
     for (int y = 0; y < 240; y++)
         for (int x = 0; x < 320; x++, p += 3) fbBot[x * 240 + (239 - y)] = C565(p[0], p[1], p[2]);
-    if (!last_glyphs) {
-        const uint16_t dim = C565(120, 130, 160);
-        gtext(fbBot, 320, 8, 150, 38, "Dialogue appears here in large type.", dim, -1, 1);
-        gtext(fbBot, 320, 8, 170, 38, "A:click  B:right-click  X:Enter  Y:Esc\nD-pad:arrows  L:Ctrl  R:Space\nCircle pad / touch drag: mouse\nZL/ZR: slow/fast mouse  START: menu", dim, -1, 1);
-    }
 }
 
 /* ------------------------------------------------------------------ pause menu */
-enum { MI_RESUME, MI_TEXT, MI_TOP, MI_WIN, MI_CPU, MI_MOUSE, MI_QUIT, MI_COUNT };
+enum { MI_RESUME, MI_TEXT, MI_TOP, MI_WIN, MI_PIC, MI_CPU, MI_MOUSE, MI_SND, MI_QUIT, MI_COUNT };
+static const char *PIC_NAME[] = { "Fill", "Stretch", "Fit" };
 static double stat_speed = 1.0, stat_mips = 0, stat_busy = 0, stat_skip = 0;
 
 static void menu_draw(Machine *m, int sel) {
@@ -326,6 +372,8 @@ static void menu_draw(Machine *m, int sel) {
         case MI_TEXT: snprintf(line, sizeof line, "Bottom text size: %s", TEXT_NAME[text_size]); break;
         case MI_TOP: snprintf(line, sizeof line, "Top screen: %s", top_zoom ? "Zoom (fill)" : "Original 4:3"); break;
         case MI_WIN: snprintf(line, sizeof line, "Top: dialogue window: %s", win_hide ? "Hidden" : "Shown"); break;
+        case MI_PIC: snprintf(line, sizeof line, "Top picture (no window): %s", PIC_NAME[pic_mode]); break;
+        case MI_SND: snprintf(line, sizeof line, "Sound test (plays a tone)"); break;
         default: snprintf(line, sizeof line, "Quit game"); break;
         }
         char buf[72]; snprintf(buf, sizeof buf, "%c %s", i == sel ? '>' : ' ', line);
@@ -333,9 +381,9 @@ static void menu_draw(Machine *m, int sel) {
         y += 14;
     }
     char st[200];
-    snprintf(st, sizeof st, "Speed %3.0f%%   CPU %2.0f%%   %.1f MIPS\nunhandled ops: %u   capture: %s\nSaves + log: SD:/3ds/nonomura/",
-             stat_speed * 100.0, stat_busy * 100.0, stat_mips, (unsigned)m->stat_unhandled, textcap_active(m) ? "on" : "OFF");
-    gtext(fbBot, 320, 8, 176, 38, st, dim, -1, 1);
+    snprintf(st, sizeof st, "Speed %3.0f%%   CPU %2.0f%%   %.1f MIPS\nsound gaps: %u  unhandled: %u  capture: %s\nSaves + log: SD:/3ds/nonomura/",
+             stat_speed * 100.0, stat_busy * 100.0, stat_mips, aud_underruns, (unsigned)m->stat_unhandled, textcap_active(m) ? "on" : "OFF");
+    gtext(fbBot, 320, 8, 180, 38, st, dim, -1, 1);
     gtext(fbBot, 320, 8, 224, 38, "D-pad: select  A: ok  B/START: resume", dim, -1, 1);
 }
 
@@ -344,6 +392,7 @@ static int text_changed;
 static int pause_menu(Machine *m) {
     int sel = 0;
     input_release_all(m);
+    audio_hold();
     while (aptMainLoop()) {
         fb_get();
         menu_draw(m, sel);
@@ -364,6 +413,8 @@ static int pause_menu(Machine *m) {
         if (sel == MI_TEXT && (dir || (d & KEY_A))) { text_size = (text_size + (dir ? dir : 1) + 4) % 4; textcap_set_max_scale(TEXT_SCALE[text_size]); text_changed = 1; }
         if (sel == MI_TOP && (dir || (d & KEY_A))) { top_zoom ^= 1; top_clear(); top_render(m); }
         if (sel == MI_WIN && (dir || (d & KEY_A))) { win_hide ^= 1; win_cand = win_state = win_hide && vgascale_window_up(m); win_cnt = 0; top_clear(); top_render(m); }
+        if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 3) % 3; top_clear(); top_render(m); }
+        if (sel == MI_SND && (d & KEY_A)) { gtext(fbBot, 320, 10, 160, 38, "Playing...", C565(255, 220, 80), -1, 1); present(); audio_test(); }
         if (sel == MI_RESUME && (d & KEY_A)) { cfg_save(); return 0; }
         if (sel == MI_QUIT && (d & KEY_A)) { cfg_save(); return 1; }
     }
@@ -414,6 +465,8 @@ int main(void) {
     fb_get(); fill(fbBot, 320, C565(10, 10, 30));
     gtext(fbBot, 320, 8, 100, 38, "Loading...", C565(230, 230, 230), -1, 2);
     fill(fbTop, 400, 0); present(); fb_get(); fill(fbTop, 400, 0); present();
+    dos_cache_preload(m);              /* the big data files go into RAM: no SD-card stalls (and sound dropouts) while playing */
+    LOG("data cached");
 
     if (dos_exec(m, "MUSICV.COM", "") < 0) { LOG("MUSICV.COM missing"); message_screen("MUSICV.COM not found", "The music driver MUSICV.COM must be in the game folder."); goto done; }
     { long total = 0; int guard = 0; while (!m->exited && total < 20000000 && ++guard < 400) total += machine_run(m, 100000);
@@ -425,6 +478,7 @@ int main(void) {
     u64 win_t0 = svcGetSystemTick(), win_busy = 0, win_v0 = machine_vtime_ns(m), win_i0 = m->icount, win_s0 = m->skipped_total;
     int win_frames = 0, frame = 0, lag_frames = 0, bot_force = 1;
     u64 pace_t0 = svcGetSystemTick(), pace_v0 = machine_vtime_ns(m);
+    double pace_lead = audio_ok ? LEAD_S : 0;      /* how far the emulation runs ahead of real time (see LEAD_S) */
     uint32_t last_dirty = ~0u, last_gen = ~0u, bot_dirty = ~0u; int last_bot_frame = -100;
     int quit = 0;
 
@@ -433,6 +487,7 @@ int main(void) {
         hidScanInput();
         if (hidKeysDown() & KEY_START) {
             if (pause_menu(m)) break;
+            pace_lead = audio_ok ? LEAD_S - (double)audio_queued_frames() / AUD_RATE : 0; if (pace_lead < 0) pace_lead = 0;   /* sound still queued from before the pause counts as lead */
             bot_force = 1; pace_t0 = svcGetSystemTick(); pace_v0 = machine_vtime_ns(m); win_t0 = svcGetSystemTick(); win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;
             continue;
         }
@@ -442,8 +497,8 @@ int main(void) {
         /* Emulate the virtual time that has passed in real life (not a fixed 1/60 s: the screen refreshes at 59.83 Hz and
          * frames sometimes take longer), so game and music run at true speed and the audio never gets ahead or behind.
          * Never spend more than ~75% of a real frame, and forget any backlog beyond 50 ms. */
-        double owe = (double)(f0 - pace_t0) / TICKS_PER_SEC - (double)(machine_vtime_ns(m) - pace_v0) / 1e9;
-        if (owe > 0.050) { pace_t0 += (u64)((owe - 0.050) * TICKS_PER_SEC); owe = 0.050; }
+        double owe = (double)(f0 - pace_t0) / TICKS_PER_SEC + pace_lead - (double)(machine_vtime_ns(m) - pace_v0) / 1e9;
+        if (owe > pace_lead + 0.050) { pace_t0 += (u64)((owe - pace_lead - 0.050) * TICKS_PER_SEC); owe = pace_lead + 0.050; }
         if (owe < 0) owe = 0;
         long want = (long)(m->ips * owe), done = 0;
 #ifdef STUB_JITTER      /* test builds only: end frames at random points to provoke mid-redraw renders */
@@ -470,8 +525,8 @@ int main(void) {
         memcpy(fbTop, topimg, sizeof topimg);
         if (hidKeysHeld() & KEY_SELECT) {               /* hold SELECT: live performance numbers (for bug reports) */
             char t[200];
-            snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %d\nunder %u drop %u tc %d",
-                     stat_speed * 100.0, stat_busy * 100.0, stat_mips, m->ips / 1e6, stat_skip * 100.0, audio_queued(), aud_underruns, aud_dropped, textcap_active(m));
+            snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %dms\nunder %u drop %u tc %d",
+                     stat_speed * 100.0, stat_busy * 100.0, stat_mips, m->ips / 1e6, stat_skip * 100.0, (int)(audio_queued_frames() * 1000ull / AUD_RATE), aud_underruns, aud_dropped, textcap_active(m));
             gtext(fbTop, 400, 2, 2, 46, t, C565(255, 255, 0), C565(0, 0, 0), 1);
         }
 
@@ -510,7 +565,7 @@ int main(void) {
             }
             static int logn;
             if (logn < 40 || (logn % 10) == 0)
-                LOG("speed=%.0f%% busy=%.0f%% exec=%.2f MIPS skip=%.0f%% aq=%d under=%u drop=%u ips=%u mouse=%d,%d unhandled=%u glyphs=%d tc=%d pc=%04X:%04X mode=%02X vdirty=%u", ratio * 100, busy * 100, stat_mips, stat_skip * 100, audio_queued(), aud_underruns, aud_dropped, m->ips, m->mouse_x, m->mouse_y, (unsigned)m->stat_unhandled, last_glyphs, textcap_active(m), m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, (unsigned)m->vga.dirty);
+                LOG("speed=%.0f%% busy=%.0f%% exec=%.2f MIPS skip=%.0f%% aq=%dms under=%u drop=%u ips=%u mouse=%d,%d unhandled=%u glyphs=%d tc=%d pc=%04X:%04X mode=%02X vdirty=%u", ratio * 100, busy * 100, stat_mips, stat_skip * 100, (int)(audio_queued_frames() * 1000ull / AUD_RATE), aud_underruns, aud_dropped, m->ips, m->mouse_x, m->mouse_y, (unsigned)m->stat_unhandled, last_glyphs, textcap_active(m), m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, (unsigned)m->vga.dirty);
             if (m->con_len) { static int lastcl; if (m->con_len != lastcl) { LOG("console: %s", m->con); lastcl = m->con_len; } }
             logn++;
             win_t0 = now; win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;

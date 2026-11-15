@@ -272,6 +272,48 @@ int dos_exec(Machine *m, const char *name, const char *args) {
 }
 
 /* ------------------------------------------------------------- files */
+/* ------------------------------------------------------------- RAM cache for the big read-only data files
+ * The game streams its pictures / scripts from several 1 MB archives with many small reads and seeks.  On a 3DS every
+ * such read is a round trip to the SD card (tens of milliseconds for one picture), which freezes the whole emulator -
+ * and with it the sound.  Files opened read-only are therefore loaded into RAM once and served from there. */
+#define CACHE_MIN_FILE   (48u * 1024)
+#define CACHE_MAX_FILE   (6u * 1024 * 1024)
+#define CACHE_MAX_TOTAL  (14u * 1024 * 1024)
+#define CACHE_SLOTS      24
+static struct { char path[300]; uint8_t *data; uint32_t size; } fcache[CACHE_SLOTS];
+static uint32_t fcache_total;
+static void cache_drop(const char *host) {
+    for (int i = 0; i < CACHE_SLOTS; i++)
+        if (fcache[i].data && !strcmp(fcache[i].path, host)) { /* not freed: an open handle may still point into it */ fcache_total -= fcache[i].size; memset(&fcache[i], 0, sizeof fcache[i]); }
+}
+static int cache_lookup(const char *host, const uint8_t **data, uint32_t *size) {
+    for (int i = 0; i < CACHE_SLOTS; i++)
+        if (fcache[i].data && !strcmp(fcache[i].path, host)) { *data = fcache[i].data; *size = fcache[i].size; return 1; }
+    int slot = -1;
+    for (int i = 0; i < CACHE_SLOTS; i++) if (!fcache[i].data) { slot = i; break; }
+    if (slot < 0 || strlen(host) >= sizeof fcache[0].path) return 0;
+    FILE *f = fopen(host, "rb"); if (!f) return 0;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (sz < (long)CACHE_MIN_FILE || sz > (long)CACHE_MAX_FILE || fcache_total + (uint32_t)sz > CACHE_MAX_TOTAL) { fclose(f); return 0; }
+    uint8_t *buf = malloc((size_t)sz); if (!buf) { fclose(f); return 0; }
+    size_t got = 0;
+    while (got < (size_t)sz) { size_t c = (size_t)sz - got; if (c > 131072) c = 131072; size_t r = fread(buf + got, 1, c, f); if (!r) break; got += r; }
+    fclose(f);
+    if (got != (size_t)sz) { free(buf); return 0; }
+    snprintf(fcache[slot].path, sizeof fcache[slot].path, "%s", host);
+    fcache[slot].data = buf; fcache[slot].size = (uint32_t)sz; fcache_total += (uint32_t)sz;
+    *data = buf; *size = (uint32_t)sz; return 1;
+}
+void dos_cache_preload(Machine *m) {
+    DIR *d = opendir(m->gamedir); if (!d) return;
+    struct dirent *e; char host[600];
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(host, sizeof host, "%s/%s", m->gamedir, e->d_name);
+        const uint8_t *p; uint32_t sz; cache_lookup(host, &p, &sz);
+    }
+    closedir(d);
+}
 static int alloc_handle(Machine *m) { for (int i = 5; i < MAX_FILES; i++) if (!m->files[i].fp && !m->files[i].dev) return i; return -1; }
 
 static void dos_terminate(Machine *m, int code, int keep_paras) {
@@ -282,7 +324,7 @@ static void dos_terminate(Machine *m, int code, int keep_paras) {
     } else {
         mcb_free_owner(m, psp);
     }
-    for (int i = 5; i < MAX_FILES; i++) if (m->files[i].fp && m->files[i].psp == psp) { fclose(m->files[i].fp); m->files[i].fp = NULL; }
+    for (int i = 5; i < MAX_FILES; i++) if ((m->files[i].fp || m->files[i].dev == 3) && m->files[i].psp == psp) { if (m->files[i].fp) fclose(m->files[i].fp); m->files[i].fp = NULL; m->files[i].mem = NULL; m->files[i].dev = 0; }
     m->exit_code = code; m->exit_psp = psp; m->exited = 1;
     m->cur_psp = rd16(m, psp, 0x16);
 }
@@ -329,6 +371,15 @@ static void int21(Machine *m) {
         if (!strcasecmp(name, "EMMXXXX0")) { int h = alloc_handle(m); if (h < 0) { dos_err(m, 4); return; } m->files[h].dev = 1; m->files[h].psp = m->cur_psp; c->r[AX] = h; hret(m, 0); return; }
         int ex = resolve_path(m, name, host, sizeof host);
         FILE *f;
+        if (ah == 0x3D && ex && (al & 3) == 0) {          /* read-only: serve big data files from the RAM cache */
+            const uint8_t *cd; uint32_t cs;
+            if (cache_lookup(host, &cd, &cs)) {
+                int h = alloc_handle(m); if (h < 0) { dos_err(m, 4); return; }
+                if (m->verbose) fprintf(stderr, "[dos] cached open %s (%u bytes)\n", host, (unsigned)cs);
+                m->files[h].fp = NULL; m->files[h].dev = 3; m->files[h].mem = cd; m->files[h].msize = cs; m->files[h].mpos = 0; m->files[h].psp = m->cur_psp;
+                c->r[AX] = h; hret(m, 0); return;
+            }
+        } else cache_drop(host);                           /* the file may be modified: forget any cached copy */
         if (ah == 0x3C) f = fopen(host, "w+b");
         else f = ex ? fopen(host, (al & 3) == 0 ? "rb" : "r+b") : NULL;
         if (!f && ah == 0x3D && ex && (al & 3) != 0) f = fopen(host, "rb");
@@ -338,10 +389,17 @@ static void int21(Machine *m) {
         c->r[AX] = h; hret(m, 0); return; }
     case 0x3E: { int h = c->r[BX]; if (h < 0 || h >= MAX_FILES) { dos_err(m, 6); return; }
         if (m->files[h].fp) { fclose(m->files[h].fp); m->files[h].fp = NULL; }
+        if (m->files[h].dev == 3) m->files[h].mem = NULL;
         if (h >= 5) m->files[h].dev = 0;
         hret(m, 0); return; }
     case 0x3F: { int h = c->r[BX]; uint16_t n = c->r[CX];
         if (h < 0 || h >= MAX_FILES || (!m->files[h].fp && !m->files[h].dev)) { dos_err(m, 6); return; }
+        if (m->files[h].dev == 3) {
+            DosFile *df = &m->files[h]; uint32_t left = df->msize > df->mpos ? df->msize - df->mpos : 0, got = n < left ? n : left;
+            uint16_t o = c->r[DX]; const uint8_t *src = df->mem + df->mpos;
+            for (uint32_t i = 0; i < got; i++) mem_wb(m, LIN(c->seg[DS], (uint16_t)(o + i)), src[i]);
+            df->mpos += got; c->r[AX] = (uint16_t)got; hret(m, 0); return;
+        }
         if (!m->files[h].fp) { c->r[AX] = 0; hret(m, 0); return; }
         static uint8_t tmp[65536]; size_t got = fread(tmp, 1, n, m->files[h].fp);
         uint32_t a = LIN(c->seg[DS], c->r[DX]); uint16_t o = c->r[DX];
@@ -353,9 +411,14 @@ static void int21(Machine *m) {
         static uint8_t tmp[65536]; for (int i = 0; i < n; i++) tmp[i] = rd8(m, c->seg[DS], c->r[DX] + i);
         size_t w = n ? fwrite(tmp, 1, n, m->files[h].fp) : 0; fflush(m->files[h].fp);
         c->r[AX] = (uint16_t)w; hret(m, 0); return; }
-    case 0x41: read_asciiz(m, c->seg[DS], c->r[DX], name, sizeof name); if (resolve_path(m, name, host, sizeof host) && remove(host) == 0) hret(m, 0); else dos_err(m, 2); return;
-    case 0x42: { int h = c->r[BX]; if (h < 0 || h >= MAX_FILES || !m->files[h].fp) { dos_err(m, 6); return; }
+    case 0x41: read_asciiz(m, c->seg[DS], c->r[DX], name, sizeof name); if (resolve_path(m, name, host, sizeof host)) cache_drop(host); if (resolve_path(m, name, host, sizeof host) && remove(host) == 0) hret(m, 0); else dos_err(m, 2); return;
+    case 0x42: { int h = c->r[BX]; if (h < 0 || h >= MAX_FILES || (!m->files[h].fp && m->files[h].dev != 3)) { dos_err(m, 6); return; }
         long off = (int32_t)(((uint32_t)c->r[CX] << 16) | c->r[DX]); int wh = al == 0 ? SEEK_SET : al == 1 ? SEEK_CUR : SEEK_END;
+        if (m->files[h].dev == 3) {
+            DosFile *df = &m->files[h]; long base = wh == SEEK_SET ? 0 : wh == SEEK_CUR ? (long)df->mpos : (long)df->msize;
+            long np = base + off; if (np < 0) np = 0; df->mpos = (uint32_t)np;
+            c->r[AX] = np & 0xFFFF; c->r[DX] = (np >> 16) & 0xFFFF; hret(m, 0); return;
+        }
         fseek(m->files[h].fp, off, wh); long p = ftell(m->files[h].fp); c->r[AX] = p & 0xFFFF; c->r[DX] = (p >> 16) & 0xFFFF; hret(m, 0); return; }
     case 0x43: read_asciiz(m, c->seg[DS], c->r[DX], name, sizeof name);
         if (!resolve_path(m, name, host, sizeof host)) { dos_err(m, 2); return; }
@@ -370,7 +433,7 @@ static void int21(Machine *m) {
         case 8: c->r[AX] = 1; hret(m, 0); return;
         default: hret(m, 0); return; } }
     case 0x45: { int h = c->r[BX]; int n = alloc_handle(m); if (n < 0 || h < 0 || h >= MAX_FILES) { dos_err(m, 4); return; }
-        m->files[n].dev = m->files[h].dev; m->files[n].fp = m->files[h].fp; m->files[n].psp = m->cur_psp; c->r[AX] = n; hret(m, 0); return; }
+        m->files[n] = m->files[h]; m->files[n].psp = m->cur_psp; c->r[AX] = n; hret(m, 0); return; }
     case 0x48: { uint16_t req = c->r[BX]; uint16_t s = mcb_alloc(m, req, m->cur_psp);
         if (!s) { c->r[BX] = mcb_largest(m); dos_err(m, 8); return; } c->r[AX] = s; hret(m, 0); return; }
     case 0x49: mcb_free(m, c->seg[ES]); hret(m, 0); return;

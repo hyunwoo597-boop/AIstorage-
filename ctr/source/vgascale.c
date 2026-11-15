@@ -124,10 +124,13 @@ void vgascale_render_zoom(Machine *m, uint16_t *fb) {
 }
 
 /* ------------------------------------------------------------------------------------------------
- * Picture-only view (the message window is shown on the bottom screen instead). */
+ * Picture-only view (the message window is shown on the bottom screen instead).
+ *   PIC_FILL    : crops the ornamental frame and a little of the sides, then scales the rest over the WHOLE top screen
+ *                 (direct bilinear from the full-resolution picture, so it stays sharp; a slight vertical stretch).
+ *   PIC_STRETCH : the whole picture incl. its frame stretched over the whole top screen.
+ *   PIC_FIT     : the whole picture at its own aspect ratio with black bars above and below. */
 #define PIC_ROW0 40
-#define PIC_ROWS 296                         /* 148 rows after the 2x2 filter -> x1.25 = 185 rows at 400 wide */
-#define PIC_H    185
+#define PIC_ROWS 296                         /* 148 rows after the 2x2 filter */
 
 int vgascale_window_up(Machine *m) {
     VGA *v = &m->vga;
@@ -145,14 +148,65 @@ int vgascale_window_up(Machine *m) {
     return 1;
 }
 
-void vgascale_render_picture(Machine *m, uint16_t *fb) {
+#define FILL_X0 64                           /* inside the picture's frame: x 64..575, rows 57..313 of the 640x480 screen */
+#define FILL_W  512
+#define FILL_Y0 57
+#define FILL_H  257
+static uint16_t fillsrc[FILL_W * FILL_H];
+
+static void render_fill(Machine *m, uint16_t *fb) {
+    if (!tables_ready) init_tables();
+    VGA *v = &m->vga;
+    uint8_t pal[16][3]; uint16_t c565[16];
+    vga_palette16(m, pal);
+    for (int i = 0; i < 16; i++) c565[i] = (uint16_t)(((pal[i][0] >> 3) << 11) | ((pal[i][1] >> 2) << 5) | (pal[i][2] >> 3));
+    int pitch = v->crtc[0x13] * 2; if (!pitch) pitch = 80;
+    uint32_t start = (v->crtc[0xC] << 8) | v->crtc[0xD];
+    const uint8_t *pl0 = v->plane[0], *pl1 = v->plane[1], *pl2 = v->plane[2], *pl3 = v->plane[3];
+    for (int y = 0; y < FILL_H; y++) {
+        uint32_t row = start + (uint32_t)(FILL_Y0 + y) * pitch + FILL_X0 / 8;
+        uint16_t *o = fillsrc + y * FILL_W;
+        for (int bx = 0; bx < FILL_W / 8; bx++) {
+            uint32_t r = (row + bx) & 0xFFFF;
+            uint32_t q = SPL[0][pl0[r]] | SPL[1][pl1[r]] | SPL[2][pl2[r]] | SPL[3][pl3[r]];
+            for (int k = 0; k < 4; k++) { uint32_t b = (q >> (8 * k)) & 0xFF; *o++ = c565[b >> 4]; *o++ = c565[b & 15]; }
+        }
+    }
+    static uint16_t fx0[400], fx1[400], fy0[240], fy1[240]; static uint8_t fwx[400], fwy[240]; static int ready;
+    if (!ready) {
+        for (int ox = 0; ox < 400; ox++) {
+            float s = ((float)ox + 0.5f) * ((float)FILL_W / 400.f) - 0.5f; if (s < 0) s = 0; if (s > FILL_W - 1) s = FILL_W - 1;
+            int i = (int)s; fwx[ox] = (uint8_t)((s - i) * 32.f + 0.5f); fx0[ox] = (uint16_t)i; fx1[ox] = (uint16_t)(i + 1 < FILL_W ? i + 1 : i);
+        }
+        for (int oy = 0; oy < 240; oy++) {
+            float s = ((float)oy + 0.5f) * ((float)FILL_H / 240.f) - 0.5f; if (s < 0) s = 0; if (s > FILL_H - 1) s = FILL_H - 1;
+            int i = (int)s; fwy[oy] = (uint8_t)((s - i) * 32.f + 0.5f); fy0[oy] = (uint16_t)i; fy1[oy] = (uint16_t)(i + 1 < FILL_H ? i + 1 : i);
+        }
+        ready = 1;
+    }
+    for (int oy = 0; oy < 240; oy++) {
+        const uint16_t *r0 = fillsrc + fy0[oy] * FILL_W, *r1 = fillsrc + fy1[oy] * FILL_W;
+        uint32_t wy = fwy[oy];
+        uint16_t *o = fb + (239 - oy);
+        for (int ox = 0; ox < 400; ox++, o += 240) {
+            uint32_t wx = fwx[ox], x0 = fx0[ox], x1 = fx1[ox];
+            uint32_t t = (EXP565(r0[x0]) * (32 - wx) + EXP565(r0[x1]) * wx) >> 5;
+            uint32_t b = (EXP565(r1[x0]) * (32 - wx) + EXP565(r1[x1]) * wx) >> 5;
+            uint32_t s = (((t & MASK565) * (32 - wy) + (b & MASK565) * wy) >> 5) & MASK565;
+            *o = (uint16_t)(s | (s >> 16));
+        }
+    }
+}
+
+void vgascale_render_picture(Machine *m, uint16_t *fb, int mode) {
+    if (mode == PIC_FILL) { render_fill(m, fb); return; }
     if (!zoom_tables_ready) init_zoom_tables();
     stage1(m, mid, PIC_ROW0, PIC_ROWS / 2);
-    const int mh = PIC_ROWS / 2, y0 = (240 - PIC_H) / 2;
+    const int mh = PIC_ROWS / 2, ph = mode == PIC_STRETCH ? 240 : 185, y0 = (240 - ph) / 2;
     for (int oy = 0; oy < 240; oy++) {
         uint16_t *o = fb + (239 - oy);
-        if (oy < y0 || oy >= y0 + PIC_H) { for (int ox = 0; ox < 400; ox++, o += 240) *o = 0; continue; }
-        float sy = ((float)(oy - y0) + 0.5f) * ((float)mh / PIC_H) - 0.5f; if (sy < 0) sy = 0; if (sy > mh - 1) sy = (float)(mh - 1);
+        if (oy < y0 || oy >= y0 + ph) { for (int ox = 0; ox < 400; ox++, o += 240) *o = 0; continue; }
+        float sy = ((float)(oy - y0) + 0.5f) * ((float)mh / ph) - 0.5f; if (sy < 0) sy = 0; if (sy > mh - 1) sy = (float)(mh - 1);
         int i = (int)sy; uint32_t wy = (uint32_t)((sy - i) * 32.f + 0.5f);
         const uint16_t *r0 = mid + i * MID_W, *r1 = mid + (i + 1 < mh ? i + 1 : i) * MID_W;
         for (int ox = 0; ox < 400; ox++, o += 240) {
