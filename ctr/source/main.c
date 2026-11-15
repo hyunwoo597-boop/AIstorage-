@@ -754,7 +754,7 @@ static void menu_draw(Machine *m, int sel) {
             else if (s3d_slider < 0.03f) snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더를 올리세요)", S3D_NAME[s3d_level]);
             else snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더 %d%%)", S3D_NAME[s3d_level], (int)(s3d_slider * 100.f + 0.5f));
             break;
-        case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터+테두리" : "배경깊이+캐릭터"); break;
+        case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터+테두리" : "배경+캐릭터"); break;
         default: snprintf(line, sizeof line, "게임 종료"); break;
         }
         if (i == sel) frect(fbBot, 320, 3, y - 1, 314, step, bar);
