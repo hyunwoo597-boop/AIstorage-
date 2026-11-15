@@ -1,8 +1,10 @@
 /* OPL2 / OPL3 (YM3812 / YMF262) FM synthesizer + timers.
  *
- * Output is generated directly at the host rate (default 22050 Hz) in lock-step with the emulated
- * machine's virtual time: every register write first renders samples up to "now", so the sound
- * stays aligned with the game no matter how fast the host actually runs.
+ * The chip is synthesized at its own sample rate (49716 Hz) in lock-step with the emulated machine's
+ * virtual time (every register write first renders up to "now", so the sound stays aligned with the game no
+ * matter how fast the host actually runs).  A windowed-sinc resampler then converts the chip output to the
+ * host rate.  (Synthesizing directly at a lower rate folds the FM harmonics above the new Nyquist back into
+ * the audible range, which sounds harsh and "broken".)
  *
  * Operator maths (log-sine / exp tables, envelope units, key scaling, feedback, 4-op algorithms)
  * follow the documented behaviour of the YMF262; envelopes use simple time-based rate tables
@@ -14,6 +16,11 @@
 #include <stdio.h>
 
 #define RING_FRAMES 16384            /* power of two */
+#define CHIP_RATE   49716.0
+#define ENV_DIV     4                /* envelopes advance every 4th chip sample (12.4 kHz: far finer than any envelope) */
+#define NT          24               /* resampler taps */
+#define NPH         256              /* resampler sub-sample phases */
+#define CS_N        64               /* chip-sample history (power of two) */
 
 enum { ST_OFF = 0, ST_ATTACK, ST_DECAY, ST_SUSTAIN, ST_RELEASE };
 
@@ -23,6 +30,10 @@ typedef struct {
     int32_t env;                      /* attenuation, 16.16 fixed point, 0 .. 511<<16 */
     uint8_t state, key;
     int out, prout;
+    /* derived from the registers (refresh_op) */
+    uint32_t inc;                     /* phase increment per chip sample */
+    int att0;                         /* total level + key-scale attenuation */
+    uint8_t wfe, er_ar, er_dr, er_rr; /* effective waveform and envelope rates */
 } Op;
 
 typedef struct {
@@ -32,25 +43,28 @@ typedef struct {
 } Chan;
 
 struct OPL {
-    int rate;
+    int rate;                         /* output rate */
     opl_clock_fn now_ns; void *clk_ctx;
     /* registers kept for timers & misc */
     uint8_t regs[512];
     uint8_t idx[2];
     uint8_t status;
     uint64_t t1_start, t2_start; int t1_run, t2_run;
-    /* synthesis */
+    /* synthesis (chip rate) */
     Op op[36]; Chan ch[18];
     uint8_t newmode, nts, dam, dvb, rhy, conn4;
-    uint32_t vibpos_acc, trem_acc; int vibpos, trempos;
-    uint64_t gen_samples;
+    uint32_t vib_cnt, trem_cnt, tick, zero_run; int vibpos, trempos, trem;
+    uint32_t dirty_ch; int dirty_all;     /* operators whose derived values must be recomputed */
+    /* resampler: chip -> output rate */
+    int32_t cs[CS_N][2]; uint64_t chip_n;
+    uint64_t pos_q32, step_q32;
+    int16_t kern[NPH][NT];
+    uint64_t gen_samples;                 /* output samples produced */
     /* ring */
     int16_t ring[RING_FRAMES * 2]; uint32_t rd, wr;
-    /* derived tables */
-    double chip_ratio;                 /* 49716 / rate */
-    uint32_t ratio_q16;
-    int32_t dec_step[64];              /* per-sample decay step (16.16) by effective rate */
-    int32_t att_alpha[64];             /* per-sample attack coefficient (0.16) */
+    /* derived tables (per envelope step) */
+    int32_t dec_step[64];              /* per-step decay (16.16) by effective rate */
+    int32_t att_alpha[64];             /* per-step attack coefficient (0.16) */
 };
 
 /* ------------------------------------------------------------------ tables */
@@ -70,13 +84,13 @@ static void init_tables(void) {
     tables_ready = 1;
 }
 
-static inline int exp_out(int level) {
+static inline __attribute__((always_inline)) int exp_out(int level) {
     if (level > 0x1FFF) level = 0x1FFF;
     return (exptab[level & 0xFF] << 1) >> (level >> 8);
 }
 
 /* waveform: returns signed amplitude for a 10-bit phase and an attenuation (in 1/256 octave units) */
-static int wave(int wf, int ph, int att) {
+static inline __attribute__((always_inline)) int wave(int wf, int ph, int att) {
     ph &= 0x3FF;
     int neg = 0, lv;
     switch (wf) {
@@ -97,7 +111,7 @@ static int wave(int wf, int ph, int att) {
 
 /* ------------------------------------------------------------------ derived rate tables */
 static void build_rates(OPL *o) {
-    double fs = o->rate;
+    double fs = CHIP_RATE / ENV_DIV;
     for (int r = 0; r < 64; r++) {
         if (r < 4) { o->dec_step[r] = 0; o->att_alpha[r] = 0; continue; }
         double f = pow(2.0, (r - 4) / 4.0);
@@ -111,11 +125,31 @@ static void build_rates(OPL *o) {
     }
 }
 
-/* ------------------------------------------------------------------ channel / operator helpers */
-static inline int ch_op(int ch, int which) {            /* operator index of channel's op `which` (0/1) */
-    int bank = ch / 9, n = ch % 9, grp = n / 3, pos = n % 3;
-    return bank * 18 + grp * 6 + pos + which * 3;
+/* windowed-sinc kernel table for the chip -> output resampler (cut-off a little under the output Nyquist) */
+static double bessel_i0(double x) {
+    double s = 1, t = 1; for (int k = 1; k < 40; k++) { t *= (x / (2 * k)) * (x / (2 * k)); s += t; }
+    return s;
 }
+static void build_kernel(OPL *o) {
+    double fc = 0.5 * (o->rate < CHIP_RATE ? o->rate / CHIP_RATE : 1.0) * 0.90;      /* cycles per chip sample */
+    const double beta = 6.5, L = NT / 2.0, i0b = bessel_i0(beta);
+    for (int ph = 0; ph < NPH; ph++) {
+        double frac = (ph + 0.5) / NPH, row[NT], sum = 0;
+        for (int j = 0; j < NT; j++) {
+            double t = (j - (NT / 2 - 1)) - frac;
+            double x = 2 * fc * t, sinc = fabs(x) < 1e-9 ? 1.0 : sin(M_PI * x) / (M_PI * x);
+            double r = t / L, w = fabs(r) < 1.0 ? bessel_i0(beta * sqrt(1.0 - r * r)) / i0b : 0.0;
+            row[j] = 2 * fc * sinc * w; sum += row[j];
+        }
+        for (int j = 0; j < NT; j++) o->kern[ph][j] = (int16_t)lround(row[j] / sum * 32768.0);
+    }
+}
+
+/* ------------------------------------------------------------------ channel / operator helpers */
+static const uint8_t CHOP[18][2] = {                    /* operator index of channel's op 0/1 */
+    {0, 3}, {1, 4}, {2, 5}, {6, 9}, {7, 10}, {8, 11}, {12, 15}, {13, 16}, {14, 17},
+    {18, 21}, {19, 22}, {20, 23}, {24, 27}, {25, 28}, {26, 29}, {30, 33}, {31, 34}, {32, 35} };
+static inline int ch_op(int ch, int which) { return CHOP[ch][which]; }
 
 static int eff_rate(const Op *p, const Chan *c, int nts, int reg_rate) {
     if (!reg_rate) return 0;
@@ -130,6 +164,35 @@ static int ksl_att(const Op *p, const Chan *c) {
     return v >> kslshift[p->ksl];
 }
 
+/* Recompute what depends on registers (pitch, vibrato, level, rates).  Done when a register changes (and when the
+ * vibrato LFO moves), not for every sample. */
+static void refresh_op(OPL *o, Op *p, const Chan *c) {
+    int fnum = c->fnum;
+    if (p->vib) {
+        int range = (fnum >> 7) & 7, vp = o->vibpos;
+        if (!(vp & 3)) range = 0; else if (vp & 1) range >>= 1;
+        range >>= (o->dvb ? 0 : 1);
+        if (vp & 4) range = -range;
+        fnum += range;
+    }
+    uint64_t base = (((uint64_t)fnum << c->block) >> 1) * mult_x2[p->mult] >> 1;
+    p->inc = (uint32_t)(base * 8192ull);
+    p->att0 = (p->tl << 2) + ksl_att(p, c);
+    p->wfe = (uint8_t)(o->newmode ? p->wf : (p->wf & 3));
+    p->er_ar = (uint8_t)eff_rate(p, c, o->nts, p->ar);
+    p->er_dr = (uint8_t)eff_rate(p, c, o->nts, p->dr);
+    p->er_rr = (uint8_t)eff_rate(p, c, o->nts, p->rr);
+}
+static void refresh_ch(OPL *o, int ch) {
+    Chan *c = o->ch[ch].second ? &o->ch[ch - 3] : &o->ch[ch];      /* 4-op: all operators follow the first channel */
+    for (int w = 0; w < 2; w++) refresh_op(o, &o->op[ch_op(ch, w)], c);
+}
+static void mark_ch(OPL *o, int ch) {
+    o->dirty_ch |= 1u << ch;
+    if (o->ch[ch].is4op && ch + 3 < 18) o->dirty_ch |= 1u << (ch + 3);
+}
+static int ch_of_slot(int bank, int slot) { return bank * 9 + (slot / 6) * 3 + slot % 3; }
+
 static void key_on(OPL *o, int ch) {
     Chan *c = &o->ch[ch];
     for (int w = 0; w < 2; w++) {
@@ -137,6 +200,7 @@ static void key_on(OPL *o, int ch) {
         p->key = 1; p->state = ST_ATTACK; p->phase = 0;
         if (eff_rate(p, c, o->nts, p->ar) >= 60) p->env = 0;
     }
+    mark_ch(o, ch);
 }
 static void key_off(OPL *o, int ch) {
     for (int w = 0; w < 2; w++) {
@@ -145,99 +209,95 @@ static void key_off(OPL *o, int ch) {
     }
 }
 
-static void env_step(OPL *o, Op *p, const Chan *c) {
+static void env_step(OPL *o, Op *p) {
     int sl = p->sl == 15 ? 31 : p->sl;
     switch (p->state) {
     case ST_ATTACK: {
-        int r = eff_rate(p, c, o->nts, p->ar);
+        int r = p->er_ar;
         if (r >= 60) { p->env = 0; p->state = ST_DECAY; break; }
-        if (r) { int64_t d = ((int64_t)p->env * o->att_alpha[r]) >> 16; p->env -= (int32_t)(d < 4096 ? 4096 : d); }
+        if (r) { int64_t d = ((int64_t)p->env * o->att_alpha[r]) >> 16; p->env -= (int32_t)(d < 7168 ? 7168 : d); }
         if (p->env <= (1 << 16)) { p->env = 0; p->state = ST_DECAY; }
         break; }
     case ST_DECAY: {
         if ((p->env >> 20) >= sl) { p->state = ST_SUSTAIN; break; }
-        p->env += o->dec_step[eff_rate(p, c, o->nts, p->dr)];
+        p->env += o->dec_step[p->er_dr];
         break; }
     case ST_SUSTAIN:
-        if (!p->egt) p->env += o->dec_step[eff_rate(p, c, o->nts, p->rr)];
+        if (!p->egt) p->env += o->dec_step[p->er_rr];
         break;
     case ST_RELEASE:
-        p->env += o->dec_step[eff_rate(p, c, o->nts, p->rr)];
+        p->env += o->dec_step[p->er_rr];
         break;
     default: break;
     }
-    if (p->env >= (511 << 16)) { p->env = 511 << 16; if (p->state == ST_RELEASE || p->state == ST_SUSTAIN) p->state = p->key ? p->state : ST_OFF; }
-}
-
-/* ------------------------------------------------------------------ per-sample synthesis */
-typedef struct { int vib_range_shift; int trem; } Lfo;
-
-static inline void phase_adv(OPL *o, Op *p, const Chan *c, int vibrato_pos) {
-    int fnum = c->fnum;
-    if (p->vib) {
-        int range = (fnum >> 7) & 7;
-        if (!(vibrato_pos & 3)) range = 0; else if (vibrato_pos & 1) range >>= 1;
-        range >>= (o->dvb ? 0 : 1);
-        if (vibrato_pos & 4) range = -range;
-        fnum += range;
+    if (p->env >= (511 << 16)) {
+        p->env = 511 << 16;
+        if ((p->state == ST_RELEASE || p->state == ST_SUSTAIN) && !p->key) { p->state = ST_OFF; p->out = p->prout = 0; }
     }
-    uint64_t base = (((uint64_t)fnum << c->block) >> 1) * mult_x2[p->mult] >> 1;
-    p->phase += (uint32_t)((base * o->ratio_q16 * 8192ull) >> 16);
 }
 
-static inline int op_eval(OPL *o, Op *p, const Chan *c, int mod, int trem) {
-    int e = (p->env >> 16) + (p->tl << 2) + ksl_att(p, c) + (p->am ? trem : 0);
-    if (e > 0x1FF) e = 0x1FF;
-    int wf = o->newmode ? p->wf : (p->wf & 3);
-    return wave(wf, (int)(p->phase >> 22) + mod, e << 3);
+/* ------------------------------------------------------------------ per-sample synthesis (chip rate) */
+static inline int op_eval(Op *p, int mod, int trem) {
+    int e = (p->env >> 16) + p->att0 + (p->am ? trem : 0);
+    if (e >= 384) return 0;                         /* attenuated beyond 12 bits: the exp table gives exactly 0 */
+    int ph = ((int)(p->phase >> 22) + mod) & 0x3FF;
+    if (p->wfe == 0) {                              /* plain sine, by far the most common */
+        int lv = logsin[(ph & 0x100) ? ((ph & 0xFF) ^ 0xFF) : (ph & 0xFF)] + (e << 3);
+        if (lv > 0x1FFF) lv = 0x1FFF;
+        int v = (exptab[lv & 0xFF] << 1) >> (lv >> 8);
+        return (ph & 0x200) ? -v : v;
+    }
+    return wave(p->wfe, ph, e << 3);
 }
 
-static void gen_sample(OPL *o, int *outl, int *outr) {
-    /* LFOs advance in chip-rate units */
-    o->vibpos_acc += (uint32_t)(o->chip_ratio * 256.0);
-    while (o->vibpos_acc >= 1024u * 256u) { o->vibpos_acc -= 1024u * 256u; o->vibpos = (o->vibpos + 1) & 7; }
-    o->trem_acc += (uint32_t)(o->chip_ratio * 256.0);
-    while (o->trem_acc >= 64u * 256u) { o->trem_acc -= 64u * 256u; o->trempos = (o->trempos + 1) % 210; }
-    int tshift = o->dam ? 2 : 4;
-    int trem = (o->trempos < 105 ? o->trempos : 210 - o->trempos) >> tshift;
+static void gen_chip(OPL *o, int *outl, int *outr) {
+    if (o->dirty_all) { for (int ch = 0; ch < 18; ch++) refresh_ch(o, ch); o->dirty_all = 0; o->dirty_ch = 0; }
+    else if (o->dirty_ch) { for (int ch = 0; ch < 18; ch++) if ((o->dirty_ch >> ch) & 1) refresh_ch(o, ch); o->dirty_ch = 0; }
+    if (++o->vib_cnt >= 1024) { o->vib_cnt = 0; o->vibpos = (o->vibpos + 1) & 7; o->dirty_all = 1; }
+    if (++o->trem_cnt >= 64) {
+        o->trem_cnt = 0; o->trempos = (o->trempos + 1) % 210;
+        o->trem = (o->trempos < 105 ? o->trempos : 210 - o->trempos) >> (o->dam ? 2 : 4);
+    }
+    int trem = o->trem, envtick = (o->tick++ % ENV_DIV) == 0;
 
     int L = 0, R = 0;
-    int nch = o->newmode ? 18 : 9;
-    /* envelopes + phases first (every operator advances even if silent) */
-    for (int ch = 0; ch < nch; ch++) {
-        Chan *c = o->ch[ch].second ? &o->ch[ch - 3] : &o->ch[ch];     /* 4-op: all operators follow the first channel */
-        for (int w = 0; w < 2; w++) {
-            Op *p = &o->op[ch_op(ch, w)];
-            env_step(o, p, c);
-            phase_adv(o, p, c, o->vibpos);
-        }
+    int nch = o->newmode ? 18 : 9, nop = nch * 2, any = 0;
+    for (int i = 0; i < nop; i++) {
+        Op *p = &o->op[i];
+        if (p->state == ST_OFF) continue;                     /* silent: nothing to advance */
+        any = 1;
+        if (envtick) env_step(o, p);
+        p->phase += p->inc;
     }
+    if (!any) { *outl = *outr = 0; return; }
     for (int ch = 0; ch < nch; ch++) {
         Chan *c = &o->ch[ch];
-        if (c->second) continue;                         /* handled with its first channel */
+        if (c->second) continue;                              /* handled with its first channel */
         Op *a = &o->op[ch_op(ch, 0)], *b = &o->op[ch_op(ch, 1)];
-        int fbm = c->fb ? (a->out + a->prout) >> (9 - c->fb) : 0;
         int out;
         if (c->is4op) {
-            Chan *c2 = &o->ch[ch + 3];
             Op *c3 = &o->op[ch_op(ch + 3, 0)], *d = &o->op[ch_op(ch + 3, 1)];
-            int alg = (c->cnt << 1) | c2->cnt; c2 = c;                      /* operators of the pair use the first channel's pitch */
-            a->prout = a->out; a->out = op_eval(o, a, c, fbm, trem);
+            if (a->state == ST_OFF && b->state == ST_OFF && c3->state == ST_OFF && d->state == ST_OFF) continue;
+            int fbm = c->fb ? (a->out + a->prout) >> (9 - c->fb) : 0;
+            int alg = (c->cnt << 1) | o->ch[ch + 3].cnt;
+            a->prout = a->out; a->out = op_eval(a, fbm, trem);
             switch (alg) {
-            case 0: b->out = op_eval(o, b, c, a->out, trem); c3->out = op_eval(o, c3, c2, b->out, trem);
-                    d->out = op_eval(o, d, c2, c3->out, trem); out = d->out; break;
-            case 1: b->out = op_eval(o, b, c, a->out, trem); c3->out = op_eval(o, c3, c2, 0, trem);
-                    d->out = op_eval(o, d, c2, c3->out, trem); out = b->out + d->out; break;
-            case 2: b->out = op_eval(o, b, c, 0, trem); c3->out = op_eval(o, c3, c2, b->out, trem);
-                    d->out = op_eval(o, d, c2, c3->out, trem); out = a->out + d->out; break;
-            default: b->out = op_eval(o, b, c, 0, trem); c3->out = op_eval(o, c3, c2, b->out, trem);
-                    d->out = op_eval(o, d, c2, 0, trem); out = a->out + c3->out + d->out; break;
+            case 0: b->out = op_eval(b, a->out, trem); c3->out = op_eval(c3, b->out, trem);
+                    d->out = op_eval(d, c3->out, trem); out = d->out; break;
+            case 1: b->out = op_eval(b, a->out, trem); c3->out = op_eval(c3, 0, trem);
+                    d->out = op_eval(d, c3->out, trem); out = b->out + d->out; break;
+            case 2: b->out = op_eval(b, 0, trem); c3->out = op_eval(c3, b->out, trem);
+                    d->out = op_eval(d, c3->out, trem); out = a->out + d->out; break;
+            default: b->out = op_eval(b, 0, trem); c3->out = op_eval(c3, b->out, trem);
+                    d->out = op_eval(d, 0, trem); out = a->out + c3->out + d->out; break;
             }
             /* stereo routing of a 4-op voice follows the first channel */
         } else {
-            a->prout = a->out; a->out = op_eval(o, a, c, fbm, trem);
-            if (c->cnt) { b->out = op_eval(o, b, c, 0, trem); out = a->out + b->out; }
-            else { b->out = op_eval(o, b, c, a->out, trem); out = b->out; }
+            if (c->cnt ? (a->state == ST_OFF && b->state == ST_OFF) : (b->state == ST_OFF)) continue;
+            int fbm = c->fb ? (a->out + a->prout) >> (9 - c->fb) : 0;
+            a->prout = a->out; a->out = op_eval(a, fbm, trem);
+            if (c->cnt) { b->out = op_eval(b, 0, trem); out = a->out + b->out; }
+            else { b->out = op_eval(b, a->out, trem); out = b->out; }
         }
         if (!o->newmode) { L += out; R += out; }
         else { if (c->cha) L += out; if (c->chb) R += out; }
@@ -245,38 +305,70 @@ static void gen_sample(OPL *o, int *outl, int *outr) {
     *outl = L; *outr = R;
 }
 
-/* ------------------------------------------------------------------ ring + timing */
+/* ------------------------------------------------------------------ resampler + ring + timing */
 static uint64_t now_samples(OPL *o) {
     if (!o->now_ns) return o->gen_samples;
     return o->now_ns(o->clk_ctx) * (uint64_t)o->rate / 1000000000ull;
 }
 
-static void clamp_push(OPL *o, int l, int r) {
-    l *= 2; r *= 2;
-    if (l > 32767) l = 32767; else if (l < -32768) l = -32768;
-    if (r > 32767) r = 32767; else if (r < -32768) r = -32768;
+/* gentle limiter: transparent below ~80% of full scale, rounds peaks off instead of hard-clipping them */
+static inline int limit(int x) {
+    const int T = 26000;
+    if (x > -T && x < T) return x;
+    float a = (float)(x < 0 ? -x : x) - T;
+    int v = T + (int)(6767.0f * tanhf(a / 6767.0f));
+    return x < 0 ? -v : v;
+}
+
+static void push_out(OPL *o, int l, int r) {
+    l = limit(l * 2); r = limit(r * 2);
     uint32_t w = o->wr & (RING_FRAMES - 1);
     o->ring[w * 2] = (int16_t)l; o->ring[w * 2 + 1] = (int16_t)r;
     o->wr++;
     if (o->wr - o->rd > RING_FRAMES) o->rd = o->wr - RING_FRAMES;     /* overrun: drop oldest */
 }
 
+static void gen_out(OPL *o) {
+    uint64_t ip = o->pos_q32 >> 32;
+    while (o->chip_n < ip + NT / 2 + 1) {
+        int l, r; gen_chip(o, &l, &r);
+        o->cs[o->chip_n & (CS_N - 1)][0] = l; o->cs[o->chip_n & (CS_N - 1)][1] = r; o->chip_n++;
+        o->zero_run = (l | r) ? 0 : o->zero_run + 1;
+    }
+    if (o->zero_run > NT + 2) { push_out(o, 0, 0); o->pos_q32 += o->step_q32; return; }      /* silence: nothing to filter */
+    const int16_t *k = o->kern[(o->pos_q32 >> 24) & (NPH - 1)];
+    uint64_t i0 = ip - (NT / 2 - 1);
+    int64_t al = 0, ar = 0;
+    for (int j = 0; j < NT; j++) {
+        const int32_t *s = o->cs[(i0 + j) & (CS_N - 1)];
+        al += (int64_t)s[0] * k[j]; ar += (int64_t)s[1] * k[j];
+    }
+    push_out(o, (int)(al >> 15), (int)(ar >> 15));
+    o->pos_q32 += o->step_q32;
+}
+
 void opl_sync(OPL *o) {
     uint64_t target = now_samples(o);
     int guard = 0;
-    while (o->gen_samples < target && guard++ < RING_FRAMES) {
-        int l, r; gen_sample(o, &l, &r); clamp_push(o, l, r); o->gen_samples++;
+    while (o->gen_samples < target && guard++ < RING_FRAMES) { gen_out(o); o->gen_samples++; }
+    if (o->gen_samples < target) {                                         /* far behind: skip ahead */
+        o->gen_samples = target;
+        memset(o->cs, 0, sizeof o->cs);
+        o->pos_q32 = (o->chip_n + NT / 2) << 32;
     }
-    if (o->gen_samples < target) o->gen_samples = target;                /* far behind: skip ahead */
 }
 
 OPL *opl_new(int rate) {
     init_tables();
     OPL *o = calloc(1, sizeof(OPL));
-    o->rate = rate; o->chip_ratio = 49716.0 / rate; o->ratio_q16 = (uint32_t)(o->chip_ratio * 65536.0);
-    build_rates(o);
+    if (rate < 8000) rate = 8000;
+    o->rate = rate;
+    o->step_q32 = (uint64_t)(CHIP_RATE / rate * 4294967296.0);
+    o->pos_q32 = (uint64_t)(NT / 2) << 32;
+    build_rates(o); build_kernel(o);
     for (int i = 0; i < 36; i++) { o->op[i].env = 511 << 16; o->op[i].state = ST_OFF; }
     for (int i = 0; i < 18; i++) { o->ch[i].cha = o->ch[i].chb = 1; }
+    o->dirty_all = 1;
     return o;
 }
 void opl_free(OPL *o) { free(o); }
@@ -328,11 +420,13 @@ static void write_reg(OPL *o, int bank, int reg, uint8_t v) {
         }
         return;
     }
-    if (bank == 1 && reg == 5) { o->newmode = v & 1; update_4op(o); return; }
-    if (bank == 1 && reg == 4) { o->conn4 = v & 0x3F; update_4op(o); return; }
-    if (bank == 0 && reg == 8) { o->nts = (v >> 6) & 1; return; }
+    if (bank == 1 && reg == 5) { o->newmode = v & 1; update_4op(o); o->dirty_all = 1; return; }
+    if (bank == 1 && reg == 4) { o->conn4 = v & 0x3F; update_4op(o); o->dirty_all = 1; return; }
+    if (bank == 0 && reg == 8) { o->nts = (v >> 6) & 1; o->dirty_all = 1; return; }
     if (reg == 0xBD && bank == 0) {
         o->dam = (v >> 7) & 1; o->dvb = (v >> 6) & 1; o->rhy = v;
+        o->trem = (o->trempos < 105 ? o->trempos : 210 - o->trempos) >> (o->dam ? 2 : 4);
+        o->dirty_all = 1;
         return;
     }
     int grp = reg & 0xE0;
@@ -347,12 +441,14 @@ static void write_reg(OPL *o, int bank, int reg, uint8_t v) {
         case 0x80: p->sl = v >> 4; p->rr = v & 15; break;
         case 0xE0: p->wf = v & 7; break;
         }
+        mark_ch(o, ch_of_slot(bank, s));
         return;
     }
-    if (reg >= 0xA0 && reg <= 0xA8) { int ch = bank * 9 + (reg - 0xA0); o->ch[ch].fnum = (o->ch[ch].fnum & 0x300) | v; return; }
+    if (reg >= 0xA0 && reg <= 0xA8) { int ch = bank * 9 + (reg - 0xA0); o->ch[ch].fnum = (o->ch[ch].fnum & 0x300) | v; mark_ch(o, ch); return; }
     if (reg >= 0xB0 && reg <= 0xB8) {
         int ch = bank * 9 + (reg - 0xB0); Chan *c = &o->ch[ch];
         c->fnum = (c->fnum & 0xFF) | ((v & 3) << 8); c->block = (v >> 2) & 7;
+        mark_ch(o, ch);
         int kon = (v >> 5) & 1;
         if (c->second) { c->kon = kon; return; }                         /* 4-op: first channel's key bit rules */
         if (kon && !c->kon) { key_on(o, ch); if (c->is4op) key_on(o, ch + 3); }

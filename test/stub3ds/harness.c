@@ -14,6 +14,14 @@ void stub_input(int scan, u32 *held, touchPosition *tp, circlePosition *cp) {
         if (scan >= 980 && scan < 983) *held |= KEY_A;
         if (scan >= 1050 && scan < 1053) *held |= KEY_START;
         return; }
+    if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 7) {      /* like 1, but wiggle the menu cursor while the choice window of the scene at ~29560 is up */
+        int lo = getenv("STUB_CHOICE_LO") ? atoi(getenv("STUB_CHOICE_LO")) : 29560, hi = getenv("STUB_CHOICE_HI") ? atoi(getenv("STUB_CHOICE_HI")) : 29705;
+        if (scan >= lo && scan < hi) {
+            int ph = (scan - lo) % 40;
+            if (getenv("STUB_CHOICE_PAD")) { cp->dx = 0; cp->dy = ph < 20 ? -150 : 150; }      /* circle pad up/down = mouse over the choices */
+            else { if (ph < 3) *held |= KEY_DDOWN; else if (ph >= 20 && ph < 23) *held |= KEY_DUP; }   /* D-pad = arrow keys */
+            return; }
+        if (scan >= 300 && scan % 150 < 4) *held |= KEY_X; return; }
     if (getenv("STUB_MODE")) { if (scan >= 300 && scan % 150 < 4) *held |= KEY_X; return; }
     if (scan >= 100 && scan < 110) cp->dx = 140, cp->dy = -60;            /* circle pad: right/down */
     if (scan >= 400 && scan < 404) *held |= KEY_A;                       /* click */

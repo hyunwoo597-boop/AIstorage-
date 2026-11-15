@@ -114,6 +114,10 @@ static void message_screen(const char *title, const char *body) {
 }
 
 /* ------------------------------------------------------------------ audio */
+#ifndef NDSP_SAMPLE_RATE
+#define NDSP_SAMPLE_RATE 32728.498          /* the DSP's own rate: playing at exactly this rate needs no resampling on the DSP side */
+#endif
+#define AUD_RATE 32728                       /* synth output rate (integer; the DSP consumes 0.0015% faster, which the pump absorbs) */
 #define NWB 8
 #define AFRAMES 1024
 #define PREBUF 4                      /* chunks queued before playback (re)starts: ~65 ms cushion against frame-time jitter */
@@ -128,7 +132,7 @@ static void audio_init(void) {
     ndspSetOutputMode(NDSP_OUTPUT_STEREO);
     ndspChnReset(0);
     ndspChnSetInterp(0, NDSP_INTERP_LINEAR);
-    ndspChnSetRate(0, 22050.0f);
+    ndspChnSetRate(0, (float)NDSP_SAMPLE_RATE);
     ndspChnSetFormat(0, NDSP_FORMAT_STEREO_PCM16);
     float mix[12] = { 0 }; mix[0] = mix[1] = 1.0f;
     ndspChnSetMix(0, mix);
@@ -138,7 +142,7 @@ static void audio_init(void) {
     audio_ok = 1;
 }
 static int audio_started;
-static float audio_rate = 22050.0f;
+static float audio_rate = (float)NDSP_SAMPLE_RATE;
 static int audio_queued(void) {
     int n = 0;
     for (int i = 0; i < NWB; i++) if (wbuf[i].status == NDSP_WBUF_QUEUED || wbuf[i].status == NDSP_WBUF_PLAYING) n++;
@@ -149,7 +153,7 @@ static void audio_set_speed(double ratio) {
     if (!audio_ok) return;
     if (ratio > 1.0) ratio = 1.0;
     if (ratio < 0.5) ratio = 0.5;
-    float r = ratio >= 0.97 ? 22050.0f : (float)(22050.0 * ratio);
+    float r = ratio >= 0.97 ? (float)NDSP_SAMPLE_RATE : (float)(NDSP_SAMPLE_RATE * ratio);
     if (r != audio_rate) { audio_rate = r; ndspChnSetRate(0, r); }
 }
 static void audio_pump(Machine *m) {
@@ -158,7 +162,7 @@ static void audio_pump(Machine *m) {
     if (!audio_ok) { opl_discard(m->opl, n); return; }
     /* never throw samples away just because every buffer is busy: they wait in the synth ring for the next frame.
      * Only a really big backlog (the game ran ahead by >0.2 s) is trimmed, keeping the newest 0.1 s. */
-    if (n > 4410) { opl_discard(m->opl, n - 2205); n = 2205; aud_dropped++; }
+    if (n > AUD_RATE / 5) { opl_discard(m->opl, n - AUD_RATE / 10); n = AUD_RATE / 10; aud_dropped++; }
     while (n) {
         ndspWaveBuf *wb = NULL;
         for (int i = 0; i < NWB; i++)
@@ -380,7 +384,7 @@ int main(void) {
     Machine *m = machine_new(gdir);
     if (!m) { message_screen("Out of memory", "Could not allocate the emulated PC."); gfxExit(); return 0; }
     m->verbose = 0;
-    m->opl = opl_new(22050);
+    m->opl = opl_new(AUD_RATE);
     opl_attach(m->opl, (opl_clock_fn)machine_vtime_ns, m);
     textcap_init(m);
     idle_init(m);
@@ -422,6 +426,9 @@ int main(void) {
         if (owe > 0.050) { pace_t0 += (u64)((owe - 0.050) * TICKS_PER_SEC); owe = 0.050; }
         if (owe < 0) owe = 0;
         long want = (long)(m->ips * owe), done = 0;
+#ifdef STUB_JITTER      /* test builds only: end frames at random points to provoke mid-redraw renders */
+        { static unsigned js = 0; if (!js) js = getenv("STUB_SEED") ? (unsigned)atoi(getenv("STUB_SEED")) : 12345u; js = js * 1103515245u + 12345u; want = want * (10 + (js >> 16) % 90) / 100; }
+#endif
         u64 deadline = f0 + FRAME_TICKS * 75 / 100;
         while (done < want) {
             long c = want - done; if (c > 12000) c = 12000;
@@ -449,7 +456,8 @@ int main(void) {
 
         /* bottom screen: large dialogue text (rate limited) */
         uint32_t gen = textcap_gen(m);
-        if (bot_force || ((gen != last_gen || m->vga.dirty != bot_dirty) && frame - last_bot_frame >= (gen != last_gen ? 4 : 15))) {
+        int unsettled = textcap_unsettled(m);
+        if (bot_force || ((gen != last_gen || m->vga.dirty != bot_dirty || unsettled) && frame - last_bot_frame >= (gen != last_gen ? 4 : unsettled ? 3 : 8))) {
             bottom_render(m);
             last_gen = gen; bot_dirty = m->vga.dirty; last_bot_frame = frame; bot_force = 0;
         }

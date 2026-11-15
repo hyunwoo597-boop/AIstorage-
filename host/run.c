@@ -74,7 +74,7 @@ int main(int argc, char **argv) {
     const char *outp = argc > 3 ? argv[3] : "/tmp/frame";
     Machine *m = machine_new(argv[1]);
     m->verbose = getenv("NV") ? atoi(getenv("NV")) : 0;
-    m->opl = opl_new(22050); opl_attach(m->opl, (opl_clock_fn)machine_vtime_ns, m);
+    int oplrate = getenv("OPLRATE") ? atoi(getenv("OPLRATE")) : 32728; m->opl = opl_new(oplrate); opl_attach(m->opl, (opl_clock_fn)machine_vtime_ns, m);
     textcap_init(m); if (!getenv("NOIDLE")) idle_init(m);
     if (dos_exec(m, "MUSICV.COM", "") < 0) return 2;
     long total = 0; int guard = 0;
@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
     if (getenv("SCRIPT")) parse_script(getenv("SCRIPT"));
     if (getenv("WATCH")) m->vga_wr_dbg = wr_dbg;
     int bp_set = 0; if (getenv("GLOG")) glog = fopen(getenv("GLOG"), "w");
-    if (getenv("WAV")) { wavcap = 22050L * 120; wavbuf = malloc(wavcap * 4); }
+    if (getenv("WAV")) { wavcap = (long)oplrate * 120; wavbuf = malloc(wavcap * 4); }
     long dump_every = getenv("DUMPEVERY") ? atol(getenv("DUMPEVERY")) * 1000000L : 5000000L;
     long done = 0, next_dump = 0; int n = 0, nd = 0, nb = 0;
     while (!m->exited && done < maxm * 1000000L) {
@@ -109,7 +109,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[host] psp=%04X opl_writes=%ld\n", m->exit_psp, opl_dbg_writes);
     if (getenv("WAV") && wavbuf) { FILE *f = fopen(getenv("WAV"), "wb"); uint32_t dl = (uint32_t)wavn * 4, v32; uint16_t v16;
         fwrite("RIFF", 1, 4, f); v32 = 36 + dl; fwrite(&v32, 4, 1, f); fwrite("WAVEfmt ", 1, 8, f); v32 = 16; fwrite(&v32, 4, 1, f);
-        v16 = 1; fwrite(&v16, 2, 1, f); v16 = 2; fwrite(&v16, 2, 1, f); v32 = 22050; fwrite(&v32, 4, 1, f); v32 = 22050 * 4; fwrite(&v32, 4, 1, f);
+        v16 = 1; fwrite(&v16, 2, 1, f); v16 = 2; fwrite(&v16, 2, 1, f); v32 = oplrate; fwrite(&v32, 4, 1, f); v32 = oplrate * 4; fwrite(&v32, 4, 1, f);
         v16 = 4; fwrite(&v16, 2, 1, f); v16 = 16; fwrite(&v16, 2, 1, f); fwrite("data", 1, 4, f); fwrite(&dl, 4, 1, f); fwrite(wavbuf, 4, wavn, f); fclose(f); }
     if (getenv("DUMPMEM")) { FILE *f = fopen(getenv("DUMPMEM"), "wb"); fwrite(m->mem, 1, 0x100000, f); fclose(f); }
     return 0;

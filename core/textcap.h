@@ -9,6 +9,7 @@ void textcap_init(Machine *m);                 /* install: hooks the program loa
 void textcap_free(Machine *m);
 uint32_t textcap_gen(Machine *m);              /* increments whenever the captured text changes */
 int  textcap_active(Machine *m);               /* 1 if the engine's glyph routine was found and hooked */
+int  textcap_unsettled(Machine *m);            /* 1 while some glyphs are hidden/new because VRAM was caught mid-redraw: render again soon */
 /* Draw the captured text, large, into an RGB888 buffer (w*h*3 bytes). Returns number of glyphs drawn. */
 int  textcap_render(Machine *m, uint8_t *rgb, int w, int h);
 /* Largest magnification the bottom-screen layout may use (default 1.5; the engine's glyphs are 16 px). */

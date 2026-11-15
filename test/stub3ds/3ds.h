@@ -38,7 +38,8 @@ static inline bool aptMainLoop(void) { return _scans < _script_frames; }
 static u32 _held, _down_prev; static touchPosition _tp; static circlePosition _cp;
 extern void stub_input(int scan, u32 *held, touchPosition *tp, circlePosition *cp);
 static void (*_dump_hook)(int);
-static inline void hidScanInput(void) { if (_dump_hook && _scans % 300 == 0) _dump_hook(_scans); _down_prev = _held; stub_input(_scans++, &_held, &_tp, &_cp); }
+static int _dump_every = 300, _dump_from = 0, _dump_to = 1 << 30;
+static inline void hidScanInput(void) { if (_dump_hook && _scans % _dump_every == 0) _dump_hook(_scans); _down_prev = _held; stub_input(_scans++, &_held, &_tp, &_cp); }
 static inline u32 hidKeysHeld(void) { return _held; }
 static inline u32 hidKeysDown(void) { return _held & ~_down_prev; }
 static inline void hidTouchRead(touchPosition *t) { *t = _tp; }

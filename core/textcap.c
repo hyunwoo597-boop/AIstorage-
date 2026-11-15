@@ -13,7 +13,7 @@
 #define TC_MAX   512
 #define SCR_BYTES 80
 
-typedef struct { int16_t x, y; uint8_t cx, rows, fg, bg; uint8_t tile, hl, ca, cb; uint64_t born; uint8_t bits[64]; } Cell;
+typedef struct { int16_t x, y; uint8_t cx, rows, fg, bg; uint8_t tile, hl, ca, cb, dead; uint64_t born, dead_t; uint8_t bits[64]; } Cell;
 
 typedef struct TextCap {
     Cell c[TC_MAX]; int n;
@@ -25,6 +25,7 @@ typedef struct TextCap {
     uint64_t pg_t[4]; uint8_t pg_fg[4];     /* last glyph drawn into an off-screen page: when, and in which colour */
     struct Strip { int16_t col, row; uint8_t cx, rows, ink; uint8_t keep[80]; uint8_t tile[80][32]; } strip[16];
     int nstrip;                              /* text strips copied to the screen, waiting to be checked against VRAM */
+    int unsettled;                           /* some cell is hidden or still new: VRAM was caught mid-change, look again soon */
 } TextCap;
 
 /* signature of the glyph-blit routine entry:  cmp word [e262],0 ; je +2 ; jmp +0x66 ; call 1e6b */
@@ -136,13 +137,13 @@ static int tc_copy_cb(CPU *c, int idx) {
     if (total < 6 || total * 100 > cx * rows * 8 * 45) return 0;               /* not text-like */
     /* keep tiles that look like text: ink spread over several rows and columns (frame dots and rules are not);
      * small punctuation tiles are accepted next to a solid one */
-    uint8_t strong[80], weak[80], keep[80]; int nstrong = 0;
+    uint8_t strong[80], weak[80], keep[80]; int nstrong = 0;   /* weak: also a lone vertical stroke (right half of a hangul vowel) */
     for (int k = 0; k < cx; k++) {
-        int ink_n = 0, cols = 0, rws = 0; uint8_t colmask = 0;
-        for (int r = 0; r < rows; r++) { uint8_t v = tile[k][r]; if (v) rws++; colmask |= v; for (int b = 0; b < 8; b++) ink_n += (v >> b) & 1; }
+        int ink_n = 0, cols = 0, rws = 0, run = 0, best = 0; uint8_t colmask = 0;
+        for (int r = 0; r < rows; r++) { uint8_t v = tile[k][r]; if (v) { rws++; if (++run > best) best = run; } else run = 0; colmask |= v; for (int b = 0; b < 8; b++) ink_n += (v >> b) & 1; }
         for (int b = 0; b < 8; b++) cols += (colmask >> b) & 1;
         strong[k] = ink_n >= 6 && rws >= 3 && cols >= 2;
-        weak[k] = ink_n >= 2 && rws >= 2 && cols >= 2;
+        weak[k] = (ink_n >= 2 && rws >= 2 && cols >= 2) || (ink_n >= 4 && best >= 4);      /* or a solid vertical stroke (a dotted frame line is not) */
         nstrong += strong[k];
     }
     if (nstrong < 2) return 0;
@@ -193,6 +194,7 @@ void textcap_init(Machine *m) {
 void textcap_free(Machine *m) { free(m->tc); m->tc = NULL; }
 uint32_t textcap_gen(Machine *m) { return m->tc ? m->tc->gen : 0; }
 int textcap_active(Machine *m) { return m->tc && m->tc->hooked; }
+int textcap_unsettled(Machine *m) { return m->tc && m->tc->unsettled; }
 
 /* ------------------------------------------------------------------ verification against VRAM */
 static int vram_color(Machine *m, int px, int py) {
@@ -292,9 +294,15 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
     /* drop cells that are no longer visible */
     /* a glyph is recorded when its blit starts; the frontend may look at VRAM before the blit has finished,
      * so a cell is not judged until it has had a moment to appear */
+    /* A cell that fails the check is only hidden: VRAM passes through odd states while the game inverts or redraws a
+     * menu entry, and judging such a moment final would lose glyphs for good.  It is dropped after a while, and
+     * comes back if the picture returns. */
     for (int i = 0; i < tc->n; i++) {
-        if (m->icount - tc->c[i].born < (uint64_t)m->ips / 20) continue;
-        if (!cell_state(m, &tc->c[i])) { cell_remove(tc, i); i--; }
+        Cell *e = &tc->c[i];
+        if (m->icount - e->born < (uint64_t)m->ips / 20) continue;
+        if (cell_state(m, e)) { e->dead = 0; continue; }
+        if (!e->dead) { e->dead = 1; e->dead_t = m->icount; }
+        else if (m->icount - e->dead_t > (uint64_t)m->ips * 2 / 5) { cell_remove(tc, i); i--; }
     }
     /* text strips that were copied to the screen: adopt them unless glyphs we already track cover that spot */
     for (int si = 0; si < tc->nstrip; si++) {
@@ -302,7 +310,7 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
         int x0 = ps->col * 8, x1 = (ps->col + ps->cx) * 8, y0 = ps->row, y1 = ps->row + ps->rows, blocked = 0;
         for (int i = 0; i < tc->n && !blocked; i++) {
             const Cell *e = &tc->c[i];
-            if (!e->tile && e->x < x1 && e->x + e->cx * 8 > x0 && e->y < y1 && e->y + e->rows > y0) blocked = 1;
+            if (!e->tile && !e->dead && e->x < x1 && e->x + e->cx * 8 > x0 && e->y < y1 && e->y + e->rows > y0) blocked = 1;
         }
         if (blocked) continue;
         paint_over(tc, ps->col, ps->cx, ps->row, ps->rows, 1);
@@ -312,16 +320,20 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
             memset(e, 0, sizeof *e);
             e->x = (int16_t)((ps->col + k) * 8); e->y = ps->row; e->cx = 1; e->rows = ps->rows; e->fg = ps->ink; e->bg = 0; e->tile = 1; e->born = m->icount;
             memcpy(e->bits, ps->tile[k], ps->rows);
-            if (!cell_state(m, e)) tc->n--;      /* (judged at once: the copy has already happened) */
+            if (!cell_state(m, e)) { e->dead = 1; e->dead_t = m->icount; }   /* (the copy may not have run yet: kept hidden, re-judged later) */
         }
     }
     tc->nstrip = 0;
-    m->text_on = tc->n > 0;
-    if (!tc->n) { tc->n_lead = 0; return 0; }
-    const Cell *sorted[TC_MAX];
-    for (int i = 0; i < tc->n; i++) sorted[i] = &tc->c[i];
-    qsort(sorted, tc->n, sizeof sorted[0], cmp_cell);
-    int minx = 9999; for (int i = 0; i < tc->n; i++) if (sorted[i]->x < minx) minx = sorted[i]->x;
+    const Cell *sorted[TC_MAX]; int ns = 0;
+    tc->unsettled = 0;
+    for (int i = 0; i < tc->n; i++) {
+        if (tc->c[i].dead || m->icount - tc->c[i].born < (uint64_t)m->ips / 20) tc->unsettled = 1;
+        if (!tc->c[i].dead) sorted[ns++] = &tc->c[i];
+    }
+    m->text_on = ns > 0;
+    if (!ns) { if (!tc->n) tc->n_lead = 0; return 0; }
+    qsort(sorted, ns, sizeof sorted[0], cmp_cell);
+    int minx = 9999; for (int i = 0; i < ns; i++) if (sorted[i]->x < minx) minx = sorted[i]->x;
 
     /* Rows -> item stream with explicit blanks.  The game wraps its text at a fixed right edge, so a row that
      * reaches that edge continues on the next row: such rows are joined into one paragraph and re-wrapped
@@ -329,9 +341,9 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
     static Item items[MAX_ITEMS]; static int line_of[MAX_ITEMS];
     int ni = 0, nlines = 0, prev_right = 0, have_prev = 0;
     const int WRAP_EDGE = 592;                 /* a row ending at/after this pixel was soft-wrapped by the game */
-    for (int i = 0; i < tc->n && ni < MAX_ITEMS - 8;) {
+    for (int i = 0; i < ns && ni < MAX_ITEMS - 8;) {
         int y0 = sorted[i]->y, j = i;
-        while (j < tc->n && abs(sorted[j]->y - y0) <= 4) j++;
+        while (j < ns && abs(sorted[j]->y - y0) <= 4) j++;
         int join = have_prev && prev_right >= WRAP_EDGE;
         if (!join && have_prev) nlines++;
         int lead = 0; for (int q = 0; q < tc->n_lead; q++) if (abs(tc->lead_y[q] - y0) <= 4) lead = 1;
