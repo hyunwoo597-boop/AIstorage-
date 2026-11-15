@@ -235,7 +235,7 @@ static int cell_state(Machine *m, Cell *e, int ha, int hb, int rel) {
 typedef struct { const Cell *cell; int units; } Item;       /* cell == NULL: a blank of `units` eighths */
 
 #define MAX_ITEMS 1024
-typedef struct { int first, count; int width_u; int newl; int lstart; } DLine;     /* display line over items[] (units of 8px); newl = first display line of a logical line; lstart = index of that logical line's first item */
+typedef struct { int first, count; int width_u; int newl; int lstart; int center; } DLine;     /* display line over items[] (units of 8px); newl = first display line of a logical line; lstart = index of that logical line's first item */
 
 static int ink_units(const Cell *e) {
     int last = 0;
@@ -384,6 +384,18 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
         if (tc->c[i].dead || m->icount - tc->c[i].born < (uint64_t)m->ips / 20) tc->unsettled = 1;
         if (!tc->c[i].dead) sorted[ns++] = &tc->c[i];
     }
+    /* A lone one-column tile is not text: when a choice strip is copied to the screen its tiles are adopted by comparing with VRAM, and a single
+     * one that happens to match a bit of the picture behind it (a stem of the title logo) would stay behind as a stray "I" on a line of its own. */
+    {
+        int k2 = 0;
+        for (int i = 0; i < ns; i++) {
+            const Cell *e = sorted[i]; int lone = e->tile;
+            for (int j = 0; j < ns && lone; j++)
+                if (j != i && abs(sorted[j]->y - e->y) <= 4 && abs(sorted[j]->x - e->x) <= 16) lone = 0;
+            if (!lone) sorted[k2++] = e;
+        }
+        ns = k2;
+    }
     m->text_on = ns > 0;
     if (!ns) { if (!tc->n) tc->n_lead = 0; return 0; }
     qsort(sorted, ns, sizeof sorted[0], cmp_cell);
@@ -392,7 +404,7 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
     /* Rows -> item stream with explicit blanks.  The game wraps its text at a fixed right edge, so a row that
      * reaches that edge continues on the next row: such rows are joined into one paragraph and re-wrapped
      * at word gaps for the big display.  (A space carried over the wrap is remembered by the capture.) */
-    static Item items[MAX_ITEMS]; static int line_of[MAX_ITEMS];
+    static Item items[MAX_ITEMS]; static int line_of[MAX_ITEMS]; static uint8_t line_ctr[MAX_ITEMS];
     int ni = 0, nlines = 0, prev_right = 0, have_prev = 0;
     const int WRAP_EDGE = 592;                 /* a row ending at/after this pixel was soft-wrapped by the game */
     for (int i = 0; i < ns && ni < MAX_ITEMS - 8;) {
@@ -400,6 +412,12 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
         while (j < ns && abs(sorted[j]->y - y0) <= 4) j++;
         int join = have_prev && prev_right >= WRAP_EDGE;
         if (!join && have_prev) nlines++;
+        /* a row that the game centred on its screen (a title or a one-line notice, not a wrapped paragraph line) stays centred on the big display,
+         * instead of being pushed right by blanks and wrapped because of them */
+        int rl = sorted[i]->x, rr = 0;
+        for (int k = i; k < j; k++) { int r = sorted[k]->x + ink_units(sorted[k]) * 8; if (r > rr) rr = r; }
+        int ctr = !join && rr < WRAP_EDGE && rl >= 64 && abs((rl + rr) / 2 - 312) <= 40;
+        if (!join) line_ctr[nlines] = (uint8_t)ctr;
         int lead = 0; for (int q = 0; q < tc->n_lead; q++) if (abs(tc->lead_y[q] - y0) <= 4) lead = 1;
         int cursor = minx, right = 0;
         for (int k = i; k < j && ni < MAX_ITEMS - 8; k++) {
@@ -407,7 +425,7 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
             int gap = (e->x - cursor + 4) / 8;
             if (k == i && join) { if (lead) { items[ni].cell = NULL; items[ni].units = 1; line_of[ni++] = nlines; } }
             else if (gap > 0 && k > i) { items[ni].cell = NULL; items[ni].units = gap; line_of[ni++] = nlines; }
-            else if (k == i && e->x - minx >= 8) { items[ni].cell = NULL; items[ni].units = (e->x - minx) / 8; line_of[ni++] = nlines; }
+            else if (k == i && e->x - minx >= 8 && !ctr) { items[ni].cell = NULL; items[ni].units = (e->x - minx) / 8; line_of[ni++] = nlines; }
             int u = ink_units(e);
             items[ni].cell = e; items[ni].units = u; line_of[ni++] = nlines;
             cursor = e->x + u * 8;
@@ -442,7 +460,7 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
                 int stop = k;
                 if (k < end && brk > pos) stop = brk + 1;   /* wrap at the last blank if there is one */
                 int ww = 0; for (int q = pos; q < stop; q++) ww += items[q].units;
-                dl[ndl].first = pos; dl[ndl].count = stop - pos; dl[ndl].width_u = ww; dl[ndl].newl = (pos == start); dl[ndl].lstart = start; ndl++;
+                dl[ndl].first = pos; dl[ndl].count = stop - pos; dl[ndl].width_u = ww; dl[ndl].newl = (pos == start); dl[ndl].lstart = start; dl[ndl].center = line_ctr[l]; ndl++;
                 pos = stop;
                 while (pos < end && !items[pos].cell && k < end) pos++;   /* swallow blanks at the wrap point */
             }
@@ -458,6 +476,13 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
     for (int li = first_line; li < ndl; li++, oy += lineh) {
         if (li > first_line && dl[li].newl) oy += LINE_GAP;        /* a little air between separate lines (choices, paragraphs); wrapped continuations stay together */
         float ox = (float)MARGIN;
+        if (dl[li].center) {                                       /* centred line: put the visible text in the middle (leading/trailing blanks don't count) */
+            int a = dl[li].first, b = a + dl[li].count, lead_u = 0, ww = 0;
+            while (b > a && !items[b - 1].cell) b--;
+            while (a < b && !items[a].cell) { lead_u += items[a].units; a++; }
+            for (int q = a; q < b; q++) ww += items[q].units;
+            ox = (float)MARGIN + ((float)availW - ww * 8 * scale) / 2.f - lead_u * 8 * scale;
+        }
         int hl = 0; uint8_t barc[3] = {235, 235, 235};
         {                                                          /* hit area of this line: the line itself plus half of the gap on either side; target: middle of the first character of its logical line */
             const Cell *fc = NULL;
