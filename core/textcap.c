@@ -235,7 +235,7 @@ static int cell_state(Machine *m, Cell *e, int ha, int hb, int rel) {
 typedef struct { const Cell *cell; int units; } Item;       /* cell == NULL: a blank of `units` eighths */
 
 #define MAX_ITEMS 1024
-typedef struct { int first, count; int width_u; } DLine;     /* display line over items[] (units of 8px) */
+typedef struct { int first, count; int width_u; int newl; } DLine;     /* display line over items[] (units of 8px); newl = first display line of a logical line */
 
 static int ink_units(const Cell *e) {
     int last = 0;
@@ -291,6 +291,15 @@ static void rgb_of(Machine *m, int idx, uint8_t out[3]) {
     memcpy(out, pal[idx & 15], 3);
 }
 
+/* Display line pitch.  Glyphs are 16 rows tall, so 20 leaves 4 px between wrapped lines; LINE_GAP adds 4 more before every new logical line
+ * so the entries of a choice list are clearly separate (the old 18 px pitch looked cramped, especially on the choice screen). */
+#define LINEH_BASE 20
+#define LINE_GAP 4
+static int dl_height(const DLine *dl, int a, int b, int lineh) {
+    int h = 0;
+    for (int i = a; i < b; i++) h += lineh + (i > a && dl[i].newl ? LINE_GAP : 0);
+    return h;
+}
 static float g_max_scale = 1.5f;
 void textcap_set_max_scale(float s) { g_max_scale = s; }
 
@@ -396,10 +405,10 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
     const int MARGIN = 8;
     int availW = W - 2 * MARGIN, availH = H - 2 * MARGIN;
     static DLine dl[256];
-    int ndl = 0; float scale = 1.0f; int lineh = 18;
+    int ndl = 0; float scale = 1.0f; int lineh = LINEH_BASE;
     for (unsigned si = 0; si < sizeof SCALES / sizeof *SCALES; si++) {
         if (SCALES[si] > g_max_scale + 0.001f && SCALES[si] != 1.0f) continue;
-        scale = SCALES[si]; lineh = (int)(18 * scale);
+        scale = SCALES[si]; lineh = (int)(LINEH_BASE * scale);
         int maxu = (int)(availW / (8 * scale));
         ndl = 0;
         for (int l = 0, i = 0; l < nlines && ndl < 250; l++) {
@@ -416,19 +425,20 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
                 int stop = k;
                 if (k < end && brk > pos) stop = brk + 1;   /* wrap at the last blank if there is one */
                 int ww = 0; for (int q = pos; q < stop; q++) ww += items[q].units;
-                dl[ndl].first = pos; dl[ndl].count = stop - pos; dl[ndl].width_u = ww; ndl++;
+                dl[ndl].first = pos; dl[ndl].count = stop - pos; dl[ndl].width_u = ww; dl[ndl].newl = (pos == start); ndl++;
                 pos = stop;
                 while (pos < end && !items[pos].cell && k < end) pos++;   /* swallow blanks at the wrap point */
             }
         }
-        if (ndl * lineh <= availH) break;
+        if (dl_height(dl, 0, ndl, lineh) <= availH) break;
     }
     int first_line = 0;
-    if (ndl * lineh > availH) first_line = ndl - availH / lineh;      /* keep the most recent lines */
-    int total_h = (ndl - first_line) * lineh;
+    while (first_line < ndl - 1 && dl_height(dl, first_line, ndl, lineh) > availH) first_line++;      /* keep the most recent lines */
+    int total_h = dl_height(dl, first_line, ndl, lineh);
     float oy = (float)(MARGIN + (availH - total_h) / 2);
     int drawn = 0;
     for (int li = first_line; li < ndl; li++, oy += lineh) {
+        if (li > first_line && dl[li].newl) oy += LINE_GAP;        /* a little air between separate lines (choices, paragraphs); wrapped continuations stay together */
         float ox = (float)MARGIN;
         int hl = 0; uint8_t barc[3] = {235, 235, 235};
         for (int q = dl[li].first; q < dl[li].first + dl[li].count; q++)

@@ -47,13 +47,11 @@ static int pic_mode = PIC_FILL;       /* picture-only top view: PIC_FILL / PIC_S
 static int top_zoom = 1;              /* 1: 640x400 game area stretched over the whole top screen, 0: original 4:3 picture */
 static int s3d_mode = 0;              /* 3D style: 0 characters and the picture frame stand out in front of the flat background, 1 whole picture (tilt + frame), 2 characters only */
 static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong, 4 strongest (the 3D slider scales it further) */
-static int text_size = 1;             /* bottom-screen text: 0 large, 1 medium, 2 small, 3 tiny */
-static const float TEXT_SCALE[] = { 2.0f, 1.5f, 1.25f, 1.0f };
-static const char *TEXT_NAME[] = { "크게", "보통", "작게", "아주 작게" };
+/* bottom-screen text is always shown at the smallest size (1.0x); the old size choice is gone and a saved text_size= line is ignored */
 static char cfg_path[320];
 static void cfg_save(void) {
     FILE *f = fopen(cfg_path, "w"); if (!f) return;
-    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\n", cpu_mode, mouse_level, top_zoom, text_size, win_hide, pic_mode, s3d_level, s3d_mode);
+    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\n", cpu_mode, mouse_level, top_zoom, win_hide, pic_mode, s3d_level, s3d_mode);
     fclose(f);
 }
 static void cfg_load(void) {
@@ -65,7 +63,6 @@ static void cfg_load(void) {
         else if (sscanf(line, "top_zoom=%d", &v) == 1) top_zoom = v ? 1 : 0;
         else if (sscanf(line, "win_hide=%d", &v) == 1) win_hide = v ? 1 : 0;
         else if (sscanf(line, "pic_mode=%d", &v) == 1 && v >= 0 && v < 3) pic_mode = v;
-        else if (sscanf(line, "text_size=%d", &v) == 1 && v >= 0 && v < 4) text_size = v;
         else if (sscanf(line, "s3d=%d", &v) == 1 && v >= 0 && v < 5) s3d_level = v;
         else if (sscanf(line, "s3dm=%d", &v) == 1 && v >= 0 && v < 3) s3d_mode = v;
     }
@@ -652,7 +649,7 @@ static void bottom_render(Machine *m) {
 }
 
 /* ------------------------------------------------------------------ pause menu */
-enum { MI_RESUME, MI_TEXT, MI_TOP, MI_WIN, MI_PIC, MI_3D, MI_3DM, MI_CPU, MI_MOUSE, MI_SND, MI_QUIT, MI_COUNT };
+enum { MI_RESUME, MI_TOP, MI_WIN, MI_PIC, MI_3D, MI_3DM, MI_CPU, MI_MOUSE, MI_SND, MI_QUIT, MI_COUNT };
 static const char *PIC_NAME[] = { "꽉 채움", "늘림", "비율 유지" };
 static double stat_speed = 1.0, stat_mips = 0, stat_busy = 0, stat_skip = 0;
 
@@ -671,7 +668,6 @@ static void menu_draw(Machine *m, int sel) {
             else snprintf(line, sizeof line, "CPU 속도: %.0f MIPS 고정", CPU_FIXED[cpu_mode] / 1e6);
             break;
         case MI_MOUSE: snprintf(line, sizeof line, "마우스 속도: %d", mouse_level); break;
-        case MI_TEXT: snprintf(line, sizeof line, "하단 글자 크기: %s", TEXT_NAME[text_size]); break;
         case MI_TOP: snprintf(line, sizeof line, "상단 화면: %s", top_zoom ? "확대 (꽉 채움)" : "원본 4:3"); break;
         case MI_WIN: snprintf(line, sizeof line, "상단 대화창: %s", win_hide ? "숨김" : "표시"); break;
         case MI_PIC: snprintf(line, sizeof line, "상단 그림 (대화창 없음): %s", PIC_NAME[pic_mode]); break;
@@ -698,7 +694,6 @@ static void menu_draw(Machine *m, int sel) {
 }
 
 /* returns 1 to quit */
-static int text_changed;
 static int pause_menu(Machine *m) {
     int sel = 0;
     if (logfp) fflush(logfp);          /* the pause menu is a good moment for the SD card write */
@@ -722,7 +717,6 @@ static int pause_menu(Machine *m) {
             if (cpu_mode) machine_set_ips(m, CPU_FIXED[cpu_mode]);
         }
         if (sel == MI_MOUSE && (dir || (d & KEY_A))) { mouse_level += dir ? dir : 1; if (mouse_level > 5) mouse_level = 1; if (mouse_level < 1) mouse_level = 5; }
-        if (sel == MI_TEXT && (dir || (d & KEY_A))) { text_size = (text_size + (dir ? dir : 1) + 4) % 4; textcap_set_max_scale(TEXT_SCALE[text_size]); text_changed = 1; }
         if (sel == MI_TOP && (dir || (d & KEY_A))) { top_zoom ^= 1; top_clear(); top_render(m); }
         if (sel == MI_WIN && (dir || (d & KEY_A))) { win_hide ^= 1; win_cand = win_state = win_hide && vgascale_window_up(m); win_cnt = 0; top_clear(); top_render(m); }
         if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 3) % 3; top_clear(); top_render(m); }
@@ -760,7 +754,7 @@ int main(void) {
     if (logfp) setvbuf(logfp, NULL, _IOFBF, 16384);
     snprintf(cfg_path, sizeof cfg_path, "%s/nono_cfg.txt", gdir);
     cfg_load();
-    textcap_set_max_scale(TEXT_SCALE[text_size]);
+    textcap_set_max_scale(1.0f);
     bool is_new = false; APT_CheckNew3DS(&is_new);
     LOG("Nonomura 3DS native v%s  new3ds=%d  gamedir=%s", APP_VERSION, (int)is_new, gdir);
 
@@ -788,7 +782,7 @@ int main(void) {
     { long total = 0; int guard = 0; while (!m->exited && total < 20000000 && ++guard < 400) total += machine_run(m, 100000);
       LOG("MUSICV done: exited=%d tsr=%d instr=%ld", m->exited, m->tsr_kept, total); }
     if (dos_exec(m, "SILV1.COM", "main.mes D D") < 0) { LOG("SILV1.COM launch failed"); message_screen("SILV1.COM 실행 실패", "SILV1.COM / SILV.EXE 를 시작할 수 없습니다.\n게임 파일이 모두 복사되었는지 확인하세요."); goto done; }
-    LOG("game started  top_zoom=%d text_size=%d cpu_mode=%d", top_zoom, text_size, cpu_mode);
+    LOG("game started  top_zoom=%d cpu_mode=%d", top_zoom, cpu_mode);
     top_clear();
 
     u64 win_t0 = svcGetSystemTick(), win_busy = 0, win_v0 = machine_vtime_ns(m), win_i0 = m->icount, win_s0 = m->skipped_total;
