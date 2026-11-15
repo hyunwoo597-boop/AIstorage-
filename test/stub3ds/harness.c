@@ -4,6 +4,7 @@
 #include <stdlib.h>
 void stub_input(int scan, u32 *held, touchPosition *tp, circlePosition *cp) {
     *held = 0; memset(tp, 0, sizeof *tp); memset(cp, 0, sizeof *cp);
+    if (scan >= 6 && scan < 10) { *held |= KEY_A; return; }           /* press A on the title picture */
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 3) return;
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 5) { if (scan >= 850 && scan < 960) *held |= KEY_SELECT; return; }
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 8) {      /* open menu, go to "Sound test", run it, resume */
