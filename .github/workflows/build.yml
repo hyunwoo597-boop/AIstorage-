@@ -103,3 +103,14 @@ jobs:
         with:
           tag_name: latest
           files: out/nonomura.cia
+      - name: Keep the CIA tools for building a CIA that carries the game files (done by hand, not in CI)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tools
+          name: build tools (makerom, bannertool)
+          body: "Linux x86_64 binaries of makerom and bannertool as built by CI (used to make the CIA that has the game files inside; those files are not in this repository)."
+          make_latest: false
+          files: |
+            makerom
+            bannertool

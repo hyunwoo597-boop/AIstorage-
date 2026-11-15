@@ -80,6 +80,7 @@ static void _dsp_run(double dt) {
         if (_dsp_pos >= (int)b->nsamples) { b->status = 3; for (int i = 1; i < _dsp_n; i++) _dsp_q[i - 1] = _dsp_q[i]; _dsp_n--; _dsp_pos = 0; }
     }
 }
+static inline Result romfsInit(void) { return getenv("STUB_ROMFS") ? 0 : -1; } static inline Result romfsExit(void) { return 0; }
 static inline Result ndspInit(void) { return 0; } static inline void ndspExit(void) {}
 static inline void ndspSetOutputMode(int m) {} static inline void ndspChnReset(int c) {} static inline void ndspChnSetInterp(int c, int t) {}
 static inline void ndspChnSetPaused(int c, bool p) { _dsp_paused = p; }

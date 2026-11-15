@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #include "../../core/machine.h"
 #include "../../core/textcap.h"
@@ -809,6 +811,56 @@ static int file_exists(const char *dir, const char *name) {
     FILE *f = fopen(p, "rb"); if (!f) return 0; fclose(f); return 1;
 }
 
+/* The installable version (.cia) carries the game files in its RomFS.  The game itself works from a folder on the SD card (its saves are written there
+ * too), so on start the files that are not on the SD card yet are copied there; files that already exist (saves!) are never overwritten.
+ * A homebrew (.3dsx) build has no RomFS and skips all of this.  Returns 0 when there is nothing to do or everything went fine, -1 if copying failed. */
+#ifndef ROMFS_ROOT
+#define ROMFS_ROOT "romfs:/"
+#endif
+static const char *find_game_dir(void) {
+    for (int i = 0; GAME_DIRS[i]; i++) if (file_exists(GAME_DIRS[i], "SILV1.COM") || file_exists(GAME_DIRS[i], "silv1.com")) return GAME_DIRS[i];
+    return NULL;
+}
+static int copy_file(const char *from, const char *to) {
+    char part[320]; snprintf(part, sizeof part, "%s.part", to);
+    FILE *in = fopen(from, "rb"); if (!in) return -1;
+    FILE *out = fopen(part, "wb"); if (!out) { fclose(in); return -1; }
+    static uint8_t buf[32768]; int ok = 1; size_t n;
+    while ((n = fread(buf, 1, sizeof buf, in)) > 0) if (fwrite(buf, 1, n, out) != n) { ok = 0; break; }
+    fclose(in); if (fclose(out) != 0) ok = 0;
+    if (!ok) { remove(part); return -1; }
+    remove(to);
+    if (rename(part, to) != 0) { remove(part); return -1; }
+    return 0;
+}
+static int install_embedded_files(const char *existing_dir) {
+    if (R_FAILED(romfsInit())) return 0;
+    int result = 0;
+    char names[64][64]; int nn = 0;
+    DIR *d = opendir(ROMFS_ROOT);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) && nn < 64) if (e->d_name[0] != '.' && strlen(e->d_name) < 64) snprintf(names[nn++], 64, "%s", e->d_name);
+        closedir(d);
+    }
+    const char *dir = existing_dir ? existing_dir : GAME_DIRS[0];
+    int todo = 0; for (int i = 0; i < nn; i++) if (!file_exists(dir, names[i])) todo++;
+    if (todo) {
+        mkdir("sdmc:/3ds", 0777); mkdir(dir, 0777);
+        int done = 0;
+        for (int i = 0; i < nn && !result; i++) {
+            if (file_exists(dir, names[i])) continue;
+            char msg[64]; snprintf(msg, sizeof msg, "%d / %d  %s", done + 1, todo, names[i]);
+            splash_frame("게임 파일을 설치하는 중...", msg, C565(230, 230, 230)); splash_frame("게임 파일을 설치하는 중...", msg, C565(230, 230, 230));
+            char from[300], to[300]; snprintf(from, sizeof from, "%s%s", ROMFS_ROOT, names[i]); snprintf(to, sizeof to, "%s/%s", dir, names[i]);
+            if (copy_file(from, to) != 0) result = -1;
+            done++;
+        }
+    }
+    romfsExit();
+    return result;
+}
+
 int main(void) {
     gfxInit(GSP_RGB565_OES, GSP_RGB565_OES, false);
     gfxSet3D(false);
@@ -816,8 +868,12 @@ int main(void) {
     osSetSpeedupEnable(true);
     t_start = svcGetSystemTick();
 
-    const char *gdir = NULL;
-    for (int i = 0; GAME_DIRS[i]; i++) if (file_exists(GAME_DIRS[i], "SILV1.COM") || file_exists(GAME_DIRS[i], "silv1.com")) { gdir = GAME_DIRS[i]; break; }
+    const char *gdir = find_game_dir();
+    if (install_embedded_files(gdir) != 0) {
+        message_screen("게임 파일 설치 실패", "게임 파일을 SD 카드에 복사하지 못했습니다.\nSD 카드의 남은 용량과 쓰기 잠금을\n확인한 뒤 앱을 다시 시작하세요.");
+        gfxExit(); return 0;
+    }
+    gdir = find_game_dir();
     if (!gdir) {
         message_screen("게임 파일을 찾을 수 없습니다",
             "게임 파일을 SD 카드에 복사해 주세요.\n(SILV1.COM, SILV.EXE, MUSICV.COM,\nSAGWA.*, FLAG*, SILK*.DAT ...)\n\n  sdmc:/3ds/nonomura/\n\n복사한 뒤 앱을 다시 시작하세요.");
