@@ -206,8 +206,11 @@ static int vram_color(Machine *m, int px, int py) {
 }
 
 /* Cell state: 0 gone, 1 shown as drawn, 2 shown inverted (the highlighted menu entry: the glyph shape is still
- * there but in another colour on a uniform bar). */
-static int cell_state(Machine *m, Cell *e) {
+ * there but in another colour on a uniform bar).
+ * The mouse pointer (or anything else drawn over a glyph) spoils pixels, and a big round glyph like the choice bullet
+ * has little background to spare: so after the strict tests there are tolerant ones.  ha/hb (>= 0): the other glyphs
+ * of this row are known to be inverted with these colours; rel: they are known to be shown as drawn. */
+static int cell_state(Machine *m, Cell *e, int ha, int hb, int rel) {
     int ink = 0, ok = 0, nn = 0, ci[16] = {0}, cn[16] = {0};
     for (int r = 0; r < e->rows; r++)
         for (int k = 0; k < e->cx; k++) {
@@ -221,6 +224,10 @@ static int cell_state(Machine *m, Cell *e) {
     if (ok * 100 >= ink * 60) { e->hl = 0; return 1; }
     int a = 0, bb = 0; for (int i = 1; i < 16; i++) { if (ci[i] > ci[a]) a = i; if (cn[i] > cn[bb]) bb = i; }
     if (a != bb && ci[a] * 100 >= ink * 70 && nn >= 8 && cn[bb] * 100 >= nn * 70) { e->hl = 1; e->ca = (uint8_t)a; e->cb = (uint8_t)bb; return 2; }
+    /* tolerant: most of the whole cell still agrees with a two-colour inverted picture of the glyph */
+    if (a != bb && a != e->fg && nn >= 8 && ci[a] * 100 >= ink * 55 && (ci[a] + cn[bb]) * 100 >= (ink + nn) * 70) { e->hl = 1; e->ca = (uint8_t)a; e->cb = (uint8_t)bb; return 2; }
+    if (ha >= 0 && ha != hb && ha != e->fg && nn >= 8 && (ci[ha] + cn[hb]) * 100 >= (ink + nn) * 45) { e->hl = 1; e->ca = (uint8_t)ha; e->cb = (uint8_t)hb; return 2; }
+    if (rel && ok * 100 >= ink * 30) { e->hl = 0; return 1; }
     return 0;
 }
 
@@ -297,13 +304,34 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
     /* A cell that fails the check is only hidden: VRAM passes through odd states while the game inverts or redraws a
      * menu entry, and judging such a moment final would lose glyphs for good.  It is dropped after a while, and
      * comes back if the picture returns. */
+    int st[TC_MAX];
     for (int i = 0; i < tc->n; i++) {
         Cell *e = &tc->c[i];
-        if (m->icount - e->born < (uint64_t)m->ips / 20) continue;
-        if (cell_state(m, e)) { e->dead = 0; continue; }
-        if (!e->dead) { e->dead = 1; e->dead_t = m->icount; }
-        else if (m->icount - e->dead_t > (uint64_t)m->ips * 2 / 5) { cell_remove(tc, i); i--; }
+        st[i] = m->icount - e->born < (uint64_t)m->ips / 20 ? -1 : cell_state(m, e, -1, -1, 0);
     }
+    /* a glyph that fails alone while the rest of its row checks out is most likely partly covered (mouse pointer):
+     * judge it again, leniently, against what its row-mates show */
+    for (int i = 0; i < tc->n; i++) {
+        if (st[i] != 0) continue;
+        Cell *e = &tc->c[i]; int n1 = 0, n2 = 0, ha = -1, hb = -1;
+        for (int j = 0; j < tc->n; j++) {
+            if (j == i || st[j] <= 0 || abs(tc->c[j].y - e->y) > 4) continue;
+            if (st[j] == 2) { n2++; ha = tc->c[j].ca; hb = tc->c[j].cb; } else n1++;
+        }
+        if (n2 >= 2) st[i] = cell_state(m, e, ha, hb, 0);
+        else if (n1 >= 2 && !n2) st[i] = cell_state(m, e, -1, -1, 1);
+    }
+    int w = 0;
+    for (int i = 0; i < tc->n; i++) {
+        Cell *e = &tc->c[i]; int keep = 1;
+        if (st[i] > 0) e->dead = 0;
+        else if (st[i] == 0) {
+            if (!e->dead) { e->dead = 1; e->dead_t = m->icount; }
+            else if (m->icount - e->dead_t > (uint64_t)m->ips * 2 / 5) keep = 0;
+        }
+        if (keep) { if (w != i) tc->c[w] = *e; w++; }
+    }
+    tc->n = w;
     /* text strips that were copied to the screen: adopt them unless glyphs we already track cover that spot */
     for (int si = 0; si < tc->nstrip; si++) {
         struct Strip *ps = &tc->strip[si];
@@ -320,7 +348,7 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
             memset(e, 0, sizeof *e);
             e->x = (int16_t)((ps->col + k) * 8); e->y = ps->row; e->cx = 1; e->rows = ps->rows; e->fg = ps->ink; e->bg = 0; e->tile = 1; e->born = m->icount;
             memcpy(e->bits, ps->tile[k], ps->rows);
-            if (!cell_state(m, e)) { e->dead = 1; e->dead_t = m->icount; }   /* (the copy may not have run yet: kept hidden, re-judged later) */
+            if (!cell_state(m, e, -1, -1, 0)) { e->dead = 1; e->dead_t = m->icount; }   /* (the copy may not have run yet: kept hidden, re-judged later) */
         }
     }
     tc->nstrip = 0;
