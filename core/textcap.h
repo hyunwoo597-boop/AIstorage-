@@ -14,4 +14,7 @@ int  textcap_unsettled(Machine *m);            /* 1 while some glyphs are hidden
 int  textcap_render(Machine *m, uint8_t *rgb, int w, int h);
 /* Largest magnification the bottom-screen layout may use (default 1.5; the engine's glyphs are 16 px). */
 void textcap_set_max_scale(float s);
+/* Touch on a choice menu: after textcap_render, 1 if the layout contains a highlighted line (a menu) and the bottom-screen y coordinate ty is on one of its
+ * lines; then (*gx, *gy) is a point on the engine's 640x480 screen inside the first character of that line's logical line (where a mouse click selects it). */
+int textcap_hit(Machine *m, int tx, int ty, int *gx, int *gy);
 #endif

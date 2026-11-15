@@ -177,12 +177,13 @@ static int ktext(uint16_t *fb, int fbw, int x, int y, int maxw, const char *s, u
 
 /* Title picture on the top screen (240x240, centred) with a line of text on the bottom screen.  Both buffers are written (call it
  * twice while nothing else is drawing) so it stays up while the game files load. */
-static void splash_frame(const char *bottom, uint16_t col) {
+static void splash_frame(const char *bottom, const char *bottom2, uint16_t col) {
     fb_get();
     fill(fbTop, 400, 0);
     for (int x = 0; x < SPLASH_W; x++) memcpy(fbTop + (80 + x) * 240, SPLASH + x * 240, 240 * sizeof(uint16_t));
     fill(fbBot, 320, C565(10, 10, 30));
-    ktext(fbBot, 320, (320 - kwidth(bottom) - 2) / 2, 108, 304, bottom, col, 1);
+    ktext(fbBot, 320, (320 - kwidth(bottom) - 2) / 2, bottom2 ? 96 : 108, 304, bottom, col, 1);
+    if (bottom2) ktext(fbBot, 320, (320 - kwidth(bottom2) - 2) / 2, 96 + KF_LH + 8, 304, bottom2, C565(170, 190, 230), 0);
     present();
 }
 
@@ -367,6 +368,7 @@ static uint32_t key_sent;                               /* bit i: key i is curre
 static float mx_acc, my_acc;
 static int lb_frames, rb_frames;          /* remaining frames a click is held (min press length) */
 static int touch_active, touch_x0, touch_y0, touch_lx, touch_ly, touch_age, touch_moved;
+static int touch_menu;               /* the current touch started on a line of a choice menu: the finger picks a line (the mouse jumps to it), lifting it clicks */
 
 static void mouse_move(Machine *m, float dx, float dy) {
     mx_acc += dx; my_acc += dy;
@@ -411,15 +413,23 @@ static void input_frame(Machine *m) {
     int left_touch = 0;
     if (held & KEY_TOUCH) {
         touchPosition tp; hidTouchRead(&tp);
-        if (!touch_active) { touch_active = 1; touch_x0 = touch_lx = tp.px; touch_y0 = touch_ly = tp.py; touch_age = 0; touch_moved = 0; }
-        else {
+        int gx, gy;
+        if (!touch_active) {
+            touch_active = 1; touch_x0 = touch_lx = tp.px; touch_y0 = touch_ly = tp.py; touch_age = 0; touch_moved = 0;
+            touch_menu = textcap_hit(m, tp.px, tp.py, &gx, &gy);
+            if (touch_menu) { m->mouse_x = gx; m->mouse_y = gy; mx_acc = my_acc = 0; }
+        } else if (touch_menu) {                                     /* choice menu: the mouse follows the finger from line to line */
+            if (textcap_hit(m, tp.px, tp.py, &gx, &gy)) { m->mouse_x = gx; m->mouse_y = gy; }
+            touch_lx = tp.px; touch_ly = tp.py; touch_age++;
+        } else {
             mouse_move(m, (tp.px - touch_lx) * 2.0f, (tp.py - touch_ly) * 2.0f);
             touch_lx = tp.px; touch_ly = tp.py; touch_age++;
             if (abs(tp.px - touch_x0) + abs(tp.py - touch_y0) > 8) touch_moved = 1;
         }
     } else if (touch_active) {
-        if (!touch_moved && touch_age < 15) left_touch = 1;
-        touch_active = 0;
+        if (touch_menu) left_touch = 1;                              /* lifting the finger on a choice selects it */
+        else if (!touch_moved && touch_age < 15) left_touch = 1;
+        touch_active = 0; touch_menu = 0;
     }
     if (left_touch) lb_frames = 3;
     int btn = 0;
@@ -434,7 +444,7 @@ static void input_frame(Machine *m) {
 static void input_release_all(Machine *m) {
     for (unsigned i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++)
         if (key_sent & (1u << i)) machine_key(m, KEYS[i].sc, 0, KEYS[i].ascii);
-    key_sent = 0; prev_held = 0; m->mouse_btn = 0; lb_frames = rb_frames = 0; touch_active = 0;
+    key_sent = 0; prev_held = 0; m->mouse_btn = 0; lb_frames = rb_frames = 0; touch_active = 0; touch_menu = 0;
 }
 
 /* ------------------------------------------------------------------ rendering */
@@ -769,7 +779,7 @@ int main(void) {
     uint32_t ips = is_new ? 4000000u : 1500000u;
     machine_set_ips(m, ips);
 
-    splash_frame("불러오는 중...", C565(230, 230, 230)); splash_frame("불러오는 중...", C565(230, 230, 230));
+    splash_frame("불러오는 중...", NULL, C565(230, 230, 230)); splash_frame("불러오는 중...", NULL, C565(230, 230, 230));
     dos_now_ms = now_ms;
     dos_cache_preload(m);              /* the big data files go into RAM: no SD-card stalls (and sound dropouts) while playing */
     LOG("data cached");
@@ -779,13 +789,13 @@ int main(void) {
       LOG("MUSICV done: exited=%d tsr=%d instr=%ld", m->exited, m->tsr_kept, total); }
     if (dos_exec(m, "SILV1.COM", "main.mes D D") < 0) { LOG("SILV1.COM launch failed"); message_screen("SILV1.COM 실행 실패", "SILV1.COM / SILV.EXE 를 시작할 수 없습니다.\n게임 파일이 모두 복사되었는지 확인하세요."); goto done; }
     LOG("game started  top_zoom=%d cpu_mode=%d", top_zoom, cpu_mode);
-    {                                                  /* everything is loaded: the title picture stays until A is pressed (and released again, so that press is not also a click in the game) */
+    {                                                  /* everything is loaded: the title picture stays until A is pressed or the touch screen is touched (and released again, so that press is not also a click in the game) */
         int a_seen = 0;
         while (aptMainLoop()) {
-            splash_frame("A 버튼을 눌러 시작", C565(255, 220, 80));
+            splash_frame("A 버튼을 눌러 시작", "(화면을 터치해서 시작)", C565(255, 220, 80));
             hidScanInput();
-            if (hidKeysDown() & KEY_A) a_seen = 1;
-            if (a_seen && !(hidKeysHeld() & KEY_A)) break;
+            if (hidKeysDown() & (KEY_A | KEY_TOUCH)) a_seen = 1;
+            if (a_seen && !(hidKeysHeld() & (KEY_A | KEY_TOUCH))) break;
         }
     }
     top_clear();

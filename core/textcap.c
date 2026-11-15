@@ -235,7 +235,7 @@ static int cell_state(Machine *m, Cell *e, int ha, int hb, int rel) {
 typedef struct { const Cell *cell; int units; } Item;       /* cell == NULL: a blank of `units` eighths */
 
 #define MAX_ITEMS 1024
-typedef struct { int first, count; int width_u; int newl; } DLine;     /* display line over items[] (units of 8px); newl = first display line of a logical line */
+typedef struct { int first, count; int width_u; int newl; int lstart; } DLine;     /* display line over items[] (units of 8px); newl = first display line of a logical line; lstart = index of that logical line's first item */
 
 static int ink_units(const Cell *e) {
     int last = 0;
@@ -299,6 +299,18 @@ static int dl_height(const DLine *dl, int a, int b, int lineh) {
     int h = 0;
     for (int i = a; i < b; i++) h += lineh + (i > a && dl[i].newl ? LINE_GAP : 0);
     return h;
+}
+/* Where each line of the last rendered layout is on the bottom screen, and where its first character is on the engine's screen, so a tap on a
+ * line of a choice menu can be turned into "put the mouse on that choice and click" (see textcap_hit). */
+typedef struct { int y0, y1, gx, gy; } HitLine;
+static HitLine g_hit[256];
+static int g_nhit, g_menu;
+int textcap_hit(Machine *m, int tx, int ty, int *gx, int *gy) {
+    (void)m; (void)tx;
+    if (!g_menu) return 0;
+    for (int i = 0; i < g_nhit; i++)
+        if (ty >= g_hit[i].y0 && ty < g_hit[i].y1) { *gx = g_hit[i].gx; *gy = g_hit[i].gy; return 1; }
+    return 0;
 }
 static float g_max_scale = 1.5f;
 void textcap_set_max_scale(float s) { g_max_scale = s; }
@@ -425,7 +437,7 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
                 int stop = k;
                 if (k < end && brk > pos) stop = brk + 1;   /* wrap at the last blank if there is one */
                 int ww = 0; for (int q = pos; q < stop; q++) ww += items[q].units;
-                dl[ndl].first = pos; dl[ndl].count = stop - pos; dl[ndl].width_u = ww; dl[ndl].newl = (pos == start); ndl++;
+                dl[ndl].first = pos; dl[ndl].count = stop - pos; dl[ndl].width_u = ww; dl[ndl].newl = (pos == start); dl[ndl].lstart = start; ndl++;
                 pos = stop;
                 while (pos < end && !items[pos].cell && k < end) pos++;   /* swallow blanks at the wrap point */
             }
@@ -437,13 +449,22 @@ int textcap_render(Machine *m, uint8_t *rgb, int W, int H) {
     int total_h = dl_height(dl, first_line, ndl, lineh);
     float oy = (float)(MARGIN + (availH - total_h) / 2);
     int drawn = 0;
+    g_nhit = 0; g_menu = 0;
     for (int li = first_line; li < ndl; li++, oy += lineh) {
         if (li > first_line && dl[li].newl) oy += LINE_GAP;        /* a little air between separate lines (choices, paragraphs); wrapped continuations stay together */
         float ox = (float)MARGIN;
         int hl = 0; uint8_t barc[3] = {235, 235, 235};
+        {                                                          /* hit area of this line: the line itself plus half of the gap on either side; target: middle of the first character of its logical line */
+            const Cell *fc = NULL;
+            for (int q = dl[li].lstart; q < ni && !fc; q++) { if (line_of[q] != line_of[dl[li].lstart]) break; if (items[q].cell) fc = items[q].cell; }
+            if (fc && g_nhit < 256) {
+                int top = (int)oy - (li > first_line && dl[li].newl ? LINE_GAP / 2 : 0), bot = (int)oy + lineh + (li + 1 < ndl && dl[li + 1].newl ? LINE_GAP / 2 : 0);
+                g_hit[g_nhit].y0 = top; g_hit[g_nhit].y1 = bot; g_hit[g_nhit].gx = fc->x + 8; g_hit[g_nhit].gy = fc->y + fc->rows / 2; g_nhit++;
+            }
+        }
         for (int q = dl[li].first; q < dl[li].first + dl[li].count; q++)
             if (items[q].cell && items[q].cell->hl) {
-                hl = 1; uint8_t t[3]; rgb_of(m, items[q].cell->cb, t);
+                hl = 1; g_menu = 1; uint8_t t[3]; rgb_of(m, items[q].cell->cb, t);
                 if ((t[0] * 3 + t[1] * 6 + t[2]) / 10 >= 150) { barc[0] = t[0]; barc[1] = t[1]; barc[2] = t[2]; }
             }
         if (hl) for (int dy = 0; dy < lineh; dy++) for (int dx = 4; dx < W - 4; dx++) put(rgb, W, H, dx, (int)oy + dy, barc, 1.f);

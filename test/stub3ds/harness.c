@@ -5,6 +5,15 @@
 void stub_input(int scan, u32 *held, touchPosition *tp, circlePosition *cp) {
     *held = 0; memset(tp, 0, sizeof *tp); memset(cp, 0, sizeof *cp);
     if (scan >= 6 && scan < 10) { *held |= KEY_A; return; }           /* press A on the title picture */
+    if (getenv("STUB_TOUCH")) {                                          /* STUB_TOUCH="lo:hi:px:py[,lo:hi:px:py...]": hold the touch screen at (px,py) during scans lo..hi-1 */
+        const char *t = getenv("STUB_TOUCH");
+        while (t && *t) {
+            int lo, hi, px, py, n = 0;
+            if (sscanf(t, "%d:%d:%d:%d%n", &lo, &hi, &px, &py, &n) != 4) break;
+            if (scan >= lo && scan < hi) { *held |= KEY_TOUCH; tp->px = px; tp->py = py; }
+            t += n; if (*t == ',') t++;
+        }
+    }
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 3) return;
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 5) { if (scan >= 850 && scan < 960) *held |= KEY_SELECT; return; }
     if (getenv("STUB_MODE") && atoi(getenv("STUB_MODE")) == 8) {      /* open menu, go to "Sound test", run it, resume */
