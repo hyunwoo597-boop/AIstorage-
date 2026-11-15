@@ -109,8 +109,10 @@ jobs:
         with:
           tag_name: tools
           name: build tools (makerom, bannertool)
-          body: "Linux x86_64 binaries of makerom and bannertool as built by CI (used to make the CIA that has the game files inside; those files are not in this repository)."
+          body: "Linux x86_64 binaries of makerom and bannertool, plus the ELF and banner of the latest build, as made by CI (used to make the CIA that has the game files inside; those files are not in this repository)."
           make_latest: false
           files: |
             makerom
             bannertool
+            out/nonomura.elf
+            out/banner.bnr
