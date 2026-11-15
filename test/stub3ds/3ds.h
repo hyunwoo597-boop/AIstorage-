@@ -58,7 +58,8 @@ static long _dsp_under_events, _dsp_under_samples, _dsp_played; static FILE *_ds
 static void _dsp_run(double dt) {
     if (!_dsp_out && getenv("STUB_AUDIO")) _dsp_out = fopen(getenv("STUB_AUDIO"), "wb");
     if (_dsp_paused) return;
-    _dsp_acc += dt * _dsp_rate; int whole = (int)_dsp_acc; _dsp_acc -= whole;
+    static double _dsp_skew = -1; if (_dsp_skew < 0) _dsp_skew = getenv("STUB_DSPSKEW") ? atof(getenv("STUB_DSPSKEW")) : 1.0;
+    _dsp_acc += dt * _dsp_rate * _dsp_skew; int whole = (int)_dsp_acc; _dsp_acc -= whole;
     while (whole > 0) {
         if (!_dsp_n) {
             if (_dsp_started) { _dsp_under_samples += whole; if (!_dsp_in_under) { _dsp_under_events++; _dsp_in_under = 1; } }

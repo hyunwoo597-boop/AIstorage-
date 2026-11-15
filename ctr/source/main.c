@@ -65,8 +65,10 @@ static u64 t_start;
 static void LOG(const char *fmt, ...) {
     if (!logfp) return;
     va_list ap; va_start(ap, fmt);
-    fprintf(logfp, "[%6.1f] ", (double)(svcGetSystemTick() - t_start) / TICKS_PER_SEC);
-    vfprintf(logfp, fmt, ap); fputc('\n', logfp); fflush(logfp);
+    double t = (double)(svcGetSystemTick() - t_start) / TICKS_PER_SEC;
+    fprintf(logfp, "[%6.1f] ", t);
+    vfprintf(logfp, fmt, ap); fputc('\n', logfp);
+    if (t < 60.0) fflush(logfp);          /* later lines stay in the buffer: a flush to the SD card can stall the frame loop (and the music) */
     va_end(ap);
 }
 
@@ -186,6 +188,9 @@ static void message_screen(const char *title, const char *body) {
 /* The emulation runs LEAD_S ahead of real time, so that much sound is always queued at the DSP.  A frame that takes
  * long (SD card access, a big redraw, a save) then only eats into that reserve instead of making the music stop. */
 #define LEAD_S 0.25
+#define LEAD_MAX 0.60
+/* The reserve grows by 0.1 s whenever the music still ran dry (this device stalls longer than the reserve) and shrinks slowly while all is calm. */
+static double lead_s = LEAD_S;
 #define START_FRAMES (AUD_RATE * 15 / 100)  /* playback (re)starts once this much is queued */
 static unsigned aud_underruns, aud_dropped;
 static ndspWaveBuf wbuf[NWB];
@@ -223,6 +228,11 @@ static uint32_t audio_queued_frames(void) {
  * absorbed by the queued reserve; changing the pitch for them would itself sound broken). */
 static void audio_set_speed(double ratio) {
     if (!audio_ok) return;
+    /* A slow second is almost always a one-off stall; slowing the DSP for it bends the pitch and lets the queue grow for good.
+     * Only a slowness that lasts several seconds in a row is followed. */
+    static int slow_secs;
+    if (ratio < 0.9) slow_secs++; else if (ratio >= 0.97) slow_secs = 0;
+    if (slow_secs < 4) ratio = 1.0;
     if (ratio > 1.0) ratio = 1.0;
     if (ratio < 0.5) ratio = 0.5;
     float r = ratio >= 0.93 ? (float)NDSP_SAMPLE_RATE : (float)(NDSP_SAMPLE_RATE * ratio);
@@ -233,10 +243,10 @@ static void audio_pump(Machine *m) {
     uint32_t n = opl_available(m->opl);
     if (!audio_ok) { opl_discard(m->opl, n); return; }
     /* the DSP ran completely dry since the last frame: stop, and wait until a reserve has been rebuilt */
-    if (audio_started && audio_queued() == 0) { ndspChnSetPaused(0, true); audio_started = 0; aud_underruns++; }
+    if (audio_started && audio_queued() == 0) { ndspChnSetPaused(0, true); audio_started = 0; aud_underruns++; lead_s += 0.10; if (lead_s > LEAD_MAX) lead_s = LEAD_MAX; }
     /* never throw samples away just because every buffer is busy: they wait in the synth ring for the next frame.
      * Only an absurd backlog is trimmed (keeping the newest 0.25 s). */
-    if (n > AUD_RATE * 2 / 5) { opl_discard(m->opl, n - AUD_RATE / 4); n = AUD_RATE / 4; aud_dropped++; }
+    if (n > AUD_RATE * 7 / 10) { opl_discard(m->opl, n - AUD_RATE / 4); n = AUD_RATE / 4; aud_dropped++; }
     while (n) {
         ndspWaveBuf *wb = NULL;
         for (int i = 0; i < NWB; i++)
@@ -450,6 +460,7 @@ static void menu_draw(Machine *m, int sel) {
 static int text_changed;
 static int pause_menu(Machine *m) {
     int sel = 0;
+    if (logfp) fflush(logfp);          /* the pause menu is a good moment for the SD card write */
     input_release_all(m);
     audio_hold();
     while (aptMainLoop()) {
@@ -502,6 +513,7 @@ int main(void) {
     }
     char logpath[300]; snprintf(logpath, sizeof logpath, "%s/nono_log.txt", gdir);
     logfp = fopen(logpath, "w");
+    if (logfp) setvbuf(logfp, NULL, _IOFBF, 16384);
     snprintf(cfg_path, sizeof cfg_path, "%s/nono_cfg.txt", gdir);
     cfg_load();
     textcap_set_max_scale(TEXT_SCALE[text_size]);
@@ -536,8 +548,10 @@ int main(void) {
 
     u64 win_t0 = svcGetSystemTick(), win_busy = 0, win_v0 = machine_vtime_ns(m), win_i0 = m->icount, win_s0 = m->skipped_total;
     int win_frames = 0, frame = 0, lag_frames = 0, bot_force = 1;
-    u64 pace_t0 = svcGetSystemTick(), pace_v0 = machine_vtime_ns(m);
-    double pace_lead = audio_ok ? LEAD_S : 0;      /* how far the emulation runs ahead of real time (see LEAD_S) */
+    u64 pace_last = svcGetSystemTick(), pace_v0 = machine_vtime_ns(m);
+    double pace_clock = 0, pace_total = 0, pace_adj = 0, aq_ema = lead_s + 0.015;   /* pace_clock: virtual seconds earned so far (reduced when a backlog is forgiven); pace_total: same, never reduced */
+    u64 prev_f0 = 0; double stat_maxfr = 0, win_maxfr = 0, win_pt0 = 0; unsigned slow100 = 0, slow250 = 0;
+    double pace_lead = audio_ok ? lead_s : 0, last_lead = lead_s; int calm_secs = 0; unsigned last_under = 0;      /* how far the emulation runs ahead of real time (see LEAD_S) */
     uint32_t last_dirty = ~0u, last_gen = ~0u, bot_dirty = ~0u; int last_bot_frame = -100;
     int quit = 0;
 
@@ -546,8 +560,8 @@ int main(void) {
         hidScanInput();
         if (hidKeysDown() & KEY_START) {
             if (pause_menu(m)) break;
-            pace_lead = audio_ok ? LEAD_S - (double)audio_queued_frames() / AUD_RATE : 0; if (pace_lead < 0) pace_lead = 0;   /* sound still queued from before the pause counts as lead */
-            bot_force = 1; pace_t0 = svcGetSystemTick(); pace_v0 = machine_vtime_ns(m); win_t0 = svcGetSystemTick(); win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;
+            pace_lead = audio_ok ? lead_s - (double)audio_queued_frames() / AUD_RATE : 0; if (pace_lead < 0) pace_lead = 0; last_lead = lead_s;   /* sound still queued from before the pause counts as lead */
+            bot_force = 1; pace_last = svcGetSystemTick(); pace_clock = 0; pace_adj = 0; aq_ema = lead_s + 0.015; prev_f0 = 0; win_pt0 = pace_total; pace_v0 = machine_vtime_ns(m); win_t0 = svcGetSystemTick(); win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;
             continue;
         }
         if (m->exited) break;
@@ -556,8 +570,19 @@ int main(void) {
         /* Emulate the virtual time that has passed in real life (not a fixed 1/60 s: the screen refreshes at 59.83 Hz and
          * frames sometimes take longer), so game and music run at true speed and the audio never gets ahead or behind.
          * Never spend more than ~75% of a real frame, and forget any backlog beyond 50 ms. */
-        double owe = (double)(f0 - pace_t0) / TICKS_PER_SEC + pace_lead - (double)(machine_vtime_ns(m) - pace_v0) / 1e9;
-        if (owe > pace_lead + 0.050) { pace_t0 += (u64)((owe - pace_lead - 0.050) * TICKS_PER_SEC); owe = pace_lead + 0.050; }
+        if (prev_f0) {                                  /* frame-time statistics (for the SELECT overlay) */
+            double ft = (double)(f0 - prev_f0) / TICKS_PER_SEC * 1000.0;
+            if (ft > win_maxfr) win_maxfr = ft;
+            if (ft > 100.0) slow100++;
+            if (ft > 250.0) slow250++;
+        }
+        prev_f0 = f0;
+        double dt = (double)(f0 - pace_last) / TICKS_PER_SEC; pace_last = f0;
+        if (dt > 1.0) dt = 1.0;
+        pace_clock += dt * (1.0 + pace_adj); pace_total += dt * (1.0 + pace_adj);
+        if (lead_s != last_lead) { pace_lead += lead_s - last_lead; if (pace_lead < 0) pace_lead = 0; last_lead = lead_s; }
+        double owe = pace_clock + pace_lead - (double)(machine_vtime_ns(m) - pace_v0) / 1e9;
+        if (owe > pace_lead + 0.050) { pace_clock -= owe - pace_lead - 0.050; owe = pace_lead + 0.050; }
         if (owe < 0) owe = 0;
         long want = (long)(m->ips * owe), done = 0;
 #ifdef STUB_JITTER      /* test builds only: end frames at random points to provoke mid-redraw renders */
@@ -573,6 +598,13 @@ int main(void) {
         int lagged = done < want;
         lag_frames = lagged ? lag_frames + 1 : 0;
         audio_pump(m);
+        /* Keep the queued sound at its target: if the DSP clock and the system clock disagree a little, or a hiccup left the queue
+         * fuller or emptier than planned, the game is run a hair slower or faster until the queue is back (no pitch change, no dropped sound). */
+        if (audio_ok && audio_started) {
+            aq_ema += ((double)audio_queued_frames() / AUD_RATE - aq_ema) * (1.0 / 40.0);
+            pace_adj = -0.25 * (aq_ema - (lead_s + 0.015));
+            if (pace_adj > 0.03) pace_adj = 0.03; else if (pace_adj < -0.03) pace_adj = -0.03;
+        } else { pace_adj = 0; aq_ema = lead_s + 0.015; }
 
         /* top screen: re-render the picture when VRAM / palette changed (every other frame if we are struggling) */
         fb_get();
@@ -584,8 +616,9 @@ int main(void) {
         memcpy(fbTop, topimg, sizeof topimg);
         if (hidKeysHeld() & KEY_SELECT) {               /* hold SELECT: live performance numbers (for bug reports) */
             char t[200];
-            snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %dms\nunder %u drop %u tc %d",
-                     stat_speed * 100.0, stat_busy * 100.0, stat_mips, m->ips / 1e6, stat_skip * 100.0, (int)(audio_queued_frames() * 1000ull / AUD_RATE), aud_underruns, aud_dropped, textcap_active(m));
+            snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %dms lead %d\nunder %u drop %u tc %d\nfrm max %.0fms >100:%u >250:%u adj %+.1f%%",
+                     stat_speed * 100.0, stat_busy * 100.0, stat_mips, m->ips / 1e6, stat_skip * 100.0, (int)(audio_queued_frames() * 1000ull / AUD_RATE), (int)(lead_s * 1000), aud_underruns, aud_dropped, textcap_active(m),
+                     stat_maxfr, slow100, slow250, pace_adj * 100.0);
             gtext(fbTop, 400, 2, 2, 46, t, C565(255, 255, 0), C565(0, 0, 0), 1);
         }
 
@@ -606,12 +639,16 @@ int main(void) {
             u64 now = svcGetSystemTick();
             double real = (double)(now - win_t0) / TICKS_PER_SEC;
             double virt = (double)(machine_vtime_ns(m) - win_v0) / 1e9;
-            double ratio = real > 0 ? virt / real : 1.0;
+            double ent = pace_total - win_pt0;                 /* virtual time the pacer has earned (the feedback above may run the game a little slow on purpose) */
+            double ratio = ent > 0 ? virt / ent : 1.0;
+            stat_maxfr = win_maxfr; win_maxfr = 0; win_pt0 = pace_total;
             double busy = real > 0 ? (double)win_busy / TICKS_PER_SEC / real : 1.0;
             stat_speed = ratio; stat_mips = (double)((m->icount - win_i0) - (m->skipped_total - win_s0)) / real / 1e6;   /* instructions really executed */
             stat_busy = busy;
             stat_skip = (m->icount - win_i0) ? (double)(m->skipped_total - win_s0) / (double)(m->icount - win_i0) : 0;
             audio_set_speed(ratio);
+            if (aud_underruns != last_under) { last_under = aud_underruns; calm_secs = 0; }
+            else if (++calm_secs >= 30 && lead_s > LEAD_S + 0.001) { lead_s -= 0.02; if (lead_s < LEAD_S) lead_s = LEAD_S; calm_secs = 0; }
             if (cpu_mode == 0) {
                 uint32_t n = m->ips;
                 static int cooldown;
@@ -624,7 +661,7 @@ int main(void) {
             }
             static int logn;
             if (logn < 40 || (logn % 10) == 0)
-                LOG("speed=%.0f%% busy=%.0f%% exec=%.2f MIPS skip=%.0f%% aq=%dms under=%u drop=%u ips=%u mouse=%d,%d unhandled=%u glyphs=%d tc=%d pc=%04X:%04X mode=%02X vdirty=%u", ratio * 100, busy * 100, stat_mips, stat_skip * 100, (int)(audio_queued_frames() * 1000ull / AUD_RATE), aud_underruns, aud_dropped, m->ips, m->mouse_x, m->mouse_y, (unsigned)m->stat_unhandled, last_glyphs, textcap_active(m), m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, (unsigned)m->vga.dirty);
+                LOG("speed=%.0f%% busy=%.0f%% maxfr=%.0fms adj=%+.2f%% exec=%.2f MIPS skip=%.0f%% aq=%dms lead=%d under=%u drop=%u ips=%u mouse=%d,%d unhandled=%u glyphs=%d tc=%d pc=%04X:%04X mode=%02X vdirty=%u", ratio * 100, busy * 100, stat_maxfr, pace_adj * 100.0, stat_mips, stat_skip * 100, (int)(audio_queued_frames() * 1000ull / AUD_RATE), (int)(lead_s * 1000), aud_underruns, aud_dropped, m->ips, m->mouse_x, m->mouse_y, (unsigned)m->stat_unhandled, last_glyphs, textcap_active(m), m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, (unsigned)m->vga.dirty);
             if (m->con_len) { static int lastcl; if (m->con_len != lastcl) { LOG("console: %s", m->con); lastcl = m->con_len; } }
             logn++;
             win_t0 = now; win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;
