@@ -159,10 +159,10 @@ int vgascale_window_up(Machine *m) {
     return 1;
 }
 
-#define FILL_X0 64                           /* inside the picture's frame: x 64..575, rows 57..313 of the 640x480 screen */
-#define FILL_W  512
-#define FILL_Y0 57
-#define FILL_H  257
+#define FILL_X0 64                           /* inside the picture's frame: x 64..575, rows 62..313 of the 640x480 screen (the frame's inner edge along the top is a zigzag */
+#define FILL_W  512                          /* that reaches down to row 60, so the crop starts at 62: with 57 a strip of the ornament stayed at the top) */
+#define FILL_Y0 62
+#define FILL_H  252
 static uint16_t fillsrc[FILL_W * FILL_H];
 
 static void render_fill(Machine *m, uint16_t *fb) {

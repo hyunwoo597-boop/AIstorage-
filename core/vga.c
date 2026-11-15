@@ -197,7 +197,27 @@ uint8_t vga_io_in(Machine *m, uint16_t port) {
         uint64_t line = fl / 525; if (!line) line = 1;
         int vr = ph < fl * 6 / 100;
         int hb = ((m->icount % line) * 5 >= line * 4);
-        return 0xC0 | (vr ? 8 : 0) | ((vr || hb) ? 1 : 0); }
+        uint8_t res = 0xC0 | (vr ? 8 : 0) | ((vr || hb) ? 1 : 0);
+        /* Vertical-retrace wait loops ("in al,dx / test al,8 / jz|jnz back", the engine's dissolve effects use them) spin for
+         * thousands of interpreted instructions per frame.  When the same read keeps coming back in a tight loop, jump the clock
+         * to the next edge of the retrace bit instead (the loop sees exactly the same bit at exactly the same virtual time;
+         * not past the next timer tick, which must be delivered on time). */
+        if (m->icount - v->st_last <= 8 && m->cpu.ip == v->st_ip) { if (v->st_streak < 255) v->st_streak++; } else v->st_streak = 0;
+        v->st_last = m->icount; v->st_ip = m->cpu.ip;
+        if (v->st_streak >= 3) {
+            const uint8_t *q = m->mem + LIN(m->cpu.seg[CS], m->cpu.ip);
+            if (q[0] == 0xA8 && q[1] == 0x08 && (q[2] == 0x74 || q[2] == 0x75) && q[3] == 0xFB) {   /* test al,8 ; je/jne back to the "in al,dx": nothing else in the loop */
+                uint64_t edge = vr ? fl * 6 / 100 : fl;
+                if (edge > ph + 1) {
+                    uint32_t r = m->pit_reload ? m->pit_reload : 65536;
+                    uint64_t per = (uint64_t)r * m->ips / 1193182u; if (!per) per = 1;
+                    uint64_t tick = m->pit_last_irq + per, d = edge - ph - 1;
+                    if (tick > m->icount + 1 && d > tick - m->icount - 1) d = tick - m->icount - 1;
+                    if (d > 4) machine_skip(m, (uint32_t)d);
+                }
+            }
+        }
+        return res; }
     }
     return 0xFF;
 }

@@ -601,10 +601,33 @@ static void build_bgx(void) {
         }
     }
 }
+/* is there any opaque character pixel on the visible screen (rows 40..439)? */
+static int screen_has_chars(const VGA *v) {
+    int pitch = v->crtc[0x13] * 2; if (!pitch) pitch = 80;
+    uint32_t start = (v->crtc[0xC] << 8) | v->crtc[0xD];
+    for (int y = 40; y < 440; y++) {
+        uint32_t row = start + (uint32_t)y * pitch;
+        for (int b = 0; b < 80; b++) if (v->chplane[(row + b) & 0xFFFF]) return 1;
+    }
+    return 0;
+}
+static int chmask_zero;                 /* chmask[] is known to be all zero */
 static void char_layer(Machine *m) {
     VGA *v = &m->vga;
     int strip = !(win_hide && win_state);
     unsigned key = (unsigned)top_zoom | (unsigned)pic_mode << 1 | (unsigned)win_hide << 4 | (unsigned)win_state << 5;
+    if (!screen_has_chars(v)) {
+        /* No character on the screen (title picture and its fade-in, plain backgrounds): the picture without characters is the picture itself.
+         * Skip the two extra full renders and the mask passes - the title's dissolve changes the picture 30 times a second, and doing all of
+         * that for each step made the opening stutter. */
+        memcpy(topbg, topimg, sizeof topimg);
+        if (s3d_frame) { if (fr_key != key) { frame_masks(m); fr_key = key; } build_bgx(); }
+        if (!chmask_zero) { memset(chmask, 0, sizeof chmask); chmask_zero = 1; }
+        cl_strip = strip ? 240 - (top_zoom ? 188 : 176) : 0;
+        cl_cov = 0; cl_fr = s3d_frame;
+        cl_pic = v->pic_gen; cl_pal = v->pal_gen; cl_chg = v->ch_gen; cl_key = key; cl_top = topimg_gen; cl_ver++;
+        return;
+    }
     int bgnew = strip || !cl_ver || key != cl_key || v->pic_gen != cl_pic || v->pal_gen != cl_pal || s3d_frame != cl_fr;
     if (!bgnew && v->ch_gen == cl_chg) { cl_top = topimg_gen; return; }      /* neither the background nor the set of character pixels changed (an animated face patch only changes colours): the mask is as before */
     if (bgnew) {
@@ -616,6 +639,7 @@ static void char_layer(Machine *m) {
         const uint8_t *chp[4] = { v->chplane, v->chplane, v->chplane, v->chplane };
         vgascale_set_planes(chp); top_render_to(m, chrgb); vgascale_set_planes(NULL);
         for (int i = 0; i < 400 * 240; i++) chmask[i] = ((chrgb[i] >> 5) & 63) > 6;      /* any real coverage counts, so no character edge is left behind */
+        chmask_zero = 0;
     }
     int n = 0;
     if (strip) {                                                  /* the message window strip is drawn with the same blit routine, but it is not a character */

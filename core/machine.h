@@ -24,6 +24,9 @@ typedef struct {
     uint32_t char_gen;     /* incremented by every character blit write */
     uint32_t ch_gen;       /* incremented whenever chplane[] actually changes */
     uint32_t pal_gen;      /* incremented by every palette change */
+    uint64_t st_last;      /* icount of the previous read of the status register (port 3DA) - see vga_io_in */
+    uint16_t st_ip;        /* ... and the instruction pointer it was read at */
+    uint8_t st_streak;     /* how many times in a row the same instruction has read it (a polling loop) */
 } VGA;
 
 /* ---------------- OPL ---------------- */
