@@ -43,15 +43,15 @@ static const uint32_t CPU_FIXED[] = { 0, 2000000, 3000000, 4000000, 5000000, 600
 static int cpu_mode = 0, mouse_level = 3;
 static int win_hide = 1;              /* 1: while the engine's message window is up, the top screen shows only the picture (the text is on the bottom screen) */
 static int win_state, win_cand, win_cnt, win_force;   /* current view, candidate view, frames the candidate has held, redraw request */
-static int pic_mode = PIC_FILL;       /* picture-only top view: PIC_FILL / PIC_STRETCH / PIC_FIT */
-static int top_zoom = 1;              /* 1: 640x400 game area stretched over the whole top screen, 0: original 4:3 picture */
+static int pic_mode = PIC_FILL;       /* picture-only top view: PIC_FILL / PIC_STRETCH (the PIC_FIT choice was removed from the menu; a saved pic_mode=2 is ignored) */
+static const int top_zoom = 1;        /* the 640x400 game area is always stretched over the whole top screen (the original 4:3 view was removed from the menu; a saved top_zoom= line is ignored) */
 static int s3d_mode = 0;              /* 3D style: 0 characters and the picture frame stand out in front of the flat background, 1 whole picture (tilt + frame), 2 characters only */
 static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong, 4 strongest (the 3D slider scales it further) */
 /* bottom-screen text is always shown at the smallest size (1.0x); the old size choice is gone and a saved text_size= line is ignored */
 static char cfg_path[320];
 static void cfg_save(void) {
     FILE *f = fopen(cfg_path, "w"); if (!f) return;
-    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\n", cpu_mode, mouse_level, top_zoom, win_hide, pic_mode, s3d_level, s3d_mode);
+    fprintf(f, "cpu_mode=%d\nmouse_level=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\n", cpu_mode, mouse_level, win_hide, pic_mode, s3d_level, s3d_mode);
     fclose(f);
 }
 static void cfg_load(void) {
@@ -60,9 +60,8 @@ static void cfg_load(void) {
     while (fgets(line, sizeof line, f)) {
         if (sscanf(line, "cpu_mode=%d", &v) == 1 && v >= 0 && v < 6) cpu_mode = v;
         else if (sscanf(line, "mouse_level=%d", &v) == 1 && v >= 1 && v <= 5) mouse_level = v;
-        else if (sscanf(line, "top_zoom=%d", &v) == 1) top_zoom = v ? 1 : 0;
         else if (sscanf(line, "win_hide=%d", &v) == 1) win_hide = v ? 1 : 0;
-        else if (sscanf(line, "pic_mode=%d", &v) == 1 && v >= 0 && v < 3) pic_mode = v;
+        else if (sscanf(line, "pic_mode=%d", &v) == 1 && v >= 0 && v < 2) pic_mode = v;
         else if (sscanf(line, "s3d=%d", &v) == 1 && v >= 0 && v < 5) s3d_level = v;
         else if (sscanf(line, "s3dm=%d", &v) == 1 && v >= 0 && v < 3) s3d_mode = v;
     }
@@ -649,8 +648,8 @@ static void bottom_render(Machine *m) {
 }
 
 /* ------------------------------------------------------------------ pause menu */
-enum { MI_RESUME, MI_TOP, MI_WIN, MI_PIC, MI_3D, MI_3DM, MI_CPU, MI_MOUSE, MI_SND, MI_QUIT, MI_COUNT };
-static const char *PIC_NAME[] = { "꽉 채움", "늘림", "비율 유지" };
+enum { MI_RESUME, MI_WIN, MI_PIC, MI_3D, MI_3DM, MI_CPU, MI_MOUSE, MI_SND, MI_QUIT, MI_COUNT };
+static const char *PIC_NAME[] = { "꽉 채움", "늘림" };
 static double stat_speed = 1.0, stat_mips = 0, stat_busy = 0, stat_skip = 0;
 
 static void menu_draw(Machine *m, int sel) {
@@ -668,7 +667,6 @@ static void menu_draw(Machine *m, int sel) {
             else snprintf(line, sizeof line, "CPU 속도: %.0f MIPS 고정", CPU_FIXED[cpu_mode] / 1e6);
             break;
         case MI_MOUSE: snprintf(line, sizeof line, "마우스 속도: %d", mouse_level); break;
-        case MI_TOP: snprintf(line, sizeof line, "상단 화면: %s", top_zoom ? "확대 (꽉 채움)" : "원본 4:3"); break;
         case MI_WIN: snprintf(line, sizeof line, "상단 대화창: %s", win_hide ? "숨김" : "표시"); break;
         case MI_PIC: snprintf(line, sizeof line, "상단 그림 (대화창 없음): %s", PIC_NAME[pic_mode]); break;
         case MI_3D:
@@ -717,9 +715,8 @@ static int pause_menu(Machine *m) {
             if (cpu_mode) machine_set_ips(m, CPU_FIXED[cpu_mode]);
         }
         if (sel == MI_MOUSE && (dir || (d & KEY_A))) { mouse_level += dir ? dir : 1; if (mouse_level > 5) mouse_level = 1; if (mouse_level < 1) mouse_level = 5; }
-        if (sel == MI_TOP && (dir || (d & KEY_A))) { top_zoom ^= 1; top_clear(); top_render(m); }
         if (sel == MI_WIN && (dir || (d & KEY_A))) { win_hide ^= 1; win_cand = win_state = win_hide && vgascale_window_up(m); win_cnt = 0; top_clear(); top_render(m); }
-        if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 3) % 3; top_clear(); top_render(m); }
+        if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 2) % 2; top_clear(); top_render(m); }
         if (sel == MI_3D && (dir || (d & KEY_A))) s3d_level = (s3d_level + (dir ? dir : 1) + 5) % 5;
         if (sel == MI_3DM && (dir || (d & KEY_A))) s3d_mode = (s3d_mode + (dir ? dir : 1) + 3) % 3;
         if (sel == MI_SND && (d & KEY_A)) { ktext(fbBot, 320, 9, 240 - 2 * KF_LH - 3, 304, "재생 중...", C565(255, 220, 80), 1); present(); audio_test(); }
