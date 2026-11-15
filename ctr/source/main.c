@@ -35,13 +35,14 @@ static int win_hide = 1;              /* 1: while the engine's message window is
 static int win_state, win_cand, win_cnt, win_force;   /* current view, candidate view, frames the candidate has held, redraw request */
 static int pic_mode = PIC_FILL;       /* picture-only top view: PIC_FILL / PIC_STRETCH / PIC_FIT */
 static int top_zoom = 1;              /* 1: 640x400 game area stretched over the whole top screen, 0: original 4:3 picture */
+static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong (the 3D slider scales it further) */
 static int text_size = 1;             /* bottom-screen text: 0 large, 1 medium, 2 small, 3 tiny */
 static const float TEXT_SCALE[] = { 2.0f, 1.5f, 1.25f, 1.0f };
 static const char *TEXT_NAME[] = { "크게", "보통", "작게", "아주 작게" };
 static char cfg_path[320];
 static void cfg_save(void) {
     FILE *f = fopen(cfg_path, "w"); if (!f) return;
-    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\nwin_hide=%d\npic_mode=%d\n", cpu_mode, mouse_level, top_zoom, text_size, win_hide, pic_mode);
+    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\n", cpu_mode, mouse_level, top_zoom, text_size, win_hide, pic_mode, s3d_level);
     fclose(f);
 }
 static void cfg_load(void) {
@@ -54,6 +55,7 @@ static void cfg_load(void) {
         else if (sscanf(line, "win_hide=%d", &v) == 1) win_hide = v ? 1 : 0;
         else if (sscanf(line, "pic_mode=%d", &v) == 1 && v >= 0 && v < 3) pic_mode = v;
         else if (sscanf(line, "text_size=%d", &v) == 1 && v >= 0 && v < 4) text_size = v;
+        else if (sscanf(line, "s3d=%d", &v) == 1 && v >= 0 && v < 4) s3d_level = v;
     }
     fclose(f);
 }
@@ -73,10 +75,11 @@ static void LOG(const char *fmt, ...) {
 }
 
 /* ------------------------------------------------------------------ tiny drawing helpers (column-major RGB565) */
-static uint16_t *fbTop, *fbBot;
+static uint16_t *fbTop, *fbTopR, *fbBot;      /* fbTopR: right-eye image (only distinct from fbTop while the top screen is in 3D mode) */
 static void fb_get(void) {
     u16 w, h;
     fbTop = (uint16_t *)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &w, &h);
+    fbTopR = (uint16_t *)gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, &w, &h);
     fbBot = (uint16_t *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, &w, &h);
 }
 static void fill(uint16_t *fb, int fbw, uint16_t c) { for (int i = 0; i < fbw * 240; i++) fb[i] = c; }
@@ -388,7 +391,9 @@ static void input_release_all(Machine *m) {
 
 /* ------------------------------------------------------------------ rendering */
 static uint16_t topimg[400 * 240];      /* last rendered game frame for the top screen (column-major, 400x240) */
+static unsigned topimg_gen;             /* bumped whenever topimg changes (the eye images are rebuilt from it) */
 static void top_render(Machine *m) {
+    topimg_gen++;
     if (win_hide && win_state) {                          /* message window up: picture only, the text lives on the bottom screen */
         if (top_zoom) vgascale_render_picture(m, topimg, pic_mode);
         else {
@@ -407,7 +412,72 @@ static void win_update(Machine *m) {
     if (up == win_cand) { if (win_cnt < 1000) win_cnt++; } else { win_cand = up; win_cnt = 0; }
     if (win_cand != win_state && win_cnt >= 6) { win_state = win_cand; win_force = 1; }
 }
-static void top_clear(void) { memset(topimg, 0, sizeof topimg); }
+static void top_clear(void) { memset(topimg, 0, sizeof topimg); topimg_gen++; }
+
+/* ---- top screen stereoscopic 3D ("tilt + pop-up frame"):
+ * The finished 2D picture is turned into a left and a right image.  The picture is a sloped plane: its bottom edge sits at the
+ * screen surface and its top edge recedes behind it (each row is shifted sideways, opposite ways in the two eyes), and a frame
+ * around the picture floats in front of it.  The frame also hides the strips that the sideways shifts uncover at the edges.
+ * The amount of depth follows the console's 3D slider and the menu setting (off / weak / medium / strong). */
+#define S3D_TILT 10          /* total left/right offset (pixels) between the eyes at the top row at full strength */
+#define S3D_POP 4            /* the frame's offset towards the viewer at full strength */
+static const char *S3D_NAME[] = { "끔", "약", "중", "강" };
+static const float S3D_GAIN[] = { 0.f, 0.4f, 0.7f, 1.f };
+static uint16_t eyeL[400 * 240], eyeR[400 * 240];
+static unsigned eye_gen = ~0u;
+static int eye_key = -1, s3d_on, s3d_tilt, s3d_pop;
+static float s3d_slider;
+
+/* once per frame, before the framebuffers are fetched: read the slider and switch the top screen between 2D and 3D */
+static void s3d_update(void) {
+    float sl = osGet3DSliderState();
+    if (sl < 0.f) sl = 0.f; else if (sl > 1.f) sl = 1.f;
+    s3d_slider = sl;
+    float g = S3D_GAIN[s3d_level] * sl;
+    s3d_tilt = (int)(S3D_TILT * g + 0.5f); s3d_pop = (int)(S3D_POP * g + 0.5f);
+    int on = s3d_level > 0 && (s3d_tilt > 0 || s3d_pop > 0);
+    if (on != s3d_on) { s3d_on = on; gfxSet3D(on); }
+}
+static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int pop, int B) {
+    /* eye 0 = left, 1 = right.  Behind-the-screen points move left in the left image and right in the right image; points in front the other way round. */
+    int j0[260], n[260], sh[260], nr = 0;
+    for (int j = 0; j < 240; j++) {                                  /* j = memory index inside a column = 239 - y */
+        int y = 239 - j, ci = (int)(tilt * (239 - y) / 239.0 + 0.5);   /* y = 0 (top) recedes by 'tilt', y = 239 (bottom) stays at the screen */
+        int s = eye ? ci - ci / 2 : -(ci / 2);
+        if (nr && sh[nr - 1] == s) n[nr - 1]++; else { j0[nr] = j; n[nr] = 1; sh[nr] = s; nr++; }
+    }
+    int fs = eye ? -(pop / 2) : pop - pop / 2;                         /* frame shift */
+    uint16_t frm[16];
+    for (int d = 0; d < B && d < 16; d++)
+        frm[d] = d == B - 1 ? C565(200, 204, 220) : d == B - 2 ? C565(84, 90, 118) : d == 0 ? C565(8, 8, 14) : C565(18, 18, 30);
+    for (int x = 0; x < 400; x++) {
+        uint16_t *dc = dst + x * 240;
+        for (int r = 0; r < nr; r++) {
+            int sx = x - sh[r]; sx = sx < 0 ? 0 : sx > 399 ? 399 : sx;
+            memcpy(dc + j0[r], src + sx * 240 + j0[r], n[r] * sizeof(uint16_t));
+        }
+        if (B <= 0) continue;
+        int xf = x - fs, dx = xf < 399 - xf ? xf : 399 - xf;
+        if (dx < B) {
+            for (int j = 0; j < 240; j++) {
+                int dy = j < 239 - j ? j : 239 - j, d = dx < dy ? dx : dy;
+                if (d < B) dc[j] = frm[d < 0 ? 0 : d];
+            }
+        } else for (int j = 0; j < B; j++) dc[j] = dc[239 - j] = frm[j];
+    }
+}
+/* copies the top picture into the (back) framebuffers, in 2D or as a stereo pair */
+static void top_present(void) {
+    if (!s3d_on) { memcpy(fbTop, topimg, sizeof topimg); return; }
+    int key = s3d_tilt * 64 + s3d_pop;
+    if (eye_gen != topimg_gen || eye_key != key) {
+        int B = (s3d_tilt + s3d_pop + 1) / 2 + 1;
+        make_eye(eyeL, topimg, 0, s3d_tilt, s3d_pop, B);
+        make_eye(eyeR, topimg, 1, s3d_tilt, s3d_pop, B);
+        eye_gen = topimg_gen; eye_key = key;
+    }
+    memcpy(fbTop, eyeL, sizeof eyeL); memcpy(fbTopR, eyeR, sizeof eyeR);
+}
 static uint8_t botrgb[320 * 240 * 3];
 static int last_glyphs;
 
@@ -419,7 +489,7 @@ static void bottom_render(Machine *m) {
 }
 
 /* ------------------------------------------------------------------ pause menu */
-enum { MI_RESUME, MI_TEXT, MI_TOP, MI_WIN, MI_PIC, MI_CPU, MI_MOUSE, MI_SND, MI_QUIT, MI_COUNT };
+enum { MI_RESUME, MI_TEXT, MI_TOP, MI_WIN, MI_PIC, MI_3D, MI_CPU, MI_MOUSE, MI_SND, MI_QUIT, MI_COUNT };
 static const char *PIC_NAME[] = { "꽉 채움", "늘림", "비율 유지" };
 static double stat_speed = 1.0, stat_mips = 0, stat_busy = 0, stat_skip = 0;
 
@@ -442,6 +512,11 @@ static void menu_draw(Machine *m, int sel) {
         case MI_TOP: snprintf(line, sizeof line, "상단 화면: %s", top_zoom ? "확대 (꽉 채움)" : "원본 4:3"); break;
         case MI_WIN: snprintf(line, sizeof line, "상단 대화창: %s", win_hide ? "숨김" : "표시"); break;
         case MI_PIC: snprintf(line, sizeof line, "상단 그림 (대화창 없음): %s", PIC_NAME[pic_mode]); break;
+        case MI_3D:
+            if (s3d_level == 0) snprintf(line, sizeof line, "상단 3D 효과: 끔");
+            else if (s3d_slider < 0.03f) snprintf(line, sizeof line, "상단 3D 효과: %s (3D 슬라이더를 올리세요)", S3D_NAME[s3d_level]);
+            else snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더 %d%%)", S3D_NAME[s3d_level], (int)(s3d_slider * 100.f + 0.5f));
+            break;
         case MI_SND: snprintf(line, sizeof line, "소리 시험 (음이 납니다)"); break;
         default: snprintf(line, sizeof line, "게임 종료"); break;
         }
@@ -450,8 +525,10 @@ static void menu_draw(Machine *m, int sel) {
         y += step;
     }
     char st[200];
-    snprintf(st, sizeof st, "속도 %3.0f%%   CPU %2.0f%%   %.1f MIPS\n소리 끊김 %u회   미처리 %u   글자 캡처 %s",
-             stat_speed * 100.0, stat_busy * 100.0, stat_mips, aud_underruns, (unsigned)m->stat_unhandled, textcap_active(m) ? "켜짐" : "꺼짐");
+    snprintf(st, sizeof st, "속도 %3.0f%%  CPU %2.0f%%  %.1f MIPS", stat_speed * 100.0, stat_busy * 100.0, stat_mips);
+    int tx = 8 + kwidth("일시정지") + 16;                   /* the speed numbers sit to the right of the title (the 3D item made the list one line longer) */
+    ktext(fbBot, 320, tx, 3, 312 - tx, st, dim, 0);
+    snprintf(st, sizeof st, "소리 끊김 %u회   미처리 %u   글자 캡처 %s", aud_underruns, (unsigned)m->stat_unhandled, textcap_active(m) ? "켜짐" : "꺼짐");
     ktext(fbBot, 320, 8, y + 5, 306, st, dim, 0);
     ktext(fbBot, 320, 8, 240 - KF_LH - 1, 306, "십자키: 선택/변경   A: 확인   B·START: 계속", dim, 0);
 }
@@ -464,10 +541,11 @@ static int pause_menu(Machine *m) {
     input_release_all(m);
     audio_hold();
     while (aptMainLoop()) {
+        s3d_update();
         fb_get();
         menu_draw(m, sel);
         /* keep showing the last game frame on top */
-        memcpy(fbTop, topimg, sizeof topimg);
+        top_present();
         present();
         hidScanInput();
         uint32_t d = hidKeysDown();
@@ -484,6 +562,7 @@ static int pause_menu(Machine *m) {
         if (sel == MI_TOP && (dir || (d & KEY_A))) { top_zoom ^= 1; top_clear(); top_render(m); }
         if (sel == MI_WIN && (dir || (d & KEY_A))) { win_hide ^= 1; win_cand = win_state = win_hide && vgascale_window_up(m); win_cnt = 0; top_clear(); top_render(m); }
         if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 3) % 3; top_clear(); top_render(m); }
+        if (sel == MI_3D && (dir || (d & KEY_A))) s3d_level = (s3d_level + (dir ? dir : 1) + 4) % 4;
         if (sel == MI_SND && (d & KEY_A)) { ktext(fbBot, 320, 9, 240 - 2 * KF_LH - 3, 304, "재생 중...", C565(255, 220, 80), 1); present(); audio_test(); }
         if (sel == MI_RESUME && (d & KEY_A)) { cfg_save(); return 0; }
         if (sel == MI_QUIT && (d & KEY_A)) { cfg_save(); return 1; }
@@ -607,19 +686,21 @@ int main(void) {
         } else { pace_adj = 0; aq_ema = lead_s + 0.015; }
 
         /* top screen: re-render the picture when VRAM / palette changed (every other frame if we are struggling) */
+        s3d_update();
         fb_get();
         win_update(m);
         if (win_force || (m->vga.dirty != last_dirty && (!lagged || (frame & 1) == 0))) {
             top_render(m);
             last_dirty = m->vga.dirty; win_force = 0;
         }
-        memcpy(fbTop, topimg, sizeof topimg);
+        top_present();
         if (hidKeysHeld() & KEY_SELECT) {               /* hold SELECT: live performance numbers (for bug reports) */
             char t[200];
             snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %dms lead %d\nunder %u drop %u tc %d\nfrm max %.0fms >100:%u >250:%u adj %+.1f%%",
                      stat_speed * 100.0, stat_busy * 100.0, stat_mips, m->ips / 1e6, stat_skip * 100.0, (int)(audio_queued_frames() * 1000ull / AUD_RATE), (int)(lead_s * 1000), aud_underruns, aud_dropped, textcap_active(m),
                      stat_maxfr, slow100, slow250, pace_adj * 100.0);
             gtext(fbTop, 400, 2, 2, 46, t, C565(255, 255, 0), C565(0, 0, 0), 1);
+            if (s3d_on) gtext(fbTopR, 400, 2, 2, 46, t, C565(255, 255, 0), C565(0, 0, 0), 1);
         }
 
         /* bottom screen: large dialogue text (rate limited) */

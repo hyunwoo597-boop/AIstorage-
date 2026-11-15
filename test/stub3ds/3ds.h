@@ -17,7 +17,7 @@ typedef struct { u16 px, py; } touchPosition; typedef struct { s16 dx, dy; } cir
 typedef enum { GFX_TOP, GFX_BOTTOM } gfxScreen_t; typedef enum { GFX_LEFT, GFX_RIGHT } gfx3dSide_t;
 #define GSP_RGB565_OES 2
 typedef int GSPGPU_FramebufferFormat;
-static u16 _fb[2][2][400 * 240]; static int _cur[2], _dbl[2] = {1, 1};
+static u16 _fb[2][2][400 * 240]; static u16 _fbr[2][400 * 240]; static int _cur[2], _dbl[2] = {1, 1}; static int _3d;
 static int _frame; static u64 _t0;
 static double _slow = 1;
 static int _frameclock;
@@ -25,9 +25,10 @@ static inline u64 svcGetSystemTick(void) { if (_frameclock) return (u64)((double
 /* host is far faster than a 3DS: slow the stub clock-independent work isn't needed, just report real time */
 static inline void gfxInit(GSPGPU_FramebufferFormat a, GSPGPU_FramebufferFormat b, bool c) {}
 static inline void gfxExit(void) {}
-static inline void gfxSet3D(bool e) {}
+static inline void gfxSet3D(bool e) { _3d = e; }
+static inline float osGet3DSliderState(void) { return getenv("STUB_SLIDER") ? (float)atof(getenv("STUB_SLIDER")) : 0.f; }
 static inline void gfxSetDoubleBuffering(gfxScreen_t s, bool e) { _dbl[s] = e; }
-static inline u8 *gfxGetFramebuffer(gfxScreen_t s, gfx3dSide_t sd, u16 *w, u16 *h) { return (u8 *)_fb[s][_cur[s]]; }
+static inline u8 *gfxGetFramebuffer(gfxScreen_t s, gfx3dSide_t sd, u16 *w, u16 *h) { if (s == GFX_TOP && sd == GFX_RIGHT && _3d) return (u8 *)_fbr[_cur[0]]; return (u8 *)_fb[s][_cur[s]]; }
 static inline void gfxFlushBuffers(void) {}
 static inline void gfxSwapBuffers(void) { for (int s = 0; s < 2; s++) if (_dbl[s]) _cur[s] ^= 1; }
 static void _dsp_run(double dt);
