@@ -81,16 +81,16 @@ int main(int argc, char **argv) {
     int oplrate = getenv("OPLRATE") ? atoi(getenv("OPLRATE")) : 32728; m->opl = opl_new(oplrate); opl_attach(m->opl, (opl_clock_fn)machine_vtime_ns, m);
     textcap_init(m); if (!getenv("NOIDLE")) idle_init(m);
     if (!getenv("NOCACHE")) dos_cache_preload(m);
-    if (dos_exec(m, "MUSICV.COM", "") < 0) return 2;
+#ifdef OPL_TRACE
+    if (getenv("OPLTRACE")) otr = fopen(getenv("OPLTRACE"), "w");
+#endif
+    if (dos_exec(m, "MUSICV.COM", "") < 0) return 2;     /* (the driver's own init writes - OPL3 enable, 4-op mode - belong in the trace too) */
     long total = 0; int guard = 0;
     while (!m->exited && total < 20000000) { total += machine_run(m, 100000); if (++guard > 400) break; }
     fprintf(stderr, "[host] MUSICV exited=%d code=%d tsr=%d after %ld instr\n", m->exited, m->exit_code, m->tsr_kept, total);
     if (dos_exec(m, "SILV1.COM", "main.mes D D") < 0) return 3;
     if (getenv("SCRIPT")) parse_script(getenv("SCRIPT"));
     if (getenv("WATCH")) m->vga_wr_dbg = wr_dbg;
-#ifdef OPL_TRACE
-    if (getenv("OPLTRACE")) otr = fopen(getenv("OPLTRACE"), "w");
-#endif
     int bp_set = 0; if (getenv("GLOG")) glog = fopen(getenv("GLOG"), "w");
     if (getenv("WAV")) { wavcap = (long)oplrate * 120; wavbuf = malloc(wavcap * 4); }
     long dump_every = getenv("DUMPEVERY") ? atol(getenv("DUMPEVERY")) * 1000000L : 5000000L;

@@ -47,7 +47,8 @@ struct OPL {
     opl_clock_fn now_ns; void *clk_ctx;
     /* registers kept for timers & misc */
     uint8_t regs[512];
-    uint8_t idx[2];
+    uint8_t idx[2];                   /* (unused: the chip has ONE address latch, see opl_write) */
+    uint8_t lbank, lreg;              /* the address latch: register array chosen by the last ADDRESS write (A1) + register number */
     uint8_t status;
     uint64_t t1_start, t2_start; int t1_run, t2_run;
     /* synthesis (chip rate) */
@@ -465,18 +466,18 @@ static void write_reg(OPL *o, int bank, int reg, uint8_t v) {
 }
 
 long opl_dbg_writes; int opl_dbg_log;
+/* YMF262 access modes (datasheet): an ADDRESS write (A0=0) selects register array 0 (A1=0) or 1 (A1=1) and the register number;
+ * a DATA write (A0=1) goes to the register latched last - whatever A1 is at that moment ("A1: don't care").  The game's music
+ * driver relies on this: its common register routine sends the address to 0x38A for the second array but the data to 0x389. */
 void opl_write(OPL *o, uint16_t port, uint8_t v) {
-    int hi = (port & 2) ? 1 : 0;
-    if (opl_dbg_log && (port & 1) && opl_dbg_writes < opl_dbg_log) fprintf(stderr, "[opl] %s reg %02X = %02X  (t=%llu)\n", hi ? "B2" : "B1", o->idx[hi], v, (unsigned long long)usec(o));
-    if (port & 1) opl_dbg_writes++;
-    if (!(port & 1)) { o->idx[hi] = v; return; }
+    if (!(port & 1)) { o->lbank = (port & 2) ? 1 : 0; o->lreg = v; return; }
+    int bank = o->lbank, reg = o->lreg;
+    if (opl_dbg_log && opl_dbg_writes < opl_dbg_log) fprintf(stderr, "[opl] reg %d:%02X = %02X  (t=%llu)\n", bank, reg, v, (unsigned long long)usec(o));
+    opl_dbg_writes++;
     opl_sync(o);
 #ifdef OPL_TRACE
-    { extern void opl_trace_hook(uint64_t us, int bank, int reg, int val); opl_trace_hook(usec(o), hi, o->idx[hi], v); }
+    { extern void opl_trace_hook(uint64_t us, int bank, int reg, int val); opl_trace_hook(usec(o), bank, reg, v); }
 #endif
-    int bank = hi;
-    int reg = o->idx[hi];
-    if (!o->newmode && hi == 1 && reg != 5) { /* second bank is only reachable after OPL3 enable, but allow writing 0x105 */ }
     write_reg(o, bank, reg, v);
 }
 

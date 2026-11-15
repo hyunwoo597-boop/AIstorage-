@@ -41,7 +41,6 @@ static const char *GAME_DIRS[] = { GAME_DIR0, "sdmc:/nonomura", NULL };
 static const uint32_t CPU_FIXED[] = { 0, 2000000, 3000000, 4000000, 5000000, 6000000 };   /* 0 = auto */
 #define N_CPU_MODES 6
 static int cpu_mode = 0, mouse_level = 3;
-static int snd_mode = 1;              /* sound correction 1..6 (same numbers as in the sound test): 1 none, 2 quieter, 3 no bass, 4 no treble, 5 neither, 6 DSP interpolation off */
 static int win_hide = 1;              /* 1: while the engine's message window is up, the top screen shows only the picture (the text is on the bottom screen) */
 static int win_state, win_cand, win_cnt, win_force;   /* current view, candidate view, frames the candidate has held, redraw request */
 static int pic_mode = PIC_FILL;       /* picture-only top view: PIC_FILL / PIC_STRETCH / PIC_FIT */
@@ -54,7 +53,7 @@ static const char *TEXT_NAME[] = { "크게", "보통", "작게", "아주 작게"
 static char cfg_path[320];
 static void cfg_save(void) {
     FILE *f = fopen(cfg_path, "w"); if (!f) return;
-    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\nsnd_mode=%d\n", cpu_mode, mouse_level, top_zoom, text_size, win_hide, pic_mode, s3d_level, s3d_mode, snd_mode);
+    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\n", cpu_mode, mouse_level, top_zoom, text_size, win_hide, pic_mode, s3d_level, s3d_mode);
     fclose(f);
 }
 static void cfg_load(void) {
@@ -69,7 +68,6 @@ static void cfg_load(void) {
         else if (sscanf(line, "text_size=%d", &v) == 1 && v >= 0 && v < 4) text_size = v;
         else if (sscanf(line, "s3d=%d", &v) == 1 && v >= 0 && v < 4) s3d_level = v;
         else if (sscanf(line, "s3dm=%d", &v) == 1 && v >= 0 && v < 3) s3d_mode = v;
-        else if (sscanf(line, "snd_mode=%d", &v) == 1 && v >= 1 && v <= 6) snd_mode = v;
     }
     fclose(f);
 }
@@ -229,39 +227,6 @@ static void audio_init(void) {
     for (int i = 0; i < NWB; i++) wbuf[i].data_pcm16 = abuf + (size_t)i * AFRAMES * 2;
     audio_ok = 1;
 }
-/* ---- sound correction: what the sound test lets you compare, applied to the live music when picked in the pause menu ---- */
-typedef struct { float b0, b1, b2, a1, a2, z1, z2; } Bq;
-static void bq_set(Bq *q, int hp, double fc, double Q) {          /* RBJ biquad, high-pass (hp) or low-pass */
-    double w = 2.0 * 3.14159265358979 * fc / AUD_RATE, c = cos(w), al = sin(w) / (2.0 * Q), a0 = 1.0 + al;
-    double b0 = hp ? (1.0 + c) / 2.0 : (1.0 - c) / 2.0, b1 = hp ? -(1.0 + c) : (1.0 - c);
-    q->b0 = (float)(b0 / a0); q->b1 = (float)(b1 / a0); q->b2 = (float)(b0 / a0); q->a1 = (float)(-2.0 * c / a0); q->a2 = (float)((1.0 - al) / a0); q->z1 = q->z2 = 0;
-}
-static inline float bq_run(Bq *q, float x) { float y = q->b0 * x + q->z1; q->z1 = q->b1 * x - q->a1 * y + q->z2; q->z2 = q->b2 * x - q->a2 * y; return y; }
-typedef struct { Bq hp[2], lp[2]; int use_hp, use_lp; float vol; } Fx;
-static void fx_setup(Fx *f, int mode) {
-    memset(f, 0, sizeof *f); f->vol = mode == 2 ? 0.33f : 1.0f;
-    f->use_hp = (mode == 3 || mode == 5); f->use_lp = (mode == 4 || mode == 5);
-    bq_set(&f->hp[0], 1, 300.0, 0.5412); bq_set(&f->hp[1], 1, 300.0, 1.3066);          /* 4th order Butterworth: the small speaker cannot reproduce the bass anyway */
-    bq_set(&f->lp[0], 0, 5000.0, 0.5412); bq_set(&f->lp[1], 0, 5000.0, 1.3066);
-}
-static int fx_active(int mode) { return mode >= 2 && mode <= 5; }
-/* st: interleaved stereo (left is used, both channels are written); mono: plain samples */
-static void fx_run(Fx *f, int16_t *st, int n, int mono) {
-    for (int i = 0; i < n; i++) {
-        float x = (float)st[mono ? i : i * 2] * f->vol;
-        if (f->use_hp) { x = bq_run(&f->hp[0], x); x = bq_run(&f->hp[1], x); }
-        if (f->use_lp) { x = bq_run(&f->lp[0], x); x = bq_run(&f->lp[1], x); }
-        int v = (int)(x < 0 ? x - 0.5f : x + 0.5f); if (v > 32767) v = 32767; if (v < -32768) v = -32768;
-        if (mono) st[i] = (int16_t)v; else st[i * 2] = st[i * 2 + 1] = (int16_t)v;
-    }
-    Bq *all[4] = { &f->hp[0], &f->hp[1], &f->lp[0], &f->lp[1] };        /* keep silence from decaying into slow denormal numbers */
-    for (int k = 0; k < 4; k++) { if (fabsf(all[k]->z1) < 1e-12f) all[k]->z1 = 0; if (fabsf(all[k]->z2) < 1e-12f) all[k]->z2 = 0; }
-}
-static Fx live_fx;
-static void snd_apply(void) {
-    fx_setup(&live_fx, snd_mode);
-    if (audio_ok) ndspChnSetInterp(0, snd_mode == 6 ? NDSP_INTERP_NONE : NDSP_INTERP_LINEAR);
-}
 static int audio_started;
 static float audio_rate = (float)NDSP_SAMPLE_RATE;
 static int audio_queued(void) {
@@ -312,7 +277,6 @@ static void audio_pump(Machine *m) {
         if (!wb) break;
         uint32_t c = n > AFRAMES ? AFRAMES : n;
         opl_mix(m->opl, wb->data_pcm16, c);
-        if (fx_active(snd_mode)) fx_run(&live_fx, wb->data_pcm16, (int)c, 0);
         DSP_FlushDataCache(wb->data_pcm16, c * 4);
         wb->nsamples = c;
         ndspChnWaveBufAdd(0, wb);
@@ -330,76 +294,54 @@ static void audio_hold(void) {
     if (!audio_ok) return;
     ndspChnSetPaused(0, true); audio_started = 0;
 }
-/* Sound test (pause menu): the same 3 s of the game's music (rendered on the PC, musicsample.h) played 8 times through the same DSP path,
- * each time treated differently.  Whichever number sounds clean is the setting to use: the live music gets the numbers 1-6 under
- * "sound correction" in the menu (7 = mono sample format and 8 = a plain chord are for comparison only). */
-#define SND_NVAR 8
-static const char *SND_NAME[] = { "", "원본 (지금 소리)", "볼륨 낮춤", "저음 제거", "고음 제거", "저음 + 고음 제거", "보간 끔", "모노 형식", "사인 화음 (비교용)" };
-static const char *SND_MENU[] = { "", "없음", "볼륨 낮춤", "저음 제거", "고음 제거", "저+고음 제거", "보간 끔" };
-static void snd_test_screen(int cur, const char *foot) {
-    fb_get();
-    fill(fbBot, 320, C565(10, 10, 30));
-    ktext(fbBot, 320, 8, 3, 304, "소리 시험 - 번호별 비교", C565(255, 220, 80), 1);
-    int y = 3 + KF_LH + 3;
-    for (int v = 1; v <= SND_NVAR; v++) {
-        char ln[64]; snprintf(ln, sizeof ln, "%d   %s", v, SND_NAME[v]);
-        if (v == cur) frect(fbBot, 320, 3, y - 1, 314, 16, C565(44, 52, 96));
-        ktext(fbBot, 320, 9, y, 304, ln, v == cur ? C565(255, 220, 80) : C565(200, 200, 210), v == cur);
-        y += 16;
-    }
-    ktext(fbBot, 320, 8, y + 4, 306, foot, C565(150, 200, 255), 0);
-    present();
-#ifdef STUB_COSTMODEL
-    { extern void stub_snd_shot(int); stub_snd_shot(cur); }
-#endif
-}
-static int snd_idle_wait(int maxsec) {                       /* let everything queued play out; 1 = the queue is empty */
-    u64 t0 = svcGetSystemTick();
-    while (audio_queued() && svcGetSystemTick() - t0 < (u64)maxsec * TICKS_PER_SEC) gspWaitForVBlank();
-    return audio_queued() == 0;
-}
+/* Sound test (pause menu): a clean tone sequence straight through the same DSP path, independent of the emulation.
+ * Clean here but distorted in the game = the problem is in the emulated music, not in the 3DS audio output. */
 static void audio_test(void) {
     if (!audio_ok) return;
-    ndspChnSetPaused(0, false); audio_started = 0;
-    snd_idle_wait(3);
-    const int N = MUSIC_SAMPLE_N / 2;                                    /* the first of the two clips: 3 s */
-    int bi = 0;
-    for (int v = 1; v <= SND_NVAR; v++) {
-        ndspChnSetPaused(0, false); snd_idle_wait(3); ndspChnSetPaused(0, true);
-        int mono = (v == 7);
-        ndspChnSetInterp(0, v == 6 ? NDSP_INTERP_NONE : NDSP_INTERP_LINEAR);
-        ndspChnSetFormat(0, mono ? NDSP_FORMAT_MONO_PCM16 : NDSP_FORMAT_STEREO_PCM16);
-        Fx fx; fx_setup(&fx, v <= 5 ? v : 1);
-        snd_test_screen(v, "깨끗하게 들리는 번호를 기억하세요.");
-        for (int i = 0; i < 24; i++) gspWaitForVBlank();                 /* a short silence between the variants */
-        int pos = 0, queued = 0;
-        while (pos < N) {
+    u64 t0 = svcGetSystemTick();
+    ndspChnSetPaused(0, false); audio_started = 0;                       /* let whatever is still queued play out first */
+    while (audio_queued() && svcGetSystemTick() - t0 < TICKS_PER_SEC) gspWaitForVBlank();
+    ndspChnSetPaused(0, true);
+    static const float notes[] = { 261.63f, 329.63f, 392.00f, 523.25f, 392.00f, 329.63f, 261.63f };
+    const int per = AUD_RATE * 4 / 10;                                   /* 0.4 s per note */
+    double ph = 0; int idx = 0, left = per, nn = (int)(sizeof notes / sizeof notes[0]), bi = 0, queued = 0;
+    while (idx < nn) {
+        ndspWaveBuf *wb = &wbuf[bi % NWB];
+        u64 w0 = svcGetSystemTick();
+        while ((wb->status == NDSP_WBUF_QUEUED || wb->status == NDSP_WBUF_PLAYING) && svcGetSystemTick() - w0 < TICKS_PER_SEC) gspWaitForVBlank();
+        int c = left < AFRAMES ? left : AFRAMES;
+        for (int i = 0; i < c; i++) {
+            float env = 1.0f; int pos = per - left + i;
+            if (pos < 1500) env = pos / 1500.0f;
+            if (per - pos < 1500) env = (per - pos) / 1500.0f;
+            int16_t v = (int16_t)(sinf((float)ph) * 9000.0f * env);
+            ph += 2.0 * 3.14159265358979 * notes[idx] / AUD_RATE;
+            wb->data_pcm16[i * 2] = wb->data_pcm16[i * 2 + 1] = v;
+        }
+        if (ph > 1e6) ph = fmod(ph, 2.0 * 3.14159265358979);
+        DSP_FlushDataCache(wb->data_pcm16, (u32)c * 4);
+        wb->nsamples = c; ndspChnWaveBufAdd(0, wb); bi++; queued++;
+        if (queued == 3) ndspChnSetPaused(0, false);
+        left -= c; if (left <= 0) { idx++; left = per; ph = 0; }
+    }
+    /* then 6 s of the game's own music (rendered on the PC, musicsample.h) through exactly the same path:
+     * clean here too = the 3DS output is fine and the problem is in the live emulation; distorted here = the signal / output path itself */
+    {
+        int gap = AUD_RATE * 3 / 10, pos = 0;
+        while (gap > 0 || pos < MUSIC_SAMPLE_N) {
             ndspWaveBuf *wb = &wbuf[bi % NWB];
             u64 w0 = svcGetSystemTick();
             while ((wb->status == NDSP_WBUF_QUEUED || wb->status == NDSP_WBUF_PLAYING) && svcGetSystemTick() - w0 < TICKS_PER_SEC) gspWaitForVBlank();
-            int c = N - pos < AFRAMES ? N - pos : AFRAMES;
-            for (int i = 0; i < c; i++) {
-                int16_t x;
-                if (v == 8) {                                            /* plain chord of three sines, similar level, 30 ms fades */
-                    double t = (double)(pos + i) / AUD_RATE; float env = 1.0f; int fp = pos + i;
-                    if (fp < 1000) env = fp / 1000.0f; if (N - fp < 1000) env = (N - fp) / 1000.0f;
-                    x = (int16_t)((sin(2.0 * 3.14159265358979 * 261.63 * t) + sin(2.0 * 3.14159265358979 * 329.63 * t) + sin(2.0 * 3.14159265358979 * 392.00 * t)) * 3000.0 * env);
-                } else x = MUSIC_SAMPLE[pos + i];
-                if (mono) wb->data_pcm16[i] = x; else wb->data_pcm16[i * 2] = wb->data_pcm16[i * 2 + 1] = x;
-            }
-            if (v >= 2 && v <= 5) fx_run(&fx, wb->data_pcm16, c, mono);
-            DSP_FlushDataCache(wb->data_pcm16, (u32)c * (mono ? 2 : 4));
-            wb->nsamples = c; ndspChnWaveBufAdd(0, wb); bi++; pos += c; queued++;
-            if (queued == 3) ndspChnSetPaused(0, false);
+            int c;
+            if (gap > 0) { c = gap < AFRAMES ? gap : AFRAMES; memset(wb->data_pcm16, 0, (size_t)c * 4); gap -= c; }
+            else { c = MUSIC_SAMPLE_N - pos < AFRAMES ? MUSIC_SAMPLE_N - pos : AFRAMES; for (int i = 0; i < c; i++) wb->data_pcm16[i * 2] = wb->data_pcm16[i * 2 + 1] = MUSIC_SAMPLE[pos + i]; pos += c; }
+            DSP_FlushDataCache(wb->data_pcm16, (u32)c * 4);
+            wb->nsamples = c; ndspChnWaveBufAdd(0, wb); bi++;
         }
-        ndspChnSetPaused(0, false);
     }
-    ndspChnSetPaused(0, false); snd_idle_wait(5);
+    t0 = svcGetSystemTick();
+    while (audio_queued() && svcGetSystemTick() - t0 < 12 * TICKS_PER_SEC) gspWaitForVBlank();
     ndspChnSetPaused(0, true); audio_started = 0;
-    ndspChnSetFormat(0, NDSP_FORMAT_STEREO_PCM16);
-    ndspChnSetInterp(0, snd_mode == 6 ? NDSP_INTERP_NONE : NDSP_INTERP_LINEAR);
-    snd_test_screen(0, "끝. 깨끗했던 번호를 메뉴의 '소리 보정'에서 고르세요 (7·8이 깨끗했으면 알려 주세요).");
-    for (int i = 0; i < 180; i++) gspWaitForVBlank();                    /* leave the result on screen for a moment */
 }
 
 /* ------------------------------------------------------------------ input */
@@ -739,7 +681,7 @@ static void menu_draw(Machine *m, int sel) {
             else snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더 %d%%)", S3D_NAME[s3d_level], (int)(s3d_slider * 100.f + 0.5f));
             break;
         case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터+테두리" : s3d_mode == 1 ? "화면 전체(기울임)" : "캐릭터만"); break;
-        case MI_SND: snprintf(line, sizeof line, "소리 보정 %d: %s  (A 시험)", snd_mode, SND_MENU[snd_mode]); break;
+        case MI_SND: snprintf(line, sizeof line, "소리 시험 (음 + 음악 샘플)"); break;
         default: snprintf(line, sizeof line, "게임 종료"); break;
         }
         if (i == sel) frect(fbBot, 320, 3, y - 1, 314, step, bar);
@@ -786,7 +728,6 @@ static int pause_menu(Machine *m) {
         if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 3) % 3; top_clear(); top_render(m); }
         if (sel == MI_3D && (dir || (d & KEY_A))) s3d_level = (s3d_level + (dir ? dir : 1) + 4) % 4;
         if (sel == MI_3DM && (dir || (d & KEY_A))) s3d_mode = (s3d_mode + (dir ? dir : 1) + 3) % 3;
-        if (sel == MI_SND && dir) { snd_mode = (snd_mode - 1 + dir + 6) % 6 + 1; snd_apply(); }
         if (sel == MI_SND && (d & KEY_A)) { ktext(fbBot, 320, 9, 240 - 2 * KF_LH - 3, 304, "재생 중...", C565(255, 220, 80), 1); present(); audio_test(); }
         if (sel == MI_RESUME && (d & KEY_A)) { cfg_save(); return 0; }
         if (sel == MI_QUIT && (d & KEY_A)) { cfg_save(); return 1; }
@@ -824,7 +765,6 @@ int main(void) {
     LOG("Nonomura 3DS native v%s  new3ds=%d  gamedir=%s", APP_VERSION, (int)is_new, gdir);
 
     audio_init();
-    snd_apply();
     LOG("audio %s", audio_ok ? "ok" : "unavailable");
 
     Machine *m = machine_new(gdir);
