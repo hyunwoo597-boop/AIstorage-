@@ -29,6 +29,8 @@ SD:/3ds/nonomura/              ← 게임 파일 전부 (SILV1.COM, SILV.EXE, MU
 
 **설치형(CIA)**: `nonomura.cia`를 FBI 등으로 설치하면 HOME 메뉴에 아이콘/배너로 나타납니다(타이틀 ID `0004000000FA3D10`). 게임 파일 위치는 같습니다(`SD:/3ds/nonomura/`). CIA 는 New 3DS 804MHz·L2 캐시와 SD 카드 접근 권한을 앱 정보(`ctr/nonomura.rsf`)에 직접 적어 둡니다. 소리를 내려면 홈브루 때와 마찬가지로 `SD:/3ds/dspfirm.cdc`(DSP 펌웨어 덤프)가 있어야 합니다.
 
+**게임 파일 내장 CIA**: 게임 파일(저작물)은 저장소·릴리스에 올리지 않으므로, 이 CIA 는 따로 만듭니다. 릴리스 `tools`의 `makerom`·`nonomura.elf`·`banner.bnr`와 릴리스 `latest`의 `nonomura.smdh`를 받아, `ctr/nonomura.rsf` 끝에 `RomFs:` / `  RootPath: <게임 파일 폴더>`를 덧붙인 RSF 로 `makerom -f cia -o out.cia -elf nonomura.elf -rsf full.rsf -icon nonomura.smdh -banner banner.bnr -exefslogo -target t`를 실행합니다. 앱은 시작할 때 RomFS 에 든 파일 중 SD 카드(`SD:/3ds/nonomura/`)에 없는 것만 복사하고(`install_embedded_files`, 진행 상황을 하단 화면에 표시) 그 폴더에서 실행하므로, 세이브(FLAG*, SILK*.DAT)는 SD 카드에 저장되고 다시 설치해도 덮어쓰이지 않습니다. 공개 릴리스의 `nonomura.cia`에는 RomFS 가 없어 게임 파일을 SD 카드에 직접 복사해야 합니다.
+
 세이브(FLAG0~8, SILK*.DAT)는 게임 폴더(`SD:/3ds/nonomura/`)에 그대로 저장됩니다.
 문제가 생기면 같은 폴더의 `nono_log.txt`를 확인하세요 (속도/오류 기록).
 
