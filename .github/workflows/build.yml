@@ -23,6 +23,10 @@ jobs:
           path: |
             ctr/nonomura.3dsx
             ctr/nonomura.smdh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nonomura-elf
+          path: ctr/nonomura.elf
       - name: Publish as release "latest" (easy download from a phone)
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
@@ -30,7 +34,52 @@ jobs:
           tag_name: latest
           target_commitish: ${{ github.sha }}
           name: nonomura.3dsx (latest build)
-          body: "Latest automatic build. Copy nonomura.3dsx to SD:/3ds/ and the game files to SD:/3ds/nonomura/"
+          body: "Latest automatic build. nonomura.3dsx: copy to SD:/3ds/ (Homebrew Launcher). nonomura.cia: installable app (install with FBI etc.). Game files go to SD:/3ds/nonomura/"
           files: |
             ctr/nonomura.3dsx
             ctr/nonomura.smdh
+
+  # The installable version (.cia): the same program, wrapped with makerom together with the icon and a banner.
+  cia:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: nonomura-elf
+          path: out
+      - uses: actions/download-artifact@v4
+        with:
+          name: nonomura-3dsx
+          path: out
+      - name: Get makerom
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/3DSGuy/Project_CTR.git tools-ctr
+          make -C tools-ctr/makerom -j"$(nproc)"
+          cp "$(find tools-ctr/makerom -type f -name makerom | head -n 1)" ./makerom
+          ./makerom -version || true
+      - name: Get bannertool
+        run: |
+          set -e
+          git clone --depth 1 --recursive https://github.com/Steveice10/bannertool.git tools-bt
+          make -C tools-bt -j"$(nproc)"
+          cp "$(find tools-bt -type f -name bannertool | head -n 1)" ./bannertool
+          ./bannertool || true
+      - name: Make banner and CIA
+        run: |
+          set -e
+          ./bannertool makebanner -i ctr/banner.png -a ctr/banner.wav -o out/banner.bnr
+          ./makerom -f cia -o out/nonomura.cia -elf out/nonomura.elf -rsf ctr/nonomura.rsf -icon out/nonomura.smdh -banner out/banner.bnr -exefslogo -target t
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nonomura-cia
+          path: out/nonomura.cia
+      - name: Add the CIA to release "latest"
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          files: out/nonomura.cia
