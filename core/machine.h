@@ -12,6 +12,7 @@
 typedef struct {
     uint8_t plane[4][0x10000];
     uint8_t bgplane[4][0x10000];   /* copy of plane[] that ignores the engine's character blits (see vga_write): the picture without the characters */
+    uint8_t chplane[0x10000];      /* one bit per pixel (like a plane byte): 1 = this pixel was drawn as an opaque character pixel (see vga_write) */
     uint8_t seq[8], gc[16], crtc[32], attr[32], misc;
     uint8_t seq_idx, gc_idx, crtc_idx, attr_idx, attr_ff;
     uint8_t latch[4];
@@ -21,6 +22,7 @@ typedef struct {
     uint32_t dirty;        /* incremented on every VRAM / palette change */
     uint32_t pic_gen;      /* incremented by every non-character write into the picture rows (y < 352) */
     uint32_t char_gen;     /* incremented by every character blit write */
+    uint32_t ch_gen;       /* incremented whenever chplane[] actually changes */
     uint32_t pal_gen;      /* incremented by every palette change */
 } VGA;
 

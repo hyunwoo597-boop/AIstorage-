@@ -28,7 +28,7 @@ void vga_set_mode(Machine *m, int mode) {
     int clear = !(mode & 0x80); mode &= 0x7F;
     v->bios_mode = mode;
     if (mode == 0x12 || mode == 0x10 || mode == 0x0E || mode == 0x0D) {
-        if (clear) { memset(v->plane, 0, sizeof(v->plane)); memset(v->bgplane, 0, sizeof(v->bgplane)); }
+        if (clear) { memset(v->plane, 0, sizeof(v->plane)); memset(v->bgplane, 0, sizeof(v->bgplane)); memset(v->chplane, 0, sizeof(v->chplane)); }
         memset(v->gc, 0, sizeof(v->gc)); v->gc[8] = 0xFF; v->gc[6] = 0x05; v->gc[7] = 0x0F;
         v->seq[2] = 0x0F; v->seq[4] = 0x06;
         for (int i = 0; i < 16; i++) v->attr[i] = ega_attr[i];
@@ -58,7 +58,8 @@ uint8_t vga_read(Machine *m, uint32_t off) {
 
 /* The SILV engine draws the background (and full-screen event pictures) with one routine and the characters, which it
  * composes over that background, with another one (a plain rectangle blit at IP 1D00..1D7F of SILV1.COM).  bgplane[] mirrors
- * every write except those character blits, so "plane differs from bgplane" marks exactly the character pixels. */
+ * every write except those character blits, so it holds the picture without the characters (what shows behind a character when it is
+ * lifted out in 3D).  Which pixels ARE character pixels is tracked separately and exactly, in chplane[] (see below). */
 #define CHAR_BLIT_IP_LO 0x1D00
 #define CHAR_BLIT_IP_HI 0x1D80
 /* The animated parts of a character (eyes blinking, mouth moving: a rectangle patched over the face) are drawn by a third routine, a
@@ -66,11 +67,35 @@ uint8_t vga_read(Machine *m, uint32_t off) {
  * background, stayed put in the "characters only" 3D view and looked detached from the body. */
 #define FACE_BLIT_IP_LO 0x2980
 #define FACE_BLIT_IP_HI 0x29B0
+/* chplane[] records, per pixel, whether it is an opaque character pixel.  Comparing colours with the background is not enough: the
+ * eyes, skin and clothes of a character often have exactly the colour of the (light) wall behind it, and those pixels would count as
+ * background and stay behind when the character is lifted out in 3D.  The engine knows exactly which pixels are opaque (colour 8 is
+ * transparent), so we take it from the blits themselves:
+ *  - the character blit (IP 1D00..) first clears the opaque pixels with a set/reset write whose bit mask IS the opacity mask (store at IP 1D05);
+ *  - the face patch (IP 2980..) composes an overlay (colour 8 = transparent) read from VRAM at SI over a base picture; the first of its four
+ *    stores is at IP 2987, and the overlay's opaque pixels are character pixels.
+ * Any other write into the screen repaints background and clears the bits again (the mouse cursor routine at IP 0850..09FF is ignored). */
+#define CHAR_MASK_STORE_IP 0x1D05
+#define FACE_FIRST_STORE_IP 0x2987
+#define CURSOR_IP_LO 0x0850
+#define CURSOR_IP_HI 0x0A00
 void vga_write(Machine *m, uint32_t off, uint8_t val) {
     if (m->vga_wr_dbg) m->vga_wr_dbg(m, off);
     VGA *v = &m->vga; off &= 0xFFFF;
     const int chr = (m->cpu.ip >= CHAR_BLIT_IP_LO && m->cpu.ip < CHAR_BLIT_IP_HI) || (m->cpu.ip >= FACE_BLIT_IP_LO && m->cpu.ip < FACE_BLIT_IP_HI);
     if (chr) v->char_gen++; else if (off < 28160) v->pic_gen++;
+    const uint16_t ip = m->cpu.ip;
+    {
+        uint8_t nv = v->chplane[off];
+        if (ip == CHAR_MASK_STORE_IP) nv |= v->gc[8];
+        else if (ip == FACE_FIRST_STORE_IP) {
+            uint16_t si = m->cpu.r[SI];
+            uint8_t p0 = v->plane[0][si], p1 = v->plane[1][si], p2 = v->plane[2][si], p3 = v->plane[3][si];
+            nv |= (uint8_t)~(~p0 & ~p1 & ~p2 & p3);          /* everything but colour 8 (= 1000b) is opaque */
+        }
+        else if (!chr && !(ip >= CURSOR_IP_LO && ip < CURSOR_IP_HI)) nv = 0;
+        if (nv != v->chplane[off]) { v->chplane[off] = nv; v->ch_gen++; }
+    }
     uint8_t mask = v->seq[2] & 0xF, wm = v->gc[5] & 3, func = (v->gc[3] >> 3) & 3, rot = v->gc[3] & 7;
     uint8_t bm = v->gc[8], sr = v->gc[0], esr = v->gc[1];
     if ((wm == 0 || wm == 3) && rot) val = (val >> rot) | (val << (8 - rot));

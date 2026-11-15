@@ -516,23 +516,13 @@ static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int 
  * emulator keeps a second copy of the screen without the characters (VGA.bgplane).  Rendering both copies the same way and comparing
  * them gives a character mask; the characters are then shifted sideways (in front of the screen) over the untouched, complete background. */
 static uint16_t topbg[400 * 240];       /* the picture rendered from the background-only screen copy */
-static uint8_t chmask[400 * 240], chtmp[400 * 240];
-static unsigned cl_pic = ~0u, cl_pal = ~0u, cl_chr = ~0u, cl_key = ~0u, cl_top = ~0u, cl_ver;
+static uint8_t chmask[400 * 240];
+static uint16_t chrgb[400 * 240];
+static unsigned cl_pic = ~0u, cl_pal = ~0u, cl_chg = ~0u, cl_key = ~0u, cl_top = ~0u, cl_ver;
 static int cl_fr;
 static int cl_cov;                      /* characters' share of the picture, in permille */
 static int cl_strip;                    /* rows (counted from the bottom of the top image) that hold the message window and stay flat */
 /* 5-tap dilate (dil=1) or erode along columns (step 1) or rows (step 240) */
-static void morph5(uint8_t *dst, const uint8_t *src, int step, int along, int lines, int dil) {
-    for (int a = 0; a < lines; a++)
-        for (int i = 0; i < along; i++) {
-            int hit = 0, all = 1;
-            for (int k = -2; k <= 2; k++) {
-                int q = i + k; int v = (q < 0 || q >= along) ? !dil : src[a * (step == 1 ? 240 : 1) + q * step];
-                if (v) hit = 1; else all = 0;
-            }
-            dst[a * (step == 1 ? 240 : 1) + i * step] = dil ? hit : all;
-        }
-}
 /* The picture frame (see frameshape.h): masks in top-image coordinates, made by rendering synthetic planes with the normal scaler. */
 static uint8_t ringpl[4][0x10000], intpl[4][0x10000];
 static uint8_t frmask[400 * 240], inmask[400 * 240];
@@ -579,27 +569,26 @@ static void char_layer(Machine *m) {
     int strip = !(win_hide && win_state);
     unsigned key = (unsigned)top_zoom | (unsigned)pic_mode << 1 | (unsigned)win_hide << 4 | (unsigned)win_state << 5;
     int bgnew = strip || !cl_ver || key != cl_key || v->pic_gen != cl_pic || v->pal_gen != cl_pal || s3d_frame != cl_fr;
-    if (!bgnew && v->char_gen == cl_chr) { cl_top = topimg_gen; return; }      /* only the message strip changed: the picture (and its mask) is as before */
+    if (!bgnew && v->ch_gen == cl_chg) { cl_top = topimg_gen; return; }      /* neither the background nor the set of character pixels changed (an animated face patch only changes colours): the mask is as before */
     if (bgnew) {
         vgascale_set_bg(1); top_render_to(m, topbg); vgascale_set_bg(0);
         if (s3d_frame) { if (fr_key != key) { frame_masks(m); fr_key = key; } build_bgx(); }
     }
     cl_fr = s3d_frame;
+    {                                                             /* the engine's exact per-pixel "this is a character" bits (VGA.chplane), scaled like the picture */
+        const uint8_t *chp[4] = { v->chplane, v->chplane, v->chplane, v->chplane };
+        vgascale_set_planes(chp); top_render_to(m, chrgb); vgascale_set_planes(NULL);
+        for (int i = 0; i < 400 * 240; i++) chmask[i] = ((chrgb[i] >> 5) & 63) > 6;      /* any real coverage counts, so no character edge is left behind */
+    }
     int n = 0;
-    for (int i = 0; i < 400 * 240; i++) chmask[i] = topimg[i] != topbg[i];
     if (strip) {                                                  /* the message window strip is drawn with the same blit routine, but it is not a character */
         int ys = top_zoom ? 188 : 176;
         for (int x = 0; x < 400; x++) memset(chmask + x * 240, 0, (240 - ys) * sizeof(uint8_t));
         cl_strip = 240 - ys;
     } else cl_strip = 0;
     for (int i = 0; i < 400 * 240; i++) n += chmask[i];
-    if (n) {                                                      /* close small holes (character pixels that happen to match the background) */
-        morph5(chtmp, chmask, 1, 240, 400, 1); morph5(chmask, chtmp, 240, 400, 240, 1);
-        morph5(chtmp, chmask, 1, 240, 400, 0); morph5(chmask, chtmp, 240, 400, 240, 0);
-        n = 0; for (int i = 0; i < 400 * 240; i++) n += chmask[i];
-    }
     cl_cov = n * 1000 / (400 * 240);
-    cl_pic = v->pic_gen; cl_pal = v->pal_gen; cl_chr = v->char_gen; cl_key = key; cl_top = topimg_gen; cl_ver++;
+    cl_pic = v->pic_gen; cl_pal = v->pal_gen; cl_chg = v->ch_gen; cl_key = key; cl_top = topimg_gen; cl_ver++;
 }
 static void make_eye_char(uint16_t *dst, int eye, int pop, int fpop, int frame, int chars) {
     int s = eye ? -(pop / 2) : pop - pop / 2;           /* things in front of the screen move right in the left image and left in the right image */
