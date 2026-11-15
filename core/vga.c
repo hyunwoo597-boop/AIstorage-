@@ -71,28 +71,53 @@ uint8_t vga_read(Machine *m, uint32_t off) {
  * eyes, skin and clothes of a character often have exactly the colour of the (light) wall behind it, and those pixels would count as
  * background and stay behind when the character is lifted out in 3D.  The engine knows exactly which pixels are opaque (colour 8 is
  * transparent), so we take it from the blits themselves:
- *  - the character blit (IP 1D00..) first clears the opaque pixels with a set/reset write whose bit mask IS the opacity mask (store at IP 1D05);
- *  - the face patch (IP 2980..) composes an overlay (colour 8 = transparent) read from VRAM at SI over a base picture; the first of its four
- *    stores is at IP 2987, and the overlay's opaque pixels are character pixels.
+ *  - the character blit (IP 1D00.., and its screen->screen twin at IP 1B70..) first clears the opaque pixels with a set/reset write whose bit mask IS the opacity mask (store at IP 1D05);
+ *  - the face patch (IP 2980..) composes an overlay (colour 8 = transparent) read from its source page at SI (usually the off-screen RAM
+ *    picture) over a base picture; the first of its four stores is at IP 2987, and the overlay's opaque pixels are character pixels.
  * Any other write into the screen repaints background and clears the bits again (the mouse cursor routine at IP 0850..09FF is ignored). */
 #define CHAR_MASK_STORE_IP 0x1D05
+/* The character blit exists in four variants, picked at IP 1ADB from two flags (source in RAM / destination in RAM): RAM->screen (IP 1C95..,
+ * the one that is always used for the first scenes), screen->screen (IP 1AF1.., sprites kept in off-screen video memory: same code with a
+ * read-map select instead of the RAM segments; its stores are at IP 1B7A/1B99/1BAA/1BBC/1BCE) and two that write into RAM only.  The
+ * screen->screen variant was not recognised either. */
+#define CHAR2_BLIT_IP_LO 0x1B70
+#define CHAR2_BLIT_IP_HI 0x1BD0
+#define CHAR2_MASK_STORE_IP 0x1B7A
 #define FACE_FIRST_STORE_IP 0x2987
+/* The face patch has a twin for the case "overlay and base both come from the off-screen RAM picture, destination = screen" (descriptor
+ * flags & 7 == 3, entered by a jump at IP 28A2): the same compositing, but its four stores are at IP 2A8A/2AB3/2ADC/2B06 and it keeps the
+ * opaque-pixel mask in BL (not AH).  It was not recognised as a character routine, so the animated parts drawn by it counted as background. */
+#define FACE2_BLIT_IP_LO 0x2A80
+#define FACE2_BLIT_IP_HI 0x2B10
+#define FACE2_FIRST_STORE_IP 0x2A8C
 #define CURSOR_IP_LO 0x0850
 #define CURSOR_IP_HI 0x0A00
+/* Opaque-pixel mask of the face patch overlay at offset SI of its source page.  The pages are four-segment tables in the engine's data
+ * segment (page 0 = the screen, A0C8 x4; page 1 = four RAM plane buffers); the routine's own variable cs:27B6 tells which one is the source.
+ * (The mask register AH is already overwritten by the sequencer index when the first store happens, so it has to be read from the source.) */
+static uint8_t face_src_opaque(Machine *m, uint16_t si) {
+    VGA *v = &m->vga; const uint16_t cs = m->cpu.seg[CS];
+    const uint16_t dseg = mem_rw(m, LIN(cs, 0x27C8));              /* operand of "mov dx,<data segment>" in the page-select routine at 27C6 */
+    const uint16_t sp = mem_rb(m, LIN(cs, 0x27B6)) & 1;
+    uint8_t q[4];
+    for (int k = 0; k < 4; k++) {
+        const uint16_t seg = mem_rw(m, LIN(dseg, 0xE2D0 + sp * 16 + k * 4));
+        q[k] = (seg >= 0xA000 && seg < 0xB000) ? v->plane[k][(((uint32_t)(seg - 0xA000) << 4) + si) & 0xFFFF] : mem_rb(m, LIN(seg, si));
+    }
+    return (uint8_t)~(~q[0] & ~q[1] & ~q[2] & q[3]);              /* everything but colour 8 (= 1000b) is opaque */
+}
 void vga_write(Machine *m, uint32_t off, uint8_t val) {
     if (m->vga_wr_dbg) m->vga_wr_dbg(m, off);
     VGA *v = &m->vga; off &= 0xFFFF;
-    const int chr = (m->cpu.ip >= CHAR_BLIT_IP_LO && m->cpu.ip < CHAR_BLIT_IP_HI) || (m->cpu.ip >= FACE_BLIT_IP_LO && m->cpu.ip < FACE_BLIT_IP_HI);
+    const int chr = (m->cpu.ip >= CHAR_BLIT_IP_LO && m->cpu.ip < CHAR_BLIT_IP_HI) || (m->cpu.ip >= CHAR2_BLIT_IP_LO && m->cpu.ip < CHAR2_BLIT_IP_HI)
+                  || (m->cpu.ip >= FACE_BLIT_IP_LO && m->cpu.ip < FACE_BLIT_IP_HI) || (m->cpu.ip >= FACE2_BLIT_IP_LO && m->cpu.ip < FACE2_BLIT_IP_HI);
     if (chr) v->char_gen++; else if (off < 28160) v->pic_gen++;
     const uint16_t ip = m->cpu.ip;
     {
         uint8_t nv = v->chplane[off];
-        if (ip == CHAR_MASK_STORE_IP) nv |= v->gc[8];
-        else if (ip == FACE_FIRST_STORE_IP) {
-            uint16_t si = m->cpu.r[SI];
-            uint8_t p0 = v->plane[0][si], p1 = v->plane[1][si], p2 = v->plane[2][si], p3 = v->plane[3][si];
-            nv |= (uint8_t)~(~p0 & ~p1 & ~p2 & p3);          /* everything but colour 8 (= 1000b) is opaque */
-        }
+        if (ip == CHAR_MASK_STORE_IP || ip == CHAR2_MASK_STORE_IP) nv |= v->gc[8];
+        else if (ip == FACE_FIRST_STORE_IP) nv |= face_src_opaque(m, m->cpu.r[SI]);
+        else if (ip == FACE2_FIRST_STORE_IP) nv |= (uint8_t)m->cpu.r[BX];          /* BL = opaque mask at this point */
         else if (!chr && !(ip >= CURSOR_IP_LO && ip < CURSOR_IP_HI)) nv = 0;
         if (nv != v->chplane[off]) { v->chplane[off] = nv; v->ch_gen++; }
     }
