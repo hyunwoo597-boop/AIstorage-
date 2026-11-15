@@ -92,6 +92,23 @@ uint8_t vga_read(Machine *m, uint32_t off) {
 #define FACE2_FIRST_STORE_IP 0x2A8C
 #define CURSOR_IP_LO 0x0850
 #define CURSOR_IP_HI 0x0A00
+/* Not every character animates its eyes/mouth with the masked face patch above.  Most of them (all but the blonde one) patch a small
+ * OPAQUE rectangle of the face over the picture, with the general page copy (dispatcher IP 17AB; RAM page -> screen variant at IP 18D0, four
+ * `rep movs` stores at IP 1911/192A/1943/195C, one per plane): frames of the blink/mouth animation are kept in a RAM page and copied over
+ * the face (e.g. 8x80, 10x40, 11x64 bytes).  The same routine also draws the backgrounds, so it counts as a character patch only when (a) the
+ * copied rectangle is small (the routine's stack frame holds the byte count per row at SP+4 and the rows still to copy at SP+6) and (b) it lands on
+ * pixels that already are character pixels (chplane).  Its pixels that differ from the background are then character pixels, and the
+ * background mirror is left alone (the face would otherwise become "background" and stay put when the character is lifted out in 3D). */
+#define RECT_STORE_IP0 0x1911
+#define RECT_STORE_IP1 0x192A
+#define RECT_STORE_IP2 0x1943
+#define RECT_STORE_IP3 0x195C
+/* The screen->screen twin (IP 183F, off-screen video memory as the source, write mode 1 = latch copy) moves all four planes with one store at IP 1841;
+ * its rows-left counter is still in DX. */
+#define RECT2_STORE_IP 0x1841
+#define RECT_PATCH_MAX_BYTES 16
+#define RECT_PATCH_MAX_ROWS 140
+static uint8_t rect_mark[65536];     /* per byte: this rectangle copy lands on character pixels (decided at the first plane's store) */
 /* Opaque-pixel mask of the face patch overlay at offset SI of its source page.  The pages are four-segment tables in the engine's data
  * segment (page 0 = the screen, A0C8 x4; page 1 = four RAM plane buffers); the routine's own variable cs:27B6 tells which one is the source.
  * (The mask register AH is already overwritten by the sequencer index when the first store happens, so it has to be read from the source.) */
@@ -109,10 +126,21 @@ static uint8_t face_src_opaque(Machine *m, uint16_t si) {
 void vga_write(Machine *m, uint32_t off, uint8_t val) {
     if (m->vga_wr_dbg) m->vga_wr_dbg(m, off);
     VGA *v = &m->vga; off &= 0xFFFF;
-    const int chr = (m->cpu.ip >= CHAR_BLIT_IP_LO && m->cpu.ip < CHAR_BLIT_IP_HI) || (m->cpu.ip >= CHAR2_BLIT_IP_LO && m->cpu.ip < CHAR2_BLIT_IP_HI)
+    const uint16_t ip = m->cpu.ip;
+    int patch = 0;                   /* part of a small rectangle copy over character pixels (see RECT_STORE_IP0) */
+    int patch_first = 0;             /* this store writes the first (or only) plane of the byte */
+    if (ip == RECT_STORE_IP0 || ip == RECT_STORE_IP1 || ip == RECT_STORE_IP2 || ip == RECT_STORE_IP3 || ip == RECT2_STORE_IP) {
+        const uint16_t ss = m->cpu.seg[SS], sp = m->cpu.r[SP];
+        const uint16_t bytes = mem_rw(m, LIN(ss, (uint16_t)(sp + 4))), rows = ip == RECT2_STORE_IP ? m->cpu.r[DX] : mem_rw(m, LIN(ss, (uint16_t)(sp + 6)));
+        if (bytes <= RECT_PATCH_MAX_BYTES && rows <= RECT_PATCH_MAX_ROWS) {
+            patch_first = ip == RECT_STORE_IP0 || ip == RECT2_STORE_IP;
+            if (patch_first) rect_mark[off] = v->chplane[off] != 0;
+            patch = rect_mark[off];
+        }
+    }
+    const int chr = patch || (m->cpu.ip >= CHAR_BLIT_IP_LO && m->cpu.ip < CHAR_BLIT_IP_HI) || (m->cpu.ip >= CHAR2_BLIT_IP_LO && m->cpu.ip < CHAR2_BLIT_IP_HI)
                   || (m->cpu.ip >= FACE_BLIT_IP_LO && m->cpu.ip < FACE_BLIT_IP_HI) || (m->cpu.ip >= FACE2_BLIT_IP_LO && m->cpu.ip < FACE2_BLIT_IP_HI);
     if (chr) v->char_gen++; else if (off < 28160) v->pic_gen++;
-    const uint16_t ip = m->cpu.ip;
     {
         uint8_t nv = v->chplane[off];
         if (ip == CHAR_MASK_STORE_IP || ip == CHAR2_MASK_STORE_IP) nv |= v->gc[8];
@@ -124,6 +152,7 @@ void vga_write(Machine *m, uint32_t off, uint8_t val) {
     uint8_t mask = v->seq[2] & 0xF, wm = v->gc[5] & 3, func = (v->gc[3] >> 3) & 3, rot = v->gc[3] & 7;
     uint8_t bm = v->gc[8], sr = v->gc[0], esr = v->gc[1];
     if ((wm == 0 || wm == 3) && rot) val = (val >> rot) | (val << (8 - rot));
+    uint8_t patch_diff = 0;
     for (int p = 0; p < 4; p++) {
         if (!(mask & (1 << p))) continue;
         uint8_t l = v->latch[p], d, res;
@@ -134,7 +163,12 @@ void vga_write(Machine *m, uint32_t off, uint8_t val) {
         default: { uint8_t b = val & bm; d = (sr & (1 << p)) ? 0xFF : 0; res = logic(func, d, l); res = (res & b) | (l & ~b); break; }
         }
         v->plane[p][off] = res;
-        if (!chr) v->bgplane[p][off] = res;
+        if (patch) patch_diff |= res ^ v->bgplane[p][off];
+        else if (!chr) v->bgplane[p][off] = res;
+    }
+    if (patch) {                     /* pixels that already were character pixels stay so (the patch lies inside the silhouette); the ones that now differ from the background join them */
+        uint8_t nv = v->chplane[off] | patch_diff;
+        if (nv != v->chplane[off]) { v->chplane[off] = nv; v->ch_gen++; }
     }
     v->dirty++;
 }

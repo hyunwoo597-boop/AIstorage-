@@ -770,7 +770,12 @@ void hle_call(Machine *m, int id) {
     case 0x16: bios_int16(m); break;
     case 0x1A: bios_int1a(m); break;
     case 0x20: dos_terminate(m, 0, -1); break;
-    case 0x21: int21_timed(m); break;
+    case 0x21: int21_timed(m);
+        /* Real DOS runs with interrupts enabled (its INT 21h entry does STI) and returns to the caller with them still enabled (RETF 2),
+         * even when the caller reached it with PUSHF + CALL FAR (flags pushed with IF=0, as the resident INT 21h hook of this game does after the
+         * INT instruction cleared IF). IRET'ing those flags left IF=0 forever, so the timer interrupt (INT 08 -> INT D1 ticks) never fired again
+         * and every timed wait - e.g. the one after "수고하셨습니다." when quitting - hung. */
+        C(m)->iff = 1; break;
     case 0x29: machine_con_putc(m, R8(C(m), 0)); hret(m, -1); break;
     case 0x2F: int2f(m); break;
     case 0x33: mouse(m); break;

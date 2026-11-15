@@ -199,10 +199,10 @@ static void message_screen(const char *title, const char *body) {
         ktext(fbTop, 400, 10, 10, 380, title, C565(255, 220, 80), 1);
         fill(fbBot, 320, C565(10, 10, 30));
         ktext(fbBot, 320, 8, 8, 304, body, C565(230, 230, 230), 0);
-        ktext(fbBot, 320, 8, 240 - KF_LH - 4, 304, "START 버튼을 누르면 종료합니다", C565(150, 200, 255), 0);
+        ktext(fbBot, 320, 8, 240 - KF_LH - 4, 304, "A 또는 START 버튼을 누르면 종료합니다", C565(150, 200, 255), 0);
         present();
         hidScanInput();
-        if (hidKeysDown() & (KEY_START | KEY_B)) break;
+        if (hidKeysDown() & (KEY_START | KEY_B | KEY_A)) break;
     }
 }
 
