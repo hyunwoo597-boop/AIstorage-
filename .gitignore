@@ -1,0 +1,4 @@
+ctr/build/
+ctr/*.elf
+ctr/*.3dsx
+ctr/*.smdh

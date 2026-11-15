@@ -1,0 +1,22 @@
+name: Build 3DS (nonomura.3dsx)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make sure the 3DS libraries are present
+        run: dkp-pacman -Sy --noconfirm --needed 3ds-dev || true
+      - name: Build
+        run: make -C ctr
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nonomura-3dsx
+          path: |
+            ctr/nonomura.3dsx
+            ctr/nonomura.smdh

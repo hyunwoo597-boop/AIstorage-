@@ -1,0 +1,14 @@
+#ifndef TEXTCAP_H
+#define TEXTCAP_H
+#include <stdint.h>
+#include "machine.h"
+
+/* Capture of the engine's glyph blits (text drawn on the VGA screen) so the dialogue
+ * can be re-laid out in large type on a second screen. */
+void textcap_init(Machine *m);                 /* install: hooks the program loader (INT 21h/4B01) */
+void textcap_free(Machine *m);
+uint32_t textcap_gen(Machine *m);              /* increments whenever the captured text changes */
+int  textcap_active(Machine *m);               /* 1 if the engine's glyph routine was found and hooked */
+/* Draw the captured text, large, into an RGB888 buffer (w*h*3 bytes). Returns number of glyphs drawn. */
+int  textcap_render(Machine *m, uint8_t *rgb, int w, int h);
+#endif
