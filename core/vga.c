@@ -28,7 +28,7 @@ void vga_set_mode(Machine *m, int mode) {
     int clear = !(mode & 0x80); mode &= 0x7F;
     v->bios_mode = mode;
     if (mode == 0x12 || mode == 0x10 || mode == 0x0E || mode == 0x0D) {
-        if (clear) memset(v->plane, 0, sizeof(v->plane));
+        if (clear) { memset(v->plane, 0, sizeof(v->plane)); memset(v->bgplane, 0, sizeof(v->bgplane)); }
         memset(v->gc, 0, sizeof(v->gc)); v->gc[8] = 0xFF; v->gc[6] = 0x05; v->gc[7] = 0x0F;
         v->seq[2] = 0x0F; v->seq[4] = 0x06;
         for (int i = 0; i < 16; i++) v->attr[i] = ega_attr[i];
@@ -36,7 +36,7 @@ void vga_set_mode(Machine *m, int mode) {
         v->crtc[0xC] = v->crtc[0xD] = 0; v->crtc[0x13] = 0x28; v->crtc[0x17] = 0xE3;
         default_palette(v);
     }
-    v->dirty++;
+    v->dirty++; v->pal_gen++;
     if (m->on_vga_mode) m->on_vga_mode(m);
 }
 
@@ -56,9 +56,16 @@ uint8_t vga_read(Machine *m, uint32_t off) {
     return v->latch[v->gc[4] & 3];
 }
 
+/* The SILV engine draws the background (and full-screen event pictures) with one routine and the characters, which it
+ * composes over that background, with another one (a plain rectangle blit at IP 1D00..1D7F of SILV1.COM).  bgplane[] mirrors
+ * every write except those character blits, so "plane differs from bgplane" marks exactly the character pixels. */
+#define CHAR_BLIT_IP_LO 0x1D00
+#define CHAR_BLIT_IP_HI 0x1D80
 void vga_write(Machine *m, uint32_t off, uint8_t val) {
     if (m->vga_wr_dbg) m->vga_wr_dbg(m, off);
     VGA *v = &m->vga; off &= 0xFFFF;
+    const int chr = m->cpu.ip >= CHAR_BLIT_IP_LO && m->cpu.ip < CHAR_BLIT_IP_HI;
+    if (chr) v->char_gen++; else if (off < 28160) v->pic_gen++;
     uint8_t mask = v->seq[2] & 0xF, wm = v->gc[5] & 3, func = (v->gc[3] >> 3) & 3, rot = v->gc[3] & 7;
     uint8_t bm = v->gc[8], sr = v->gc[0], esr = v->gc[1];
     if ((wm == 0 || wm == 3) && rot) val = (val >> rot) | (val << (8 - rot));
@@ -72,6 +79,7 @@ void vga_write(Machine *m, uint32_t off, uint8_t val) {
         default: { uint8_t b = val & bm; d = (sr & (1 << p)) ? 0xFF : 0; res = logic(func, d, l); res = (res & b) | (l & ~b); break; }
         }
         v->plane[p][off] = res;
+        if (!chr) v->bgplane[p][off] = res;
     }
     v->dirty++;
 }
@@ -110,7 +118,7 @@ void vga_io_out(Machine *m, uint16_t port, uint8_t val) {
     switch (port) {
     case 0x3C0:
         if (!v->attr_ff) { v->attr_idx = val; v->attr_ff = 1; }
-        else { v->attr[v->attr_idx & 0x1F] = val; v->attr_ff = 0; v->dirty++; }
+        else { v->attr[v->attr_idx & 0x1F] = val; v->attr_ff = 0; v->dirty++; v->pal_gen++; }
         break;
     case 0x3C2: v->misc = val; break;
     case 0x3C4: v->seq_idx = val; break;
@@ -120,12 +128,12 @@ void vga_io_out(Machine *m, uint16_t port, uint8_t val) {
     case 0x3C8: v->dac_wi = val; v->dac_comp_w = 0; break;
     case 0x3C9:
         v->dac[v->dac_wi][v->dac_comp_w++] = val & 0x3F;
-        if (v->dac_comp_w == 3) { v->dac_comp_w = 0; v->dac_wi++; v->dirty++; }
+        if (v->dac_comp_w == 3) { v->dac_comp_w = 0; v->dac_wi++; v->dirty++; v->pal_gen++; }
         break;
     case 0x3CE: v->gc_idx = val; break;
     case 0x3CF: v->gc[v->gc_idx & 15] = val; break;
     case 0x3B4: case 0x3D4: v->crtc_idx = val; break;
-    case 0x3B5: case 0x3D5: v->crtc[v->crtc_idx & 31] = val; v->dirty++; break;
+    case 0x3B5: case 0x3D5: v->crtc[v->crtc_idx & 31] = val; v->dirty++; v->pal_gen++; break;
     }
 }
 

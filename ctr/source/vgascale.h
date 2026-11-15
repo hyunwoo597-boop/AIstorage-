@@ -12,6 +12,8 @@ void vgascale_render_zoom(Machine *m, uint16_t *fb);
 /* The engine draws its message window as a separate strip below the picture (rows 353..439 of the 640x480 screen;
  * the picture itself is rows 40..335).  vgascale_window_up() is 1 while that strip's frame is on screen. */
 int vgascale_window_up(Machine *m);
+/* 1: render from the background-only screen copy (no characters) until switched back to 0 */
+void vgascale_set_bg(int on);
 /* Picture only (no message strip) for the top screen.  PIC_FILL: frame cropped, picture fills all 400x240;
  * PIC_STRETCH: whole picture stretched over 400x240; PIC_FIT: whole picture at its own aspect ratio with black bars. */
 enum { PIC_FILL = 0, PIC_STRETCH = 1, PIC_FIT = 2 };

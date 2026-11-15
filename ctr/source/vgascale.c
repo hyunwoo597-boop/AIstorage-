@@ -2,6 +2,11 @@
 
 extern void vga_palette16(Machine *m, uint8_t rgb[16][3]);
 
+/* vgascale_set_bg(1): all render functions read the background-only copy of the screen (VGA.bgplane, i.e. without the characters) */
+static int use_bg;
+void vgascale_set_bg(int on) { use_bg = on; }
+#define PL(v, k) (use_bg ? (v)->bgplane[k] : (v)->plane[k])
+
 /* SPL[p][b]: for plane p holding byte b (8 pixels, MSB = leftmost), byte k (k=0..3) of the result is the
  * contribution of that plane to the 8-bit "pixel pair" index (left pixel in bits 7..4, right pixel in bits 3..0)
  * of source pixels (2k, 2k+1). */
@@ -35,7 +40,7 @@ void vgascale_render(Machine *m, uint16_t *fb, int x0) {
         }
     int pitch = v->crtc[0x13] * 2; if (!pitch) pitch = 80;
     uint32_t start = (v->crtc[0xC] << 8) | v->crtc[0xD];
-    const uint8_t *pl0 = v->plane[0], *pl1 = v->plane[1], *pl2 = v->plane[2], *pl3 = v->plane[3];
+    const uint8_t *pl0 = PL(v, 0), *pl1 = PL(v, 1), *pl2 = PL(v, 2), *pl3 = PL(v, 3);
 
     for (int bx = 0; bx < 80; bx++) {
         uint16_t *out0 = fb + (size_t)(x0 + bx * 4) * 240 + 239;   /* output y=0 of the 4 columns; y grows downwards in memory-descending order */
@@ -72,7 +77,7 @@ static void stage1(Machine *m, uint16_t *dst, int row0, int rows_out) {
         }
     int pitch = v->crtc[0x13] * 2; if (!pitch) pitch = 80;
     uint32_t start = (v->crtc[0xC] << 8) | v->crtc[0xD];
-    const uint8_t *pl0 = v->plane[0], *pl1 = v->plane[1], *pl2 = v->plane[2], *pl3 = v->plane[3];
+    const uint8_t *pl0 = PL(v, 0), *pl1 = PL(v, 1), *pl2 = PL(v, 2), *pl3 = PL(v, 3);
     for (int oy = 0; oy < rows_out; oy++) {
         uint32_t rowa = start + (uint32_t)(row0 + 2 * oy) * pitch, rowb = rowa + pitch;
         uint16_t *o = dst + oy * MID_W;
@@ -137,7 +142,7 @@ int vgascale_window_up(Machine *m) {
     if (v->bios_mode != 0x12) return 0;
     int pitch = v->crtc[0x13] * 2; if (!pitch) pitch = 80;
     uint32_t start = (v->crtc[0xC] << 8) | v->crtc[0xD];
-    const uint8_t *pl[4] = { v->plane[0], v->plane[1], v->plane[2], v->plane[3] };
+    const uint8_t *pl[4] = { PL(v, 0), PL(v, 1), PL(v, 2), PL(v, 3) };
     uint32_t fr = start + 354u * pitch, bl = start + 350u * pitch;     /* inside the frame's top border / just above it */
     uint8_t ref[4];
     for (int p = 0; p < 4; p++) { ref[p] = pl[p][(fr + 2) & 0xFFFF]; if (ref[p] != 0x00 && ref[p] != 0xFF) return 0; }
@@ -162,7 +167,7 @@ static void render_fill(Machine *m, uint16_t *fb) {
     for (int i = 0; i < 16; i++) c565[i] = (uint16_t)(((pal[i][0] >> 3) << 11) | ((pal[i][1] >> 2) << 5) | (pal[i][2] >> 3));
     int pitch = v->crtc[0x13] * 2; if (!pitch) pitch = 80;
     uint32_t start = (v->crtc[0xC] << 8) | v->crtc[0xD];
-    const uint8_t *pl0 = v->plane[0], *pl1 = v->plane[1], *pl2 = v->plane[2], *pl3 = v->plane[3];
+    const uint8_t *pl0 = PL(v, 0), *pl1 = PL(v, 1), *pl2 = PL(v, 2), *pl3 = PL(v, 3);
     for (int y = 0; y < FILL_H; y++) {
         uint32_t row = start + (uint32_t)(FILL_Y0 + y) * pitch + FILL_X0 / 8;
         uint16_t *o = fillsrc + y * FILL_W;

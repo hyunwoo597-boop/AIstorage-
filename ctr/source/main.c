@@ -35,6 +35,7 @@ static int win_hide = 1;              /* 1: while the engine's message window is
 static int win_state, win_cand, win_cnt, win_force;   /* current view, candidate view, frames the candidate has held, redraw request */
 static int pic_mode = PIC_FILL;       /* picture-only top view: PIC_FILL / PIC_STRETCH / PIC_FIT */
 static int top_zoom = 1;              /* 1: 640x400 game area stretched over the whole top screen, 0: original 4:3 picture */
+static int s3d_mode = 0;              /* 3D style: 0 characters only (they stand out in front of the flat background), 1 whole picture (tilt + frame) */
 static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong (the 3D slider scales it further) */
 static int text_size = 1;             /* bottom-screen text: 0 large, 1 medium, 2 small, 3 tiny */
 static const float TEXT_SCALE[] = { 2.0f, 1.5f, 1.25f, 1.0f };
@@ -42,7 +43,7 @@ static const char *TEXT_NAME[] = { "크게", "보통", "작게", "아주 작게"
 static char cfg_path[320];
 static void cfg_save(void) {
     FILE *f = fopen(cfg_path, "w"); if (!f) return;
-    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\n", cpu_mode, mouse_level, top_zoom, text_size, win_hide, pic_mode, s3d_level);
+    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\n", cpu_mode, mouse_level, top_zoom, text_size, win_hide, pic_mode, s3d_level, s3d_mode);
     fclose(f);
 }
 static void cfg_load(void) {
@@ -56,6 +57,7 @@ static void cfg_load(void) {
         else if (sscanf(line, "pic_mode=%d", &v) == 1 && v >= 0 && v < 3) pic_mode = v;
         else if (sscanf(line, "text_size=%d", &v) == 1 && v >= 0 && v < 4) text_size = v;
         else if (sscanf(line, "s3d=%d", &v) == 1 && v >= 0 && v < 4) s3d_level = v;
+        else if (sscanf(line, "s3dm=%d", &v) == 1 && v >= 0 && v < 2) s3d_mode = v;
     }
     fclose(f);
 }
@@ -392,18 +394,24 @@ static void input_release_all(Machine *m) {
 /* ------------------------------------------------------------------ rendering */
 static uint16_t topimg[400 * 240];      /* last rendered game frame for the top screen (column-major, 400x240) */
 static unsigned topimg_gen;             /* bumped whenever topimg changes (the eye images are rebuilt from it) */
-static void top_render(Machine *m) {
-    topimg_gen++;
+static void char_layer(Machine *m);
+static void top_render_to(Machine *m, uint16_t *dst) {
     if (win_hide && win_state) {                          /* message window up: picture only, the text lives on the bottom screen */
-        if (top_zoom) vgascale_render_picture(m, topimg, pic_mode);
+        if (top_zoom) vgascale_render_picture(m, dst, pic_mode);
         else {
-            vgascale_render(m, topimg, 40);
-            for (int x = 0; x < 400; x++) memset(topimg + x * 240, 0, 64 * sizeof(uint16_t));      /* picture rows 176..239 = the window strip */
+            vgascale_render(m, dst, 40);
+            for (int x = 0; x < 400; x++) memset(dst + x * 240, 0, 64 * sizeof(uint16_t));      /* picture rows 176..239 = the window strip */
         }
         return;
     }
-    if (top_zoom) vgascale_render_zoom(m, topimg);
-    else vgascale_render(m, topimg, 40);                  /* 320x240 picture centred in the 400-wide screen */
+    if (top_zoom) vgascale_render_zoom(m, dst);
+    else vgascale_render(m, dst, 40);                     /* 320x240 picture centred in the 400-wide screen */
+}
+static int s3d_on, s3d_chars;           /* top screen currently in 3D / and it is the "characters only" style */
+static void top_render(Machine *m) {
+    topimg_gen++;
+    top_render_to(m, topimg);
+    if (s3d_chars) char_layer(m);
 }
 /* once per frame: is the message window up?  The view only switches after the answer has been the same for a few
  * frames, so the picture does not jump while the engine redraws the window. */
@@ -420,12 +428,13 @@ static void top_clear(void) { memset(topimg, 0, sizeof topimg); topimg_gen++; }
  * around the picture floats in front of it.  The frame also hides the strips that the sideways shifts uncover at the edges.
  * The amount of depth follows the console's 3D slider and the menu setting (off / weak / medium / strong). */
 #define S3D_TILT 10          /* total left/right offset (pixels) between the eyes at the top row at full strength */
+#define S3D_CHAR_POP 12      /* "characters only" style: how far (pixels between the eyes) the characters stand out in front of the background at full strength */
 #define S3D_POP 4            /* the frame's offset towards the viewer at full strength */
 static const char *S3D_NAME[] = { "끔", "약", "중", "강" };
 static const float S3D_GAIN[] = { 0.f, 0.4f, 0.7f, 1.f };
 static uint16_t eyeL[400 * 240], eyeR[400 * 240];
-static unsigned eye_gen = ~0u;
-static int eye_key = -1, s3d_on, s3d_tilt, s3d_pop;
+static unsigned eye_gen = ~0u, eye_cl;
+static int eye_key = -1, s3d_tilt, s3d_pop;
 static float s3d_slider;
 
 /* once per frame, before the framebuffers are fetched: read the slider and switch the top screen between 2D and 3D */
@@ -434,9 +443,11 @@ static void s3d_update(void) {
     if (sl < 0.f) sl = 0.f; else if (sl > 1.f) sl = 1.f;
     s3d_slider = sl;
     float g = S3D_GAIN[s3d_level] * sl;
-    s3d_tilt = (int)(S3D_TILT * g + 0.5f); s3d_pop = (int)(S3D_POP * g + 0.5f);
+    if (s3d_mode == 0) { s3d_tilt = 0; s3d_pop = (int)(S3D_CHAR_POP * g + 0.5f); }
+    else { s3d_tilt = (int)(S3D_TILT * g + 0.5f); s3d_pop = (int)(S3D_POP * g + 0.5f); }
     int on = s3d_level > 0 && (s3d_tilt > 0 || s3d_pop > 0);
     if (on != s3d_on) { s3d_on = on; gfxSet3D(on); }
+    s3d_chars = on && s3d_mode == 0;
 }
 static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int pop, int B) {
     /* eye 0 = left, 1 = right.  Behind-the-screen points move left in the left image and right in the right image; points in front the other way round. */
@@ -466,15 +477,74 @@ static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int 
         } else for (int j = 0; j < B; j++) dc[j] = dc[239 - j] = frm[j];
     }
 }
+/* ---- "characters only" 3D.  The engine draws the background with one routine and the characters with another (see vga_write), so the
+ * emulator keeps a second copy of the screen without the characters (VGA.bgplane).  Rendering both copies the same way and comparing
+ * them gives a character mask; the characters are then shifted sideways (in front of the screen) over the untouched, complete background. */
+static uint16_t topbg[400 * 240];       /* the picture rendered from the background-only screen copy */
+static uint8_t chmask[400 * 240], chtmp[400 * 240];
+static unsigned cl_pic = ~0u, cl_pal = ~0u, cl_chr = ~0u, cl_key = ~0u, cl_top = ~0u, cl_ver;
+static int cl_cov;                      /* characters' share of the picture, in permille */
+static int cl_strip;                    /* rows (counted from the bottom of the top image) that hold the message window and stay flat */
+/* 5-tap dilate (dil=1) or erode along columns (step 1) or rows (step 240) */
+static void morph5(uint8_t *dst, const uint8_t *src, int step, int along, int lines, int dil) {
+    for (int a = 0; a < lines; a++)
+        for (int i = 0; i < along; i++) {
+            int hit = 0, all = 1;
+            for (int k = -2; k <= 2; k++) {
+                int q = i + k; int v = (q < 0 || q >= along) ? !dil : src[a * (step == 1 ? 240 : 1) + q * step];
+                if (v) hit = 1; else all = 0;
+            }
+            dst[a * (step == 1 ? 240 : 1) + i * step] = dil ? hit : all;
+        }
+}
+static void char_layer(Machine *m) {
+    VGA *v = &m->vga;
+    int strip = !(win_hide && win_state);
+    unsigned key = (unsigned)top_zoom | (unsigned)pic_mode << 1 | (unsigned)win_hide << 4 | (unsigned)win_state << 5;
+    int bgnew = strip || !cl_ver || key != cl_key || v->pic_gen != cl_pic || v->pal_gen != cl_pal;
+    if (!bgnew && v->char_gen == cl_chr) { cl_top = topimg_gen; return; }      /* only the message strip changed: the picture (and its mask) is as before */
+    if (bgnew) { vgascale_set_bg(1); top_render_to(m, topbg); vgascale_set_bg(0); }
+    int n = 0;
+    for (int i = 0; i < 400 * 240; i++) chmask[i] = topimg[i] != topbg[i];
+    if (strip) {                                                  /* the message window strip is drawn with the same blit routine, but it is not a character */
+        int ys = top_zoom ? 188 : 176;
+        for (int x = 0; x < 400; x++) memset(chmask + x * 240, 0, (240 - ys) * sizeof(uint8_t));
+        cl_strip = 240 - ys;
+    } else cl_strip = 0;
+    for (int i = 0; i < 400 * 240; i++) n += chmask[i];
+    if (n) {                                                      /* close small holes (character pixels that happen to match the background) */
+        morph5(chtmp, chmask, 1, 240, 400, 1); morph5(chmask, chtmp, 240, 400, 240, 1);
+        morph5(chtmp, chmask, 1, 240, 400, 0); morph5(chmask, chtmp, 240, 400, 240, 0);
+        n = 0; for (int i = 0; i < 400 * 240; i++) n += chmask[i];
+    }
+    cl_cov = n * 1000 / (400 * 240);
+    cl_pic = v->pic_gen; cl_pal = v->pal_gen; cl_chr = v->char_gen; cl_key = key; cl_top = topimg_gen; cl_ver++;
+}
+static void make_eye_char(uint16_t *dst, int eye, int pop) {
+    int s = eye ? -(pop / 2) : pop - pop / 2;           /* things in front of the screen move right in the left image and left in the right image */
+    for (int x = 0; x < 400; x++) {
+        uint16_t *dc = dst + x * 240; const uint16_t *bg = topbg + x * 240;
+        int sx = x - s;
+        if (sx < 0 || sx > 399) memcpy(dc, bg, 240 * sizeof(uint16_t));
+        else { const uint16_t *cs = topimg + sx * 240; const uint8_t *cm = chmask + sx * 240; for (int j = 0; j < 240; j++) dc[j] = cm[j] ? cs[j] : bg[j]; }
+        if (cl_strip) memcpy(dc, topimg + x * 240, cl_strip * sizeof(uint16_t));       /* message window: as it is, at the screen surface */
+    }
+}
 /* copies the top picture into the (back) framebuffers, in 2D or as a stereo pair */
-static void top_present(void) {
+static void top_present(Machine *m) {
     if (!s3d_on) { memcpy(fbTop, topimg, sizeof topimg); return; }
-    int key = s3d_tilt * 64 + s3d_pop;
-    if (eye_gen != topimg_gen || eye_key != key) {
-        int B = (s3d_tilt + s3d_pop + 1) / 2 + 1;
-        make_eye(eyeL, topimg, 0, s3d_tilt, s3d_pop, B);
-        make_eye(eyeR, topimg, 1, s3d_tilt, s3d_pop, B);
-        eye_gen = topimg_gen; eye_key = key;
+    if (s3d_chars && cl_top != topimg_gen) top_render(m);          /* the character layer has to be built from the current picture */
+    int key = s3d_tilt * 64 + s3d_pop + s3d_mode * 4096;
+    if (eye_gen != topimg_gen || eye_key != key || (s3d_chars && eye_cl != cl_ver)) {
+        if (s3d_chars) {
+            if (cl_cov < 3 || cl_cov > 700) { memcpy(eyeL, topimg, sizeof eyeL); memcpy(eyeR, topimg, sizeof eyeR); }   /* no character, or a full-screen picture: flat */
+            else { make_eye_char(eyeL, 0, s3d_pop); make_eye_char(eyeR, 1, s3d_pop); }
+        } else {
+            int B = (s3d_tilt + s3d_pop + 1) / 2 + 1;
+            make_eye(eyeL, topimg, 0, s3d_tilt, s3d_pop, B);
+            make_eye(eyeR, topimg, 1, s3d_tilt, s3d_pop, B);
+        }
+        eye_gen = topimg_gen; eye_key = key; eye_cl = cl_ver;
     }
     memcpy(fbTop, eyeL, sizeof eyeL); memcpy(fbTopR, eyeR, sizeof eyeR);
 }
@@ -489,7 +559,7 @@ static void bottom_render(Machine *m) {
 }
 
 /* ------------------------------------------------------------------ pause menu */
-enum { MI_RESUME, MI_TEXT, MI_TOP, MI_WIN, MI_PIC, MI_3D, MI_CPU, MI_MOUSE, MI_SND, MI_QUIT, MI_COUNT };
+enum { MI_RESUME, MI_TEXT, MI_TOP, MI_WIN, MI_PIC, MI_3D, MI_3DM, MI_CPU, MI_MOUSE, MI_SND, MI_QUIT, MI_COUNT };
 static const char *PIC_NAME[] = { "꽉 채움", "늘림", "비율 유지" };
 static double stat_speed = 1.0, stat_mips = 0, stat_busy = 0, stat_skip = 0;
 
@@ -498,7 +568,7 @@ static void menu_draw(Machine *m, int sel) {
     fill(fbBot, 320, C565(10, 10, 30));
     ktext(fbBot, 320, 8, 3, 304, "일시정지", hi, 1);
     char line[96];
-    const int step = KF_LH, y0 = 3 + KF_LH + 3;
+    const int step = KF_LH - 1, y0 = 3 + KF_LH + 3;
     int y = y0;
     for (int i = 0; i < MI_COUNT; i++) {
         switch (i) {
@@ -517,6 +587,7 @@ static void menu_draw(Machine *m, int sel) {
             else if (s3d_slider < 0.03f) snprintf(line, sizeof line, "상단 3D 효과: %s (3D 슬라이더를 올리세요)", S3D_NAME[s3d_level]);
             else snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더 %d%%)", S3D_NAME[s3d_level], (int)(s3d_slider * 100.f + 0.5f));
             break;
+        case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터만 튀어나옴" : "화면 전체 (기울임+테두리)"); break;
         case MI_SND: snprintf(line, sizeof line, "소리 시험 (음이 납니다)"); break;
         default: snprintf(line, sizeof line, "게임 종료"); break;
         }
@@ -529,7 +600,7 @@ static void menu_draw(Machine *m, int sel) {
     int tx = 8 + kwidth("일시정지") + 16;                   /* the speed numbers sit to the right of the title (the 3D item made the list one line longer) */
     ktext(fbBot, 320, tx, 3, 312 - tx, st, dim, 0);
     snprintf(st, sizeof st, "소리 끊김 %u회   미처리 %u   글자 캡처 %s", aud_underruns, (unsigned)m->stat_unhandled, textcap_active(m) ? "켜짐" : "꺼짐");
-    ktext(fbBot, 320, 8, y + 5, 306, st, dim, 0);
+    ktext(fbBot, 320, 8, y + 3, 306, st, dim, 0);
     ktext(fbBot, 320, 8, 240 - KF_LH - 1, 306, "십자키: 선택/변경   A: 확인   B·START: 계속", dim, 0);
 }
 
@@ -545,7 +616,7 @@ static int pause_menu(Machine *m) {
         fb_get();
         menu_draw(m, sel);
         /* keep showing the last game frame on top */
-        top_present();
+        top_present(m);
         present();
         hidScanInput();
         uint32_t d = hidKeysDown();
@@ -563,6 +634,7 @@ static int pause_menu(Machine *m) {
         if (sel == MI_WIN && (dir || (d & KEY_A))) { win_hide ^= 1; win_cand = win_state = win_hide && vgascale_window_up(m); win_cnt = 0; top_clear(); top_render(m); }
         if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 3) % 3; top_clear(); top_render(m); }
         if (sel == MI_3D && (dir || (d & KEY_A))) s3d_level = (s3d_level + (dir ? dir : 1) + 4) % 4;
+        if (sel == MI_3DM && (dir || (d & KEY_A))) s3d_mode ^= 1;
         if (sel == MI_SND && (d & KEY_A)) { ktext(fbBot, 320, 9, 240 - 2 * KF_LH - 3, 304, "재생 중...", C565(255, 220, 80), 1); present(); audio_test(); }
         if (sel == MI_RESUME && (d & KEY_A)) { cfg_save(); return 0; }
         if (sel == MI_QUIT && (d & KEY_A)) { cfg_save(); return 1; }
@@ -693,7 +765,7 @@ int main(void) {
             top_render(m);
             last_dirty = m->vga.dirty; win_force = 0;
         }
-        top_present();
+        top_present(m);
         if (hidKeysHeld() & KEY_SELECT) {               /* hold SELECT: live performance numbers (for bug reports) */
             char t[200];
             snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %dms lead %d\nunder %u drop %u tc %d\nfrm max %.0fms >100:%u >250:%u adj %+.1f%%",
