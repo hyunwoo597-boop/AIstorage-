@@ -20,6 +20,14 @@ u32 __stacksize__ = 0x40000;
 #define APP_VERSION "0.1"
 #define TICKS_PER_SEC ((u64)SYSCLOCK_ARM11)
 #define FRAME_TICKS (TICKS_PER_SEC / 60)
+#ifdef STUB_COSTMODEL      /* PC test builds only: charge modelled 3DS run times to the stub clock (see test/stub3ds) */
+static double cost_env(const char *n, double d) { const char *e = getenv(n); return e ? atof(e) : d; }
+static double c_instr_ns, c_synth_us, c_top_ms, c_bot_ms, c_misc_ms;
+static void cost_init(void) { c_instr_ns = cost_env("COST_INSTR_NS", 126); c_synth_us = cost_env("COST_SYNTH_US", 3); c_top_ms = cost_env("COST_TOP_MS", 10); c_bot_ms = cost_env("COST_BOT_MS", 3); c_misc_ms = cost_env("COST_MISC_MS", 1.5); }
+#define COST(ms) stub_cost(ms)
+#else
+#define COST(ms) ((void)0)
+#endif
 #define C565(r, g, b) ((uint16_t)((((r) >> 3) << 11) | (((g) >> 2) << 5) | ((b) >> 3)))
 
 /* ------------------------------------------------------------------ config */
@@ -248,6 +256,9 @@ static double now_ms(void) { return (double)svcGetSystemTick() * 1000.0 / TICKS_
 static void audio_pump(Machine *m) {
     opl_sync(m->opl);
     uint32_t n = opl_available(m->opl);
+#ifdef STUB_COSTMODEL
+    COST(n * c_synth_us / 1000.0);
+#endif
     if (!audio_ok) { opl_discard(m->opl, n); return; }
     /* the DSP ran completely dry since the last frame: stop, and wait until a reserve has been rebuilt */
     if (audio_started && audio_queued() == 0) { ndspChnSetPaused(0, true); audio_started = 0; aud_underruns++; lead_s += 0.10; if (lead_s > LEAD_MAX) lead_s = LEAD_MAX; }
@@ -266,7 +277,9 @@ static void audio_pump(Machine *m) {
         ndspChnWaveBufAdd(0, wb);
         n -= c;
     }
-    if (!audio_started && audio_queued_frames() >= START_FRAMES) { ndspChnSetPaused(0, false); audio_started = 1; }
+    /* (re)start once a decent part of the reserve is queued, so the first heavy scene after the start doesn't empty it again at once */
+    uint32_t start_at = (uint32_t)(AUD_RATE * lead_s * 0.6); if (start_at < START_FRAMES) start_at = START_FRAMES;
+    if (!audio_started && audio_queued_frames() >= start_at) { ndspChnSetPaused(0, false); audio_started = 1; }
 }
 /* the pause menu does not run the emulator: let the queue play out silently and start clean afterwards */
 static void audio_hold(void) {
@@ -760,13 +773,17 @@ int main(void) {
     u64 pace_last = svcGetSystemTick(), pace_v0 = machine_vtime_ns(m);
     double pace_clock = 0, pace_total = 0, pace_adj = 0, aq_ema = lead_s + 0.015;   /* pace_clock: virtual seconds earned so far (reduced when a backlog is forgiven); pace_total: same, never reduced */
     u64 prev_f0 = 0; double stat_maxfr = 0, win_maxfr = 0, win_pt0 = 0; unsigned slow100 = 0, slow250 = 0;
-    double pt[5] = {0}, worst_pt[5] = {0}, worst_ft = 0, worst_at = 0, other_w = 0; u64 tk;     /* ms spent in: emulation, sound, top picture, bottom screen, vblank wait - for the slowest frame so far */
+    double pt[5] = {0}, worst_pt[5] = {0}, worst_ft = 0, worst_at = 0, other_w = 0, sum_pt[5] = {0}, avg_pt[5] = {0}; int lag_win = 0, lag_pct = 0; u64 tk;     /* ms spent in: emulation, sound, top picture, bottom screen, vblank wait - for the slowest frame so far */
     double pace_lead = audio_ok ? lead_s : 0, last_lead = lead_s; int calm_secs = 0; unsigned last_under = 0;      /* how far the emulation runs ahead of real time (see LEAD_S) */
-    uint32_t last_dirty = ~0u, last_gen = ~0u, bot_dirty = ~0u; int last_bot_frame = -100;
-    int quit = 0; u64 t_game0 = svcGetSystemTick();
+    uint32_t last_dirty = ~0u, last_gen = ~0u, bot_dirty = ~0u; int last_bot_frame = -100, last_top_frame = -100;
+    int quit = 0, ips_cooldown = 0; u64 t_game0 = svcGetSystemTick();
+#ifdef STUB_COSTMODEL
+    cost_init();
+#endif
 
     while (aptMainLoop() && !quit) {
         u64 f0 = svcGetSystemTick();
+        COST(c_misc_ms);
         hidScanInput();
         if (hidKeysDown() & KEY_START) {
             if (pause_menu(m)) break;
@@ -799,15 +816,31 @@ int main(void) {
 #ifdef STUB_JITTER      /* test builds only: end frames at random points to provoke mid-redraw renders */
         { static unsigned js = 0; if (!js) js = getenv("STUB_SEED") ? (unsigned)atoi(getenv("STUB_SEED")) : 12345u; js = js * 1103515245u + 12345u; want = want * (10 + (js >> 16) % 90) / 100; }
 #endif
-        u64 deadline = f0 + FRAME_TICKS * 75 / 100;
+        /* Sound first: normally the emulation gets 75% of a frame.  While the game is behind (or the queued sound has dropped under
+         * ~85% of its target) it may take up to 4 frames: a slow picture is better than a gap in the music. */
+        double q_s = (audio_ok && audio_started) ? (double)audio_queued_frames() / AUD_RATE : lead_s;
+        int starving = audio_ok && audio_started && q_s < lead_s * 0.5;
+        u64 deadline = f0 + FRAME_TICKS * ((lag_frames > 0 || q_s < lead_s * 0.85) ? 4 : 0) + (lag_frames > 0 || q_s < lead_s * 0.85 ? 0 : FRAME_TICKS * 75 / 100);
         while (done < want) {
             long c = want - done; if (c > 12000) c = 12000;
+#ifdef STUB_COSTMODEL
+            uint64_t ic0 = m->icount, sk0 = m->skipped_total;
+#endif
             done += machine_run(m, (int)c);
+#ifdef STUB_COSTMODEL
+            COST(((m->icount - ic0) - (m->skipped_total - sk0)) * c_instr_ns / 1e6);
+#endif
             if (m->exited) break;
             if (svcGetSystemTick() > deadline) break;
         }
         int lagged = done < want;
         lag_frames = lagged ? lag_frames + 1 : 0;
+        /* The game cannot keep up with real time right now (a heavy scene): don't wait for the once-a-second check, slow the emulated CPU
+         * down at once (the game runs a little slower, but the music keeps playing in real time). */
+        if (cpu_mode == 0 && lagged && lag_frames >= 3 && lag_frames % 3 == 0 && m->ips > IPS_MIN) {
+            uint32_t n = (uint32_t)(m->ips * 0.92); if (n < IPS_MIN) n = IPS_MIN;
+            machine_set_ips(m, n); m->poll_force = 1; ips_cooldown = 6;
+        }
         tk = svcGetSystemTick(); pt[0] = (double)(tk - f0) * 1000.0 / TICKS_PER_SEC; u64 tk0 = tk;
         audio_pump(m);
         tk = svcGetSystemTick(); pt[1] = (double)(tk - tk0) * 1000.0 / TICKS_PER_SEC; tk0 = tk;
@@ -823,18 +856,18 @@ int main(void) {
         s3d_update();
         fb_get();
         win_update(m);
-        if (win_force || (m->vga.dirty != last_dirty && (!lagged || (frame & 1) == 0))) {
-            top_render(m);
-            last_dirty = m->vga.dirty; win_force = 0;
+        if (win_force || (m->vga.dirty != last_dirty && (!lagged || (frame & 1) == 0) && (!starving || frame - last_top_frame >= 8))) {
+            top_render(m); COST(c_top_ms);
+            last_dirty = m->vga.dirty; win_force = 0; last_top_frame = frame;
         }
         top_present(m);
         tk = svcGetSystemTick(); pt[2] = (double)(tk - tk0) * 1000.0 / TICKS_PER_SEC; tk0 = tk;
         if (hidKeysHeld() & KEY_SELECT) {               /* hold SELECT: live performance numbers (for bug reports) */
-            char t[320];
-            snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %dms lead %d\nunder %u drop %u tc %d\nfrm max %.0fms >100:%u >250:%u adj %+.1f%%\nworst %.0fms @%.0fs: emu %.0f snd %.0f\n  top %.0f bot %.0f vb %.0f etc %.0f\ndos max %.0fms (AH %02X) >50ms:%u",
+            char t[420];
+            snprintf(t, sizeof t, "spd %3.0f%% cpu %2.0f%% exec %.1fM\nips %.1fM skip %.0f%% aq %dms lead %d\nunder %u drop %u tc %d\nfrm max %.0fms >100:%u >250:%u adj %+.1f%%\nworst %.0fms @%.0fs: emu %.0f snd %.0f\n  top %.0f bot %.0f vb %.0f etc %.0f\navg emu %.0f snd %.0f top %.0f bot %.0f vb %.0f lag %d%%\ndos max %.0fms (AH %02X) >50ms:%u",
                      stat_speed * 100.0, stat_busy * 100.0, stat_mips, m->ips / 1e6, stat_skip * 100.0, (int)(audio_queued_frames() * 1000ull / AUD_RATE), (int)(lead_s * 1000), aud_underruns, aud_dropped, textcap_active(m),
                      stat_maxfr, slow100, slow250, pace_adj * 100.0,
-                     worst_ft, worst_at, worst_pt[0], worst_pt[1], worst_pt[2], worst_pt[3], worst_pt[4], other_w, dos_io_max_ms, (unsigned)dos_io_max_ah, dos_io_slow);
+                     worst_ft, worst_at, worst_pt[0], worst_pt[1], worst_pt[2], worst_pt[3], worst_pt[4], other_w, avg_pt[0], avg_pt[1], avg_pt[2], avg_pt[3], avg_pt[4], lag_pct, dos_io_max_ms, (unsigned)dos_io_max_ah, dos_io_slow);
             gtext(fbTop, 400, 2, 2, 46, t, C565(255, 255, 0), C565(0, 0, 0), 1);
             if (s3d_on) gtext(fbTopR, 400, 2, 2, 46, t, C565(255, 255, 0), C565(0, 0, 0), 1);
         }
@@ -842,8 +875,8 @@ int main(void) {
         /* bottom screen: large dialogue text (rate limited) */
         uint32_t gen = textcap_gen(m);
         int unsettled = textcap_unsettled(m);
-        if (bot_force || ((gen != last_gen || m->vga.dirty != bot_dirty || unsettled) && frame - last_bot_frame >= (gen != last_gen ? 4 : unsettled ? 3 : 8))) {
-            bottom_render(m);
+        if (bot_force || ((gen != last_gen || m->vga.dirty != bot_dirty || unsettled) && frame - last_bot_frame >= (starving ? 10 : gen != last_gen ? 4 : unsettled ? 3 : 8))) {
+            bottom_render(m); COST(c_bot_ms);
             last_gen = gen; bot_dirty = m->vga.dirty; last_bot_frame = frame; bot_force = 0;
         }
         u64 f1 = svcGetSystemTick();
@@ -851,6 +884,8 @@ int main(void) {
         win_busy += f1 - f0;
         gfxFlushBuffers(); gfxSwapBuffers(); gspWaitForVBlank();
         pt[4] = (double)(svcGetSystemTick() - f1) * 1000.0 / TICKS_PER_SEC;
+        for (int i = 0; i < 5; i++) sum_pt[i] += pt[i];
+        if (lagged) lag_win++;
         frame++; win_frames++;
 
         /* once a second: compare virtual time with real time and adapt the emulated CPU speed */
@@ -861,6 +896,8 @@ int main(void) {
             double ent = pace_total - win_pt0;                 /* virtual time the pacer has earned (the feedback above may run the game a little slow on purpose) */
             double ratio = ent > 0 ? virt / ent : 1.0;
             stat_maxfr = win_maxfr; win_maxfr = 0; win_pt0 = pace_total;
+            for (int i = 0; i < 5; i++) { avg_pt[i] = sum_pt[i] / win_frames; sum_pt[i] = 0; }
+            lag_pct = lag_win * 100 / win_frames; lag_win = 0;
             double busy = real > 0 ? (double)win_busy / TICKS_PER_SEC / real : 1.0;
             stat_speed = ratio; stat_mips = (double)((m->icount - win_i0) - (m->skipped_total - win_s0)) / real / 1e6;   /* instructions really executed */
             stat_busy = busy;
@@ -870,9 +907,8 @@ int main(void) {
             else if (++calm_secs >= 30 && lead_s > LEAD_S + 0.001) { lead_s -= 0.02; if (lead_s < LEAD_S) lead_s = LEAD_S; calm_secs = 0; }
             if (cpu_mode == 0) {
                 uint32_t n = m->ips;
-                static int cooldown;
-                if (ratio < 0.97) { double k = ratio < 0.5 ? 0.5 : ratio; n = (uint32_t)(m->ips * k * 0.97); cooldown = 6; m->poll_force = 1; }
-                else if (cooldown > 0) cooldown--;
+                if (ratio < 0.97) { double k = ratio < 0.5 ? 0.5 : ratio; n = (uint32_t)(m->ips * k * 0.97); ips_cooldown = 6; m->poll_force = 1; }
+                else if (ips_cooldown > 0) ips_cooldown--;
                 else if (busy < 0.60 && m->ips < IPS_MAX) n = (uint32_t)(m->ips * 1.06);
                 if (n < IPS_MIN) n = IPS_MIN;
                 if (n > IPS_MAX) n = IPS_MAX;

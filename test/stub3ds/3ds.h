@@ -21,7 +21,12 @@ static u16 _fb[2][2][400 * 240]; static u16 _fbr[2][400 * 240]; static int _cur[
 static int _frame; static u64 _t0;
 static double _slow = 1;
 static int _frameclock;
-static inline u64 svcGetSystemTick(void) { if (_frameclock) return (u64)((double)_frame * (double)SYSCLOCK_ARM11 / 59.83); struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (u64)((double)(ts.tv_sec * 1e9 + ts.tv_nsec) * 0.268111856 * _slow); }
+/* optional CPU cost model (STUB_COST=1): the clock advances by modelled 3DS costs reported by the front end through stub_cost(ms) */
+static int _costmodel; static double _now, _dsp_t;
+static void _dsp_run(double dt);
+static inline void _advance(double t) { if (t > _dsp_t) { _dsp_run(t - _dsp_t); _dsp_t = t; } _now = t; }
+static inline void stub_cost(double ms) { if (_costmodel) _advance(_now + ms / 1000.0); }
+static inline u64 svcGetSystemTick(void) { if (_costmodel) return (u64)(_now * (double)SYSCLOCK_ARM11); if (_frameclock) return (u64)((double)_frame * (double)SYSCLOCK_ARM11 / 59.83); struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (u64)((double)(ts.tv_sec * 1e9 + ts.tv_nsec) * 0.268111856 * _slow); }
 /* host is far faster than a 3DS: slow the stub clock-independent work isn't needed, just report real time */
 static inline void gfxInit(GSPGPU_FramebufferFormat a, GSPGPU_FramebufferFormat b, bool c) {}
 static inline void gfxExit(void) {}
@@ -33,7 +38,9 @@ static inline void gfxFlushBuffers(void) {}
 static inline void gfxSwapBuffers(void) { for (int s = 0; s < 2; s++) if (_dbl[s]) _cur[s] ^= 1; }
 static void _dsp_run(double dt);
 static int _stallp, _stallms, _stall_seeded;
-static inline void gspWaitForVBlank(void) { int n = 1; if (_stallp) { if (!_stall_seeded) { srand(getenv("STUB_SEED") ? atoi(getenv("STUB_SEED")) : 1); _stall_seeded = 1; } if (rand() % 1000 < _stallp) n += (int)(_stallms * 59.83 / 1000.0 + 0.5); } _frame += n; _dsp_run(n / 59.83);
+static inline void gspWaitForVBlank(void) { if (_costmodel) { static int seeded; if (_stallp && !seeded) { srand(getenv("STUB_SEED") ? atoi(getenv("STUB_SEED")) : 1); seeded = 1; }
+        double nb = ((double)(long)(_now * 59.83) + 1.0) / 59.83; if (_stallp && rand() % 1000 < _stallp) nb += _stallms / 1000.0; _frame = (int)(nb * 59.83); _advance(nb); return; }
+    int n = 1; if (_stallp) { if (!_stall_seeded) { srand(getenv("STUB_SEED") ? atoi(getenv("STUB_SEED")) : 1); _stall_seeded = 1; } if (rand() % 1000 < _stallp) n += (int)(_stallms * 59.83 / 1000.0 + 0.5); } _frame += n; _dsp_run(n / 59.83);
     if (_slow > 1) { u64 fr = SYSCLOCK_ARM11 / 60, now = svcGetSystemTick(), nb = (now / fr + 1) * fr; while (svcGetSystemTick() < nb) usleep(200); } }
 static inline void osSetSpeedupEnable(bool e) {}
 static inline Result APT_CheckNew3DS(bool *o) { *o = true; return 0; }

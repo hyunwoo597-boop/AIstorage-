@@ -12,6 +12,7 @@ static void hook(int scan) { char p[64];
 int main(int argc, char **argv) {
     if (getenv("STUB_DUMP")) _dump_hook = hook;
     if (getenv("STUB_FRAMECLOCK")) _frameclock = 1;
+    if (getenv("STUB_COST")) _costmodel = 1;
     if (getenv("STUB_STALLP")) _stallp = atoi(getenv("STUB_STALLP"));
     if (getenv("STUB_STALLMS")) _stallms = atoi(getenv("STUB_STALLMS"));
     if (getenv("STUB_INK")) ink_f = fopen(getenv("STUB_INK"), "w");
