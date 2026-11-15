@@ -46,7 +46,7 @@ static int win_state, win_cand, win_cnt, win_force;   /* current view, candidate
 static int pic_mode = PIC_FILL;       /* picture-only top view: PIC_FILL / PIC_STRETCH / PIC_FIT */
 static int top_zoom = 1;              /* 1: 640x400 game area stretched over the whole top screen, 0: original 4:3 picture */
 static int s3d_mode = 0;              /* 3D style: 0 characters and the picture frame stand out in front of the flat background, 1 whole picture (tilt + frame), 2 characters only */
-static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong (the 3D slider scales it further) */
+static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong, 4 strongest (the 3D slider scales it further) */
 static int text_size = 1;             /* bottom-screen text: 0 large, 1 medium, 2 small, 3 tiny */
 static const float TEXT_SCALE[] = { 2.0f, 1.5f, 1.25f, 1.0f };
 static const char *TEXT_NAME[] = { "크게", "보통", "작게", "아주 작게" };
@@ -66,7 +66,7 @@ static void cfg_load(void) {
         else if (sscanf(line, "win_hide=%d", &v) == 1) win_hide = v ? 1 : 0;
         else if (sscanf(line, "pic_mode=%d", &v) == 1 && v >= 0 && v < 3) pic_mode = v;
         else if (sscanf(line, "text_size=%d", &v) == 1 && v >= 0 && v < 4) text_size = v;
-        else if (sscanf(line, "s3d=%d", &v) == 1 && v >= 0 && v < 4) s3d_level = v;
+        else if (sscanf(line, "s3d=%d", &v) == 1 && v >= 0 && v < 5) s3d_level = v;
         else if (sscanf(line, "s3dm=%d", &v) == 1 && v >= 0 && v < 3) s3d_mode = v;
     }
     fclose(f);
@@ -469,8 +469,8 @@ static void top_clear(void) { memset(topimg, 0, sizeof topimg); topimg_gen++; }
 #define S3D_CHAR_POP 12      /* "characters only" style: how far (pixels between the eyes) the characters stand out in front of the background at full strength */
 #define S3D_FRAME_POP 5     /* the same for the picture frame (less than the characters) */
 #define S3D_POP 4            /* the frame's offset towards the viewer at full strength */
-static const char *S3D_NAME[] = { "끔", "약", "중", "강" };
-static const float S3D_GAIN[] = { 0.f, 0.4f, 0.7f, 1.f };
+static const char *S3D_NAME[] = { "끔", "약", "중", "강", "최강" };
+static const float S3D_GAIN[] = { 0.f, 0.5f, 1.f, 1.5f, 2.f };      /* 1.0 = the old "strong" (characters 12 px apart between the eyes) */
 static uint16_t eyeL[400 * 240], eyeR[400 * 240];
 static unsigned eye_gen = ~0u, eye_cl;
 static int eye_key = -1, s3d_tilt, s3d_pop, s3d_fpop;
@@ -677,7 +677,7 @@ static void menu_draw(Machine *m, int sel) {
         case MI_PIC: snprintf(line, sizeof line, "상단 그림 (대화창 없음): %s", PIC_NAME[pic_mode]); break;
         case MI_3D:
             if (s3d_level == 0) snprintf(line, sizeof line, "상단 3D 효과: 끔");
-            else if (s3d_slider < 0.03f) snprintf(line, sizeof line, "상단 3D 효과: %s (3D 슬라이더를 올리세요)", S3D_NAME[s3d_level]);
+            else if (s3d_slider < 0.03f) snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더를 올리세요)", S3D_NAME[s3d_level]);
             else snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더 %d%%)", S3D_NAME[s3d_level], (int)(s3d_slider * 100.f + 0.5f));
             break;
         case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터+테두리" : s3d_mode == 1 ? "화면 전체(기울임)" : "캐릭터만"); break;
@@ -726,7 +726,7 @@ static int pause_menu(Machine *m) {
         if (sel == MI_TOP && (dir || (d & KEY_A))) { top_zoom ^= 1; top_clear(); top_render(m); }
         if (sel == MI_WIN && (dir || (d & KEY_A))) { win_hide ^= 1; win_cand = win_state = win_hide && vgascale_window_up(m); win_cnt = 0; top_clear(); top_render(m); }
         if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 3) % 3; top_clear(); top_render(m); }
-        if (sel == MI_3D && (dir || (d & KEY_A))) s3d_level = (s3d_level + (dir ? dir : 1) + 4) % 4;
+        if (sel == MI_3D && (dir || (d & KEY_A))) s3d_level = (s3d_level + (dir ? dir : 1) + 5) % 5;
         if (sel == MI_3DM && (dir || (d & KEY_A))) s3d_mode = (s3d_mode + (dir ? dir : 1) + 3) % 3;
         if (sel == MI_SND && (d & KEY_A)) { ktext(fbBot, 320, 9, 240 - 2 * KF_LH - 3, 304, "재생 중...", C565(255, 220, 80), 1); present(); audio_test(); }
         if (sel == MI_RESUME && (d & KEY_A)) { cfg_save(); return 0; }
