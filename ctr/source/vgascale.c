@@ -59,7 +59,7 @@ void vgascale_render(Machine *m, uint16_t *fb, int x0) {
 #define MID_H 200
 static uint16_t mid[MID_W * MID_H];
 
-static void stage1(Machine *m, uint16_t *dst, int row0) {
+static void stage1(Machine *m, uint16_t *dst, int row0, int rows_out) {
     if (!tables_ready) init_tables();
     VGA *v = &m->vga;
     uint8_t pal[16][3];
@@ -73,7 +73,7 @@ static void stage1(Machine *m, uint16_t *dst, int row0) {
     int pitch = v->crtc[0x13] * 2; if (!pitch) pitch = 80;
     uint32_t start = (v->crtc[0xC] << 8) | v->crtc[0xD];
     const uint8_t *pl0 = v->plane[0], *pl1 = v->plane[1], *pl2 = v->plane[2], *pl3 = v->plane[3];
-    for (int oy = 0; oy < MID_H; oy++) {
+    for (int oy = 0; oy < rows_out; oy++) {
         uint32_t rowa = start + (uint32_t)(row0 + 2 * oy) * pitch, rowb = rowa + pitch;
         uint16_t *o = dst + oy * MID_W;
         for (int bx = 0; bx < 80; bx++) {
@@ -108,11 +108,53 @@ static void init_zoom_tables(void) {
 
 void vgascale_render_zoom(Machine *m, uint16_t *fb) {
     if (!zoom_tables_ready) init_zoom_tables();
-    stage1(m, mid, 40);
+    stage1(m, mid, 40, MID_H);
     for (int oy = 0; oy < 240; oy++) {
         const uint16_t *r0 = mid + Y0[oy] * MID_W, *r1 = mid + Y1[oy] * MID_W;
         uint32_t wy = YW[oy];
         uint16_t *o = fb + (239 - oy);
+        for (int ox = 0; ox < 400; ox++, o += 240) {
+            uint32_t wx = XW[ox], x0 = X0[ox], x1 = X1[ox];
+            uint32_t t = (EXP565(r0[x0]) * (32 - wx) + EXP565(r0[x1]) * wx) >> 5;
+            uint32_t b = (EXP565(r1[x0]) * (32 - wx) + EXP565(r1[x1]) * wx) >> 5;
+            uint32_t s = (((t & MASK565) * (32 - wy) + (b & MASK565) * wy) >> 5) & MASK565;
+            *o = (uint16_t)(s | (s >> 16));
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Picture-only view (the message window is shown on the bottom screen instead). */
+#define PIC_ROW0 40
+#define PIC_ROWS 296                         /* 148 rows after the 2x2 filter -> x1.25 = 185 rows at 400 wide */
+#define PIC_H    185
+
+int vgascale_window_up(Machine *m) {
+    VGA *v = &m->vga;
+    if (v->bios_mode != 0x12) return 0;
+    int pitch = v->crtc[0x13] * 2; if (!pitch) pitch = 80;
+    uint32_t start = (v->crtc[0xC] << 8) | v->crtc[0xD];
+    const uint8_t *pl[4] = { v->plane[0], v->plane[1], v->plane[2], v->plane[3] };
+    uint32_t fr = start + 354u * pitch, bl = start + 350u * pitch;     /* inside the frame's top border / just above it */
+    uint8_t ref[4];
+    for (int p = 0; p < 4; p++) { ref[p] = pl[p][(fr + 2) & 0xFFFF]; if (ref[p] != 0x00 && ref[p] != 0xFF) return 0; }
+    if (!(ref[0] | ref[1] | ref[2] | ref[3])) return 0;                 /* the border is not black */
+    for (int bx = 2; bx < 78; bx++)
+        for (int p = 0; p < 4; p++)
+            if (pl[p][(fr + bx) & 0xFFFF] != ref[p] || pl[p][(bl + bx) & 0xFFFF] != 0) return 0;
+    return 1;
+}
+
+void vgascale_render_picture(Machine *m, uint16_t *fb) {
+    if (!zoom_tables_ready) init_zoom_tables();
+    stage1(m, mid, PIC_ROW0, PIC_ROWS / 2);
+    const int mh = PIC_ROWS / 2, y0 = (240 - PIC_H) / 2;
+    for (int oy = 0; oy < 240; oy++) {
+        uint16_t *o = fb + (239 - oy);
+        if (oy < y0 || oy >= y0 + PIC_H) { for (int ox = 0; ox < 400; ox++, o += 240) *o = 0; continue; }
+        float sy = ((float)(oy - y0) + 0.5f) * ((float)mh / PIC_H) - 0.5f; if (sy < 0) sy = 0; if (sy > mh - 1) sy = (float)(mh - 1);
+        int i = (int)sy; uint32_t wy = (uint32_t)((sy - i) * 32.f + 0.5f);
+        const uint16_t *r0 = mid + i * MID_W, *r1 = mid + (i + 1 < mh ? i + 1 : i) * MID_W;
         for (int ox = 0; ox < 400; ox++, o += 240) {
             uint32_t wx = XW[ox], x0 = X0[ox], x1 = X1[ox];
             uint32_t t = (EXP565(r0[x0]) * (32 - wx) + EXP565(r0[x1]) * wx) >> 5;

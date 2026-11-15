@@ -30,6 +30,8 @@ static const char *GAME_DIRS[] = { GAME_DIR0, "sdmc:/nonomura", NULL };
 static const uint32_t CPU_FIXED[] = { 0, 2000000, 3000000, 4000000, 5000000, 6000000 };   /* 0 = auto */
 #define N_CPU_MODES 6
 static int cpu_mode = 0, mouse_level = 3;
+static int win_hide = 1;              /* 1: while the engine's message window is up, the top screen shows only the picture (the text is on the bottom screen) */
+static int win_state, win_cand, win_cnt, win_force;   /* current view, candidate view, frames the candidate has held, redraw request */
 static int top_zoom = 1;              /* 1: 640x400 game area stretched over the whole top screen, 0: original 4:3 picture */
 static int text_size = 1;             /* bottom-screen text: 0 large, 1 medium, 2 small, 3 tiny */
 static const float TEXT_SCALE[] = { 2.0f, 1.5f, 1.25f, 1.0f };
@@ -37,7 +39,7 @@ static const char *TEXT_NAME[] = { "Large", "Medium", "Small", "Tiny" };
 static char cfg_path[320];
 static void cfg_save(void) {
     FILE *f = fopen(cfg_path, "w"); if (!f) return;
-    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\n", cpu_mode, mouse_level, top_zoom, text_size);
+    fprintf(f, "cpu_mode=%d\nmouse_level=%d\ntop_zoom=%d\ntext_size=%d\nwin_hide=%d\n", cpu_mode, mouse_level, top_zoom, text_size, win_hide);
     fclose(f);
 }
 static void cfg_load(void) {
@@ -47,6 +49,7 @@ static void cfg_load(void) {
         if (sscanf(line, "cpu_mode=%d", &v) == 1 && v >= 0 && v < 6) cpu_mode = v;
         else if (sscanf(line, "mouse_level=%d", &v) == 1 && v >= 1 && v <= 5) mouse_level = v;
         else if (sscanf(line, "top_zoom=%d", &v) == 1) top_zoom = v ? 1 : 0;
+        else if (sscanf(line, "win_hide=%d", &v) == 1) win_hide = v ? 1 : 0;
         else if (sscanf(line, "text_size=%d", &v) == 1 && v >= 0 && v < 4) text_size = v;
     }
     fclose(f);
@@ -268,8 +271,23 @@ static void input_release_all(Machine *m) {
 /* ------------------------------------------------------------------ rendering */
 static uint16_t topimg[400 * 240];      /* last rendered game frame for the top screen (column-major, 400x240) */
 static void top_render(Machine *m) {
+    if (win_hide && win_state) {                          /* message window up: picture only, the text lives on the bottom screen */
+        if (top_zoom) vgascale_render_picture(m, topimg);
+        else {
+            vgascale_render(m, topimg, 40);
+            for (int x = 0; x < 400; x++) memset(topimg + x * 240, 0, 64 * sizeof(uint16_t));      /* picture rows 176..239 = the window strip */
+        }
+        return;
+    }
     if (top_zoom) vgascale_render_zoom(m, topimg);
     else vgascale_render(m, topimg, 40);                  /* 320x240 picture centred in the 400-wide screen */
+}
+/* once per frame: is the message window up?  The view only switches after the answer has been the same for a few
+ * frames, so the picture does not jump while the engine redraws the window. */
+static void win_update(Machine *m) {
+    int up = win_hide && vgascale_window_up(m);
+    if (up == win_cand) { if (win_cnt < 1000) win_cnt++; } else { win_cand = up; win_cnt = 0; }
+    if (win_cand != win_state && win_cnt >= 6) { win_state = win_cand; win_force = 1; }
 }
 static void top_clear(void) { memset(topimg, 0, sizeof topimg); }
 static uint8_t botrgb[320 * 240 * 3];
@@ -288,7 +306,7 @@ static void bottom_render(Machine *m) {
 }
 
 /* ------------------------------------------------------------------ pause menu */
-enum { MI_RESUME, MI_TEXT, MI_TOP, MI_CPU, MI_MOUSE, MI_QUIT, MI_COUNT };
+enum { MI_RESUME, MI_TEXT, MI_TOP, MI_WIN, MI_CPU, MI_MOUSE, MI_QUIT, MI_COUNT };
 static double stat_speed = 1.0, stat_mips = 0, stat_busy = 0, stat_skip = 0;
 
 static void menu_draw(Machine *m, int sel) {
@@ -307,6 +325,7 @@ static void menu_draw(Machine *m, int sel) {
         case MI_MOUSE: snprintf(line, sizeof line, "Mouse speed: %d", mouse_level); break;
         case MI_TEXT: snprintf(line, sizeof line, "Bottom text size: %s", TEXT_NAME[text_size]); break;
         case MI_TOP: snprintf(line, sizeof line, "Top screen: %s", top_zoom ? "Zoom (fill)" : "Original 4:3"); break;
+        case MI_WIN: snprintf(line, sizeof line, "Top: dialogue window: %s", win_hide ? "Hidden" : "Shown"); break;
         default: snprintf(line, sizeof line, "Quit game"); break;
         }
         char buf[72]; snprintf(buf, sizeof buf, "%c %s", i == sel ? '>' : ' ', line);
@@ -344,6 +363,7 @@ static int pause_menu(Machine *m) {
         if (sel == MI_MOUSE && (dir || (d & KEY_A))) { mouse_level += dir ? dir : 1; if (mouse_level > 5) mouse_level = 1; if (mouse_level < 1) mouse_level = 5; }
         if (sel == MI_TEXT && (dir || (d & KEY_A))) { text_size = (text_size + (dir ? dir : 1) + 4) % 4; textcap_set_max_scale(TEXT_SCALE[text_size]); text_changed = 1; }
         if (sel == MI_TOP && (dir || (d & KEY_A))) { top_zoom ^= 1; top_clear(); top_render(m); }
+        if (sel == MI_WIN && (dir || (d & KEY_A))) { win_hide ^= 1; win_cand = win_state = win_hide && vgascale_window_up(m); win_cnt = 0; top_clear(); top_render(m); }
         if (sel == MI_RESUME && (d & KEY_A)) { cfg_save(); return 0; }
         if (sel == MI_QUIT && (d & KEY_A)) { cfg_save(); return 1; }
     }
@@ -442,9 +462,10 @@ int main(void) {
 
         /* top screen: re-render the picture when VRAM / palette changed (every other frame if we are struggling) */
         fb_get();
-        if (m->vga.dirty != last_dirty && (!lagged || (frame & 1) == 0)) {
+        win_update(m);
+        if (win_force || (m->vga.dirty != last_dirty && (!lagged || (frame & 1) == 0))) {
             top_render(m);
-            last_dirty = m->vga.dirty;
+            last_dirty = m->vga.dirty; win_force = 0;
         }
         memcpy(fbTop, topimg, sizeof topimg);
         if (hidKeysHeld() & KEY_SELECT) {               /* hold SELECT: live performance numbers (for bug reports) */
