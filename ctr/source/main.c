@@ -46,7 +46,7 @@ static int win_hide = 1;              /* 1: while the engine's message window is
 static int win_state, win_cand, win_cnt, win_force;   /* current view, candidate view, frames the candidate has held, redraw request */
 static int pic_mode = PIC_FILL;       /* picture-only top view: PIC_FILL / PIC_STRETCH (the PIC_FIT choice was removed from the menu; a saved pic_mode=2 is ignored) */
 static const int top_zoom = 1;        /* the 640x400 game area is always stretched over the whole top screen (the original 4:3 view was removed from the menu; a saved top_zoom= line is ignored) */
-static int s3d_mode = 0;              /* 3D style: 0 characters and the picture frame stand out in front of the flat background, 1 whole picture (tilt + frame), 2 characters only */
+static int s3d_mode = 0;              /* 3D style: 0 characters and the picture frame stand out in front of the flat background, 1 whole picture (tilt + frame), 2 characters only, 3 tilted background + characters in front */
 static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong, 4 strongest (the 3D slider scales it further) */
 /* bottom-screen text is always shown at the smallest size (1.0x); the old size choice is gone and a saved text_size= line is ignored */
 static char cfg_path[320];
@@ -64,7 +64,7 @@ static void cfg_load(void) {
         else if (sscanf(line, "win_hide=%d", &v) == 1) win_hide = v ? 1 : 0;
         else if (sscanf(line, "pic_mode=%d", &v) == 1 && v >= 0 && v < 2) pic_mode = v;
         else if (sscanf(line, "s3d=%d", &v) == 1 && v >= 0 && v < 5) s3d_level = v;
-        else if (sscanf(line, "s3dm=%d", &v) == 1 && v >= 0 && v < 3) s3d_mode = v;
+        else if (sscanf(line, "s3dm=%d", &v) == 1 && v >= 0 && v < 4) s3d_mode = v;
     }
     fclose(f);
 }
@@ -502,6 +502,7 @@ static void top_clear(void) { memset(topimg, 0, sizeof topimg); topimg_gen++; }
 #define S3D_CHAR_POP 12      /* "characters only" style: how far (pixels between the eyes) the characters stand out in front of the background at full strength */
 #define S3D_FRAME_POP 5     /* the same for the picture frame (less than the characters) */
 #define S3D_POP 4            /* the frame's offset towards the viewer at full strength */
+#define S3D_BG_TILT 8        /* "tilted background + characters" style: the background's top edge recedes by this much at full strength (the characters stand S3D_CHAR_POP in front) */
 static const char *S3D_NAME[] = { "끔", "약", "중", "강", "최강" };
 static const float S3D_GAIN[] = { 0.f, 0.5f, 1.f, 1.5f, 2.f };      /* 1.0 = the old "strong" (characters 12 px apart between the eyes) */
 static uint16_t eyeL[400 * 240], eyeR[400 * 240];
@@ -515,13 +516,15 @@ static void s3d_update(void) {
     if (sl < 0.f) sl = 0.f; else if (sl > 1.f) sl = 1.f;
     s3d_slider = sl;
     float g = S3D_GAIN[s3d_level] * sl;
-    if (s3d_mode != 1) { s3d_tilt = 0; s3d_pop = (int)(S3D_CHAR_POP * g + 0.5f); s3d_fpop = s3d_mode == 0 ? (int)(S3D_FRAME_POP * g + 0.5f) : 0; }
+    if (s3d_mode == 3) { s3d_tilt = (int)(S3D_BG_TILT * g + 0.5f); s3d_pop = (int)(S3D_CHAR_POP * g + 0.5f); s3d_fpop = (int)(S3D_POP * g + 0.5f); }    /* tilted background + characters in front; fpop: the thin border that hides the strips the tilt uncovers */
+    else if (s3d_mode != 1) { s3d_tilt = 0; s3d_pop = (int)(S3D_CHAR_POP * g + 0.5f); s3d_fpop = s3d_mode == 0 ? (int)(S3D_FRAME_POP * g + 0.5f) : 0; }
     else { s3d_tilt = (int)(S3D_TILT * g + 0.5f); s3d_pop = (int)(S3D_POP * g + 0.5f); s3d_fpop = 0; }
     int on = s3d_level > 0 && (s3d_tilt > 0 || s3d_pop > 0);
     if (on != s3d_on) { s3d_on = on; gfxSet3D(on); }
     s3d_chars = on && s3d_mode != 1; s3d_frame = on && s3d_mode == 0 && s3d_fpop > 0;
 }
-static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int pop, int B) {
+/* cm/cs (optional): a character mask and picture to lay over the tilted background, shifted by csh pixels; strip: rows at the bottom that stay flat (message window) */
+static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int pop, int B, const uint8_t *cm, const uint16_t *cs, int csh, int strip) {
     /* eye 0 = left, 1 = right.  Behind-the-screen points move left in the left image and right in the right image; points in front the other way round. */
     int j0[260], n[260], sh[260], nr = 0;
     for (int j = 0; j < 240; j++) {                                  /* j = memory index inside a column = 239 - y */
@@ -539,6 +542,8 @@ static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int 
             int sx = x - sh[r]; sx = sx < 0 ? 0 : sx > 399 ? 399 : sx;
             memcpy(dc + j0[r], src + sx * 240 + j0[r], n[r] * sizeof(uint16_t));
         }
+        if (cm) { int sx = x - csh; if (sx >= 0 && sx <= 399) { const uint8_t *mk = cm + sx * 240; const uint16_t *cp = cs + sx * 240; for (int j = 0; j < 240; j++) if (mk[j]) dc[j] = cp[j]; } }
+        if (strip) memcpy(dc, cs + x * 240, strip * sizeof(uint16_t));
         if (B <= 0) continue;
         int xf = x - fs, dx = xf < 399 - xf ? xf : 399 - xf;
         if (dx < B) {
@@ -674,14 +679,20 @@ static void top_present(Machine *m) {
     if (s3d_chars && cl_top != topimg_gen) top_render(m);          /* the character layer has to be built from the current picture */
     int key = s3d_tilt | s3d_pop << 8 | s3d_fpop << 16 | s3d_mode << 24;
     if (eye_gen != topimg_gen || eye_key != key || (s3d_chars && eye_cl != cl_ver)) {
-        if (s3d_chars) {
+        if (s3d_chars && s3d_mode == 3) {                   /* tilted background (without the characters) with the characters standing in front of it */
+            int chars = !(cl_cov < 3 || cl_cov > 700);
+            int B = (s3d_tilt + s3d_fpop + 1) / 2 + 1;
+            const uint16_t *base = chars ? topbg : topimg;
+            make_eye(eyeL, base, 0, s3d_tilt, s3d_fpop, B, chars ? chmask : NULL, topimg, s3d_pop - s3d_pop / 2, cl_strip);
+            make_eye(eyeR, base, 1, s3d_tilt, s3d_fpop, B, chars ? chmask : NULL, topimg, -(s3d_pop / 2), cl_strip);
+        } else if (s3d_chars) {
             int chars = !(cl_cov < 3 || cl_cov > 700);      /* no character, or a full-screen picture: nothing to lift out */
             if (!chars && !s3d_frame) { memcpy(eyeL, topimg, sizeof eyeL); memcpy(eyeR, topimg, sizeof eyeR); }
             else { make_eye_char(eyeL, 0, s3d_pop, s3d_fpop, s3d_frame, chars); make_eye_char(eyeR, 1, s3d_pop, s3d_fpop, s3d_frame, chars); }
         } else {
             int B = (s3d_tilt + s3d_pop + 1) / 2 + 1;
-            make_eye(eyeL, topimg, 0, s3d_tilt, s3d_pop, B);
-            make_eye(eyeR, topimg, 1, s3d_tilt, s3d_pop, B);
+            make_eye(eyeL, topimg, 0, s3d_tilt, s3d_pop, B, NULL, NULL, 0, 0);
+            make_eye(eyeR, topimg, 1, s3d_tilt, s3d_pop, B, NULL, NULL, 0, 0);
         }
         eye_gen = topimg_gen; eye_key = key; eye_cl = cl_ver;
     }
@@ -724,7 +735,7 @@ static void menu_draw(Machine *m, int sel) {
             else if (s3d_slider < 0.03f) snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더를 올리세요)", S3D_NAME[s3d_level]);
             else snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더 %d%%)", S3D_NAME[s3d_level], (int)(s3d_slider * 100.f + 0.5f));
             break;
-        case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터+테두리" : s3d_mode == 1 ? "화면 전체(기울임)" : "캐릭터만"); break;
+        case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터+테두리" : s3d_mode == 1 ? "화면 전체(기울임)" : s3d_mode == 2 ? "캐릭터만" : "배경기울임+캐릭터"); break;
         case MI_SND: snprintf(line, sizeof line, "소리 시험 (음 + 음악 샘플)"); break;
         default: snprintf(line, sizeof line, "게임 종료"); break;
         }
@@ -768,7 +779,7 @@ static int pause_menu(Machine *m) {
         if (sel == MI_WIN && (dir || (d & KEY_A))) { win_hide ^= 1; win_cand = win_state = win_hide && vgascale_window_up(m); win_cnt = 0; top_clear(); top_render(m); }
         if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 2) % 2; top_clear(); top_render(m); }
         if (sel == MI_3D && (dir || (d & KEY_A))) s3d_level = (s3d_level + (dir ? dir : 1) + 5) % 5;
-        if (sel == MI_3DM && (dir || (d & KEY_A))) s3d_mode = (s3d_mode + (dir ? dir : 1) + 3) % 3;
+        if (sel == MI_3DM && (dir || (d & KEY_A))) s3d_mode = (s3d_mode + (dir ? dir : 1) + 4) % 4;
         if (sel == MI_SND && (d & KEY_A)) { ktext(fbBot, 320, 9, 240 - 2 * KF_LH - 3, 304, "재생 중...", C565(255, 220, 80), 1); present(); audio_test(); }
         if (sel == MI_RESUME && (d & KEY_A)) { cfg_save(); return 0; }
         if (sel == MI_QUIT && (d & KEY_A)) { cfg_save(); return 1; }
