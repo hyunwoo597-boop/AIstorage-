@@ -4,8 +4,14 @@ extern void vga_palette16(Machine *m, uint8_t rgb[16][3]);
 
 /* vgascale_set_bg(1): all render functions read the background-only copy of the screen (VGA.bgplane, i.e. without the characters) */
 static int use_bg;
+static const uint8_t *const *ovr_pl;      /* vgascale_set_planes(): render these 4 planes instead, as a white (colour 15) on black mask */
 void vgascale_set_bg(int on) { use_bg = on; }
-#define PL(v, k) (use_bg ? (v)->bgplane[k] : (v)->plane[k])
+void vgascale_set_planes(const uint8_t *const *pl) { ovr_pl = pl; }
+#define PL(v, k) (ovr_pl ? ovr_pl[k] : use_bg ? (v)->bgplane[k] : (v)->plane[k])
+static void pal16(Machine *m, uint8_t pal[16][3]) {
+    if (!ovr_pl) { vga_palette16(m, pal); return; }
+    for (int i = 0; i < 16; i++) pal[i][0] = pal[i][1] = pal[i][2] = i == 15 ? 255 : 0;
+}
 
 /* SPL[p][b]: for plane p holding byte b (8 pixels, MSB = leftmost), byte k (k=0..3) of the result is the
  * contribution of that plane to the 8-bit "pixel pair" index (left pixel in bits 7..4, right pixel in bits 3..0)
@@ -30,7 +36,7 @@ void vgascale_render(Machine *m, uint16_t *fb, int x0) {
     if (!tables_ready) init_tables();
     VGA *v = &m->vga;
     uint8_t pal[16][3];
-    vga_palette16(m, pal);
+    pal16(m, pal);
     /* P[pair] = packed (r<<20 | g<<10 | b) sum of the two pixels' 8-bit colours; two of these never overflow a 10-bit field */
     uint32_t P[256];
     for (int a = 0; a < 16; a++)
@@ -68,7 +74,7 @@ static void stage1(Machine *m, uint16_t *dst, int row0, int rows_out) {
     if (!tables_ready) init_tables();
     VGA *v = &m->vga;
     uint8_t pal[16][3];
-    vga_palette16(m, pal);
+    pal16(m, pal);
     uint32_t P[256];
     for (int a = 0; a < 16; a++)
         for (int b = 0; b < 16; b++) {
@@ -163,7 +169,7 @@ static void render_fill(Machine *m, uint16_t *fb) {
     if (!tables_ready) init_tables();
     VGA *v = &m->vga;
     uint8_t pal[16][3]; uint16_t c565[16];
-    vga_palette16(m, pal);
+    pal16(m, pal);
     for (int i = 0; i < 16; i++) c565[i] = (uint16_t)(((pal[i][0] >> 3) << 11) | ((pal[i][1] >> 2) << 5) | (pal[i][2] >> 3));
     int pitch = v->crtc[0x13] * 2; if (!pitch) pitch = 80;
     uint32_t start = (v->crtc[0xC] << 8) | v->crtc[0xD];

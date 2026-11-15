@@ -14,6 +14,8 @@ void vgascale_render_zoom(Machine *m, uint16_t *fb);
 int vgascale_window_up(Machine *m);
 /* 1: render from the background-only screen copy (no characters) until switched back to 0 */
 void vgascale_set_bg(int on);
+/* non-NULL: render these four planes (0x10000 bytes each) as a mask - colour 15 white, everything else black - ignoring the real palette; NULL: back to normal */
+void vgascale_set_planes(const uint8_t *const *pl);
 /* Picture only (no message strip) for the top screen.  PIC_FILL: frame cropped, picture fills all 400x240;
  * PIC_STRETCH: whole picture stretched over 400x240; PIC_FIT: whole picture at its own aspect ratio with black bars. */
 enum { PIC_FILL = 0, PIC_STRETCH = 1, PIC_FIT = 2 };
