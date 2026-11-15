@@ -58,7 +58,7 @@ static inline void hidCircleRead(circlePosition *c) { *c = _cp; }
 /* audio */
 typedef struct tag_ndspWaveBuf { union { s16 *data_pcm16; const void *data_vaddr; }; u32 nsamples; u8 status; } ndspWaveBuf;
 enum { NDSP_WBUF_FREE, NDSP_WBUF_QUEUED, NDSP_WBUF_PLAYING, NDSP_WBUF_DONE };
-enum { NDSP_OUTPUT_STEREO, NDSP_INTERP_LINEAR, NDSP_FORMAT_STEREO_PCM16 };
+enum { NDSP_OUTPUT_STEREO, NDSP_INTERP_LINEAR, NDSP_INTERP_NONE, NDSP_FORMAT_STEREO_PCM16, NDSP_FORMAT_MONO_PCM16 };
 static long _audio_frames; static int _wb_age[16];
 /* DSP model: consumes the queued wave buffers in real (frame-clock) time; gaps are written as silence */
 static int _dsp_paused = 1, _dsp_n, _dsp_pos, _dsp_in_under, _dsp_started; static double _dsp_rate = 32728.498, _dsp_acc; static ndspWaveBuf *_dsp_q[256];
