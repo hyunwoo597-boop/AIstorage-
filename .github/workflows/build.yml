@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,5 +21,16 @@ jobs:
         with:
           name: nonomura-3dsx
           path: |
+            ctr/nonomura.3dsx
+            ctr/nonomura.smdh
+      - name: Publish as release "latest" (easy download from a phone)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          target_commitish: ${{ github.sha }}
+          name: nonomura.3dsx (latest build)
+          body: "Latest automatic build. Copy nonomura.3dsx to SD:/3ds/ and the game files to SD:/3ds/nonomura/"
+          files: |
             ctr/nonomura.3dsx
             ctr/nonomura.smdh
