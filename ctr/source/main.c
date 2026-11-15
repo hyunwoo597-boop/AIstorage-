@@ -46,7 +46,7 @@ static int win_hide = 1;              /* 1: while the engine's message window is
 static int win_state, win_cand, win_cnt, win_force;   /* current view, candidate view, frames the candidate has held, redraw request */
 static int pic_mode = PIC_FILL;       /* picture-only top view: PIC_FILL / PIC_STRETCH (the PIC_FIT choice was removed from the menu; a saved pic_mode=2 is ignored) */
 static const int top_zoom = 1;        /* the 640x400 game area is always stretched over the whole top screen (the original 4:3 view was removed from the menu; a saved top_zoom= line is ignored) */
-static int s3d_mode = 0;              /* 3D style: 0 characters and the picture frame stand out in front of the flat background, 1 whole picture (tilt + frame), 2 characters only, 3 tilted background + characters in front */
+static int s3d_mode = 0;              /* 3D style: 0 characters and the picture frame stand out in front of the flat background, 1 whole picture (tilt + frame), 2 characters only, 3 tilted background + characters in front, 4 background with an automatic depth map + characters in front */
 static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong, 4 strongest (the 3D slider scales it further) */
 /* bottom-screen text is always shown at the smallest size (1.0x); the old size choice is gone and a saved text_size= line is ignored */
 static char cfg_path[320];
@@ -64,7 +64,7 @@ static void cfg_load(void) {
         else if (sscanf(line, "win_hide=%d", &v) == 1) win_hide = v ? 1 : 0;
         else if (sscanf(line, "pic_mode=%d", &v) == 1 && v >= 0 && v < 2) pic_mode = v;
         else if (sscanf(line, "s3d=%d", &v) == 1 && v >= 0 && v < 5) s3d_level = v;
-        else if (sscanf(line, "s3dm=%d", &v) == 1 && v >= 0 && v < 4) s3d_mode = v;
+        else if (sscanf(line, "s3dm=%d", &v) == 1 && v >= 0 && v < 5) s3d_mode = v;
     }
     fclose(f);
 }
@@ -506,17 +506,19 @@ static void top_clear(void) { memset(topimg, 0, sizeof topimg); topimg_gen++; }
 static const char *S3D_NAME[] = { "끔", "약", "중", "강", "최강" };
 static const float S3D_GAIN[] = { 0.f, 0.5f, 1.f, 1.5f, 2.f };      /* 1.0 = the old "strong" (characters 12 px apart between the eyes) */
 static uint16_t eyeL[400 * 240], eyeR[400 * 240];
-static unsigned eye_gen = ~0u, eye_cl;
+static unsigned eye_gen = ~0u, eye_cl, eye_dp;
 static int eye_key = -1, s3d_tilt, s3d_pop, s3d_fpop;
 static float s3d_slider;
+static unsigned s3d_fno;                /* frames since start (counted in s3d_update) */
 
 /* once per frame, before the framebuffers are fetched: read the slider and switch the top screen between 2D and 3D */
 static void s3d_update(void) {
+    s3d_fno++;
     float sl = osGet3DSliderState();
     if (sl < 0.f) sl = 0.f; else if (sl > 1.f) sl = 1.f;
     s3d_slider = sl;
     float g = S3D_GAIN[s3d_level] * sl;
-    if (s3d_mode == 3) { s3d_tilt = (int)(S3D_BG_TILT * g + 0.5f); s3d_pop = (int)(S3D_CHAR_POP * g + 0.5f); s3d_fpop = (int)(S3D_POP * g + 0.5f); }    /* tilted background + characters in front; fpop: the thin border that hides the strips the tilt uncovers */
+    if (s3d_mode >= 3) { s3d_tilt = (int)(S3D_BG_TILT * g + 0.5f); s3d_pop = (int)(S3D_CHAR_POP * g + 0.5f); s3d_fpop = (int)(S3D_POP * g + 0.5f); }    /* tilted background + characters in front; fpop: the thin border that hides the strips the tilt uncovers */
     else if (s3d_mode != 1) { s3d_tilt = 0; s3d_pop = (int)(S3D_CHAR_POP * g + 0.5f); s3d_fpop = s3d_mode == 0 ? (int)(S3D_FRAME_POP * g + 0.5f) : 0; }
     else { s3d_tilt = (int)(S3D_TILT * g + 0.5f); s3d_pop = (int)(S3D_POP * g + 0.5f); s3d_fpop = 0; }
     int on = s3d_level > 0 && (s3d_tilt > 0 || s3d_pop > 0);
@@ -524,10 +526,86 @@ static void s3d_update(void) {
     s3d_chars = on && s3d_mode != 1; s3d_frame = on && s3d_mode == 0 && s3d_fpop > 0;
 }
 /* cm/cs (optional): a character mask and picture to lay over the tilted background, shifted by csh pixels; strip: rows at the bottom that stay flat (message window) */
-static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int pop, int B, const uint8_t *cm, const uint16_t *cs, int csh, int strip) {
+/* ---- automatic depth for the background ("background depth + characters" style) ----
+ * The backgrounds are single flat paintings, so there is no real depth to read; this guesses one from the picture with the classic
+ * "things stand on the floor" cue: depth grows towards the bottom of the picture (a gentle ramp), and a vertical surface (wall, door,
+ * cabinet) is as far away as the place where it meets the floor, so going down a column the depth is held until a horizontal edge
+ * (floor line, table edge, ...) is crossed.  The result is blurred so neighbouring columns agree and depth steps are soft.
+ * Computed at half resolution (200x120) from the background-only picture, stored like the pictures (column-major) with y downwards. */
+#define DP_W 200
+#define DP_H 120
+#define DP_EDGE 26           /* colour step (0..255) between two rows of the half-resolution picture that counts as a horizontal edge */
+#define DP_RAMP 9            /* mix of the plain ramp, out of 26 (the rest is the ground-contact depth) */
+static uint8_t dp_near[DP_W][DP_H];      /* [x][y]: 0 = far .. 255 = near (the screen surface) */
+static unsigned dp_ver, dp_srcver = ~0u, dp_when;
+static void dp_box_h(uint8_t (*src)[DP_H], uint8_t (*dst)[DP_H], int r) {
+    static uint16_t recip[16]; if (!recip[1]) for (int n = 1; n < 16; n++) recip[n] = (uint16_t)(65536 / n);
+    for (int y = 0; y < DP_H; y++) {
+        int sum = 0, n = 0;
+        for (int x = 0; x <= r && x < DP_W; x++) { sum += src[x][y]; n++; }
+        for (int x = 0; x < DP_W; x++) {
+            dst[x][y] = (uint8_t)((sum * recip[n]) >> 16);
+            int xa = x + r + 1, xr = x - r;
+            if (xa < DP_W) { sum += src[xa][y]; n++; }
+            if (xr >= 0) { sum -= src[xr][y]; n--; }
+        }
+    }
+}
+static void dp_box_v(uint8_t (*src)[DP_H], uint8_t (*dst)[DP_H], int r) {
+    static uint16_t recip[16]; if (!recip[1]) for (int n = 1; n < 16; n++) recip[n] = (uint16_t)(65536 / n);
+    for (int x = 0; x < DP_W; x++) {
+        int sum = 0, n = 0;
+        for (int y = 0; y <= r && y < DP_H; y++) { sum += src[x][y]; n++; }
+        for (int y = 0; y < DP_H; y++) {
+            dst[x][y] = (uint8_t)((sum * recip[n]) >> 16);
+            int ya = y + r + 1, yr = y - r;
+            if (ya < DP_H) { sum += src[x][ya]; n++; }
+            if (yr >= 0) { sum -= src[x][yr]; n--; }
+        }
+    }
+}
+static void depth_build(const uint16_t *img) {                /* img: 400x240 RGB565, column-major, y flipped (like topimg) */
+    static uint8_t lo[DP_W][DP_H][3], gy[DP_W][DP_H], gh[DP_W][DP_H], da[DP_W][DP_H], db[DP_W][DP_H];
+    for (int x = 0; x < DP_W; x++)
+        for (int y = 0; y < DP_H; y++) {
+            const uint16_t *p0 = img + (2 * x) * 240 + (239 - 2 * y), *p1 = p0 + 240;
+            unsigned c0 = p0[0], c1 = p1[0], c2 = p0[-1], c3 = p1[-1];
+            lo[x][y][0] = (uint8_t)((((c0 >> 8) & 0xF8) + ((c1 >> 8) & 0xF8) + ((c2 >> 8) & 0xF8) + ((c3 >> 8) & 0xF8)) >> 2);
+            lo[x][y][1] = (uint8_t)((((c0 >> 3) & 0xFC) + ((c1 >> 3) & 0xFC) + ((c2 >> 3) & 0xFC) + ((c3 >> 3) & 0xFC)) >> 2);
+            lo[x][y][2] = (uint8_t)((((c0 << 3) & 0xF8) + ((c1 << 3) & 0xF8) + ((c2 << 3) & 0xF8) + ((c3 << 3) & 0xF8)) >> 2);
+        }
+    for (int x = 0; x < DP_W; x++) {
+        for (int y = 0; y < DP_H - 1; y++) {
+            int a = lo[x][y + 1][0] - lo[x][y][0], b = lo[x][y + 1][1] - lo[x][y][1], c = lo[x][y + 1][2] - lo[x][y][2];
+            if (a < 0) a = -a; if (b < 0) b = -b; if (c < 0) c = -c;
+            gy[x][y] = (uint8_t)(a > b ? (a > c ? a : c) : (b > c ? b : c));
+        }
+        gy[x][DP_H - 1] = 0;
+    }
+    dp_box_h(gy, gh, 2);                                      /* a horizontal line counts as one even where the dithering breaks it up */
+    for (int x = 0; x < DP_W; x++) {
+        int prop = 255;
+        for (int y = DP_H - 1; y >= 0; y--) {
+            int ramp = y * 255 / (DP_H - 1);
+            if (y == DP_H - 1 || gh[x][y] > DP_EDGE) prop = ramp;
+            da[x][y] = (uint8_t)((ramp * DP_RAMP + prop * (26 - DP_RAMP)) / 26);
+        }
+    }
+    dp_box_h(da, db, 3); dp_box_v(db, da, 2);
+    dp_box_h(da, db, 3); dp_box_v(db, dp_near, 2);
+}
+/* rebuild the depth map when the background changed (at most every 4 frames while it keeps changing, e.g. during a dissolve) */
+static void depth_update(const uint16_t *base, unsigned srcver) {
+    if (srcver == dp_srcver) return;
+    if (dp_srcver != ~0u && s3d_fno - dp_when < 4) return;
+    depth_build(base); dp_srcver = srcver; dp_when = s3d_fno; dp_ver++;
+}
+static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int pop, int B, const uint8_t *cm, const uint16_t *cs, int csh, int strip, int use_dp) {
     /* eye 0 = left, 1 = right.  Behind-the-screen points move left in the left image and right in the right image; points in front the other way round. */
     int j0[260], n[260], sh[260], nr = 0;
-    for (int j = 0; j < 240; j++) {                                  /* j = memory index inside a column = 239 - y */
+    int8_t dsh[256];                                                  /* use_dp: sideways shift for each depth value (0 far .. 255 near) */
+    if (use_dp) for (int v = 0; v < 256; v++) { int ci = ((255 - v) * tilt + 127) / 255; dsh[v] = (int8_t)(eye ? ci - ci / 2 : -(ci / 2)); }
+    for (int j = 0; j < 240 && !use_dp; j++) {                       /* j = memory index inside a column = 239 - y */
         int y = 239 - j, ci = (int)(tilt * (239 - y) / 239.0 + 0.5);   /* y = 0 (top) recedes by 'tilt', y = 239 (bottom) stays at the screen */
         int s = eye ? ci - ci / 2 : -(ci / 2);
         if (nr && sh[nr - 1] == s) n[nr - 1]++; else { j0[nr] = j; n[nr] = 1; sh[nr] = s; nr++; }
@@ -538,6 +616,10 @@ static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int 
         frm[d] = d == B - 1 ? C565(200, 204, 220) : d == B - 2 ? C565(84, 90, 118) : d == 0 ? C565(8, 8, 14) : C565(18, 18, 30);
     for (int x = 0; x < 400; x++) {
         uint16_t *dc = dst + x * 240;
+        if (use_dp) {
+            const uint8_t *dpc = dp_near[x >> 1];
+            for (int j = 0; j < 240; j++) { int sx = x - dsh[dpc[(239 - j) >> 1]]; sx = sx < 0 ? 0 : sx > 399 ? 399 : sx; dc[j] = src[sx * 240 + j]; }
+        } else
         for (int r = 0; r < nr; r++) {
             int sx = x - sh[r]; sx = sx < 0 ? 0 : sx > 399 ? 399 : sx;
             memcpy(dc + j0[r], src + sx * 240 + j0[r], n[r] * sizeof(uint16_t));
@@ -560,7 +642,7 @@ static void make_eye(uint16_t *dst, const uint16_t *src, int eye, int tilt, int 
 static uint16_t topbg[400 * 240];       /* the picture rendered from the background-only screen copy */
 static uint8_t chmask[400 * 240];
 static uint16_t chrgb[400 * 240];
-static unsigned cl_pic = ~0u, cl_pal = ~0u, cl_chg = ~0u, cl_key = ~0u, cl_top = ~0u, cl_ver;
+static unsigned cl_pic = ~0u, cl_pal = ~0u, cl_chg = ~0u, cl_key = ~0u, cl_top = ~0u, cl_ver, bg_ver;     /* bg_ver: bumped whenever topbg is rebuilt */
 static int cl_fr;
 static int cl_cov;                      /* characters' share of the picture, in permille */
 static int cl_strip;                    /* rows (counted from the bottom of the top image) that hold the message window and stay flat */
@@ -625,7 +707,7 @@ static void char_layer(Machine *m) {
         /* No character on the screen (title picture and its fade-in, plain backgrounds): the picture without characters is the picture itself.
          * Skip the two extra full renders and the mask passes - the title's dissolve changes the picture 30 times a second, and doing all of
          * that for each step made the opening stutter. */
-        memcpy(topbg, topimg, sizeof topimg);
+        memcpy(topbg, topimg, sizeof topimg); bg_ver++;
         if (s3d_frame) { if (fr_key != key) { frame_masks(m); fr_key = key; } build_bgx(); }
         if (!chmask_zero) { memset(chmask, 0, sizeof chmask); chmask_zero = 1; }
         cl_strip = strip ? 240 - (top_zoom ? 188 : 176) : 0;
@@ -636,7 +718,7 @@ static void char_layer(Machine *m) {
     int bgnew = strip || !cl_ver || key != cl_key || v->pic_gen != cl_pic || v->pal_gen != cl_pal || s3d_frame != cl_fr;
     if (!bgnew && v->ch_gen == cl_chg) { cl_top = topimg_gen; return; }      /* neither the background nor the set of character pixels changed (an animated face patch only changes colours): the mask is as before */
     if (bgnew) {
-        vgascale_set_bg(1); top_render_to(m, topbg); vgascale_set_bg(0);
+        vgascale_set_bg(1); top_render_to(m, topbg); vgascale_set_bg(0); bg_ver++;
         if (s3d_frame) { if (fr_key != key) { frame_masks(m); fr_key = key; } build_bgx(); }
     }
     cl_fr = s3d_frame;
@@ -678,23 +760,27 @@ static void top_present(Machine *m) {
     if (!s3d_on) { memcpy(fbTop, topimg, sizeof topimg); return; }
     if (s3d_chars && cl_top != topimg_gen) top_render(m);          /* the character layer has to be built from the current picture */
     int key = s3d_tilt | s3d_pop << 8 | s3d_fpop << 16 | s3d_mode << 24;
-    if (eye_gen != topimg_gen || eye_key != key || (s3d_chars && eye_cl != cl_ver)) {
-        if (s3d_chars && s3d_mode == 3) {                   /* tilted background (without the characters) with the characters standing in front of it */
+    if (s3d_chars && s3d_mode == 4) {                              /* the depth map follows the background (rebuilt when it changed) */
+        int chars = !(cl_cov < 3 || cl_cov > 700);
+        depth_update(chars ? topbg : topimg, chars ? bg_ver * 2 + 1 : topimg_gen * 2);
+    }
+    if (eye_gen != topimg_gen || eye_key != key || (s3d_chars && eye_cl != cl_ver) || (s3d_mode == 4 && eye_dp != dp_ver)) {
+        if (s3d_chars && s3d_mode >= 3) {                   /* tilted / depth-mapped background (without the characters) with the characters standing in front of it */
             int chars = !(cl_cov < 3 || cl_cov > 700);
             int B = (s3d_tilt + s3d_fpop + 1) / 2 + 1;
             const uint16_t *base = chars ? topbg : topimg;
-            make_eye(eyeL, base, 0, s3d_tilt, s3d_fpop, B, chars ? chmask : NULL, topimg, s3d_pop - s3d_pop / 2, cl_strip);
-            make_eye(eyeR, base, 1, s3d_tilt, s3d_fpop, B, chars ? chmask : NULL, topimg, -(s3d_pop / 2), cl_strip);
+            make_eye(eyeL, base, 0, s3d_tilt, s3d_fpop, B, chars ? chmask : NULL, topimg, s3d_pop - s3d_pop / 2, cl_strip, s3d_mode == 4);
+            make_eye(eyeR, base, 1, s3d_tilt, s3d_fpop, B, chars ? chmask : NULL, topimg, -(s3d_pop / 2), cl_strip, s3d_mode == 4);
         } else if (s3d_chars) {
             int chars = !(cl_cov < 3 || cl_cov > 700);      /* no character, or a full-screen picture: nothing to lift out */
             if (!chars && !s3d_frame) { memcpy(eyeL, topimg, sizeof eyeL); memcpy(eyeR, topimg, sizeof eyeR); }
             else { make_eye_char(eyeL, 0, s3d_pop, s3d_fpop, s3d_frame, chars); make_eye_char(eyeR, 1, s3d_pop, s3d_fpop, s3d_frame, chars); }
         } else {
             int B = (s3d_tilt + s3d_pop + 1) / 2 + 1;
-            make_eye(eyeL, topimg, 0, s3d_tilt, s3d_pop, B, NULL, NULL, 0, 0);
-            make_eye(eyeR, topimg, 1, s3d_tilt, s3d_pop, B, NULL, NULL, 0, 0);
+            make_eye(eyeL, topimg, 0, s3d_tilt, s3d_pop, B, NULL, NULL, 0, 0, 0);
+            make_eye(eyeR, topimg, 1, s3d_tilt, s3d_pop, B, NULL, NULL, 0, 0, 0);
         }
-        eye_gen = topimg_gen; eye_key = key; eye_cl = cl_ver;
+        eye_gen = topimg_gen; eye_key = key; eye_cl = cl_ver; eye_dp = dp_ver;
     }
     memcpy(fbTop, eyeL, sizeof eyeL); memcpy(fbTopR, eyeR, sizeof eyeR);
 }
@@ -735,7 +821,7 @@ static void menu_draw(Machine *m, int sel) {
             else if (s3d_slider < 0.03f) snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더를 올리세요)", S3D_NAME[s3d_level]);
             else snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더 %d%%)", S3D_NAME[s3d_level], (int)(s3d_slider * 100.f + 0.5f));
             break;
-        case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터+테두리" : s3d_mode == 1 ? "화면 전체(기울임)" : s3d_mode == 2 ? "캐릭터만" : "배경기울임+캐릭터"); break;
+        case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터+테두리" : s3d_mode == 1 ? "화면 전체(기울임)" : s3d_mode == 2 ? "캐릭터만" : s3d_mode == 3 ? "배경기울임+캐릭터" : "배경깊이+캐릭터"); break;
         case MI_SND: snprintf(line, sizeof line, "소리 시험 (음 + 음악 샘플)"); break;
         default: snprintf(line, sizeof line, "게임 종료"); break;
         }
@@ -779,7 +865,7 @@ static int pause_menu(Machine *m) {
         if (sel == MI_WIN && (dir || (d & KEY_A))) { win_hide ^= 1; win_cand = win_state = win_hide && vgascale_window_up(m); win_cnt = 0; top_clear(); top_render(m); }
         if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 2) % 2; top_clear(); top_render(m); }
         if (sel == MI_3D && (dir || (d & KEY_A))) s3d_level = (s3d_level + (dir ? dir : 1) + 5) % 5;
-        if (sel == MI_3DM && (dir || (d & KEY_A))) s3d_mode = (s3d_mode + (dir ? dir : 1) + 4) % 4;
+        if (sel == MI_3DM && (dir || (d & KEY_A))) s3d_mode = (s3d_mode + (dir ? dir : 1) + 5) % 5;
         if (sel == MI_SND && (d & KEY_A)) { ktext(fbBot, 320, 9, 240 - 2 * KF_LH - 3, 304, "재생 중...", C565(255, 220, 80), 1); present(); audio_test(); }
         if (sel == MI_RESUME && (d & KEY_A)) { cfg_save(); return 0; }
         if (sel == MI_QUIT && (d & KEY_A)) { cfg_save(); return 1; }
