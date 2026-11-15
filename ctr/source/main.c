@@ -368,7 +368,10 @@ static uint32_t key_sent;                               /* bit i: key i is curre
 static float mx_acc, my_acc;
 static int lb_frames, rb_frames;          /* remaining frames a click is held (min press length) */
 static int touch_active, touch_x0, touch_y0, touch_lx, touch_ly, touch_age, touch_moved;
-static int touch_menu;               /* the current touch started on a line of a choice menu: the finger picks a line (the mouse jumps to it), lifting it clicks */
+static int touch_menu;               /* the current touch is on a menu (choices, save/load slots...): the finger picks a line (the mouse jumps to it); a line is only executed by a second tap on it */
+static int tsel_valid, tsel_gx, tsel_gy;     /* the line selected by an earlier tap (not executed yet) */
+static int tdown_sel, tcur_gx, tcur_gy;      /* this touch started on the selected line / the line under the finger now */
+static int tmenu_gone;                       /* frames since the menu was last seen */
 
 static void mouse_move(Machine *m, float dx, float dy) {
     mx_acc += dx; my_acc += dy;
@@ -409,17 +412,22 @@ static void input_frame(Machine *m) {
         float v = (0.5f * n * n + 0.5f * n) * sp;
         mouse_move(m, ax / mag * v, -ay / mag * v);
     }
-    /* touch screen = trackpad (drag moves, short tap clicks) */
+    /* touch screen: on a menu (choices, save/load slots, ...) the first tap on a line only selects it (the mouse jumps there, the engine
+     * highlights it), a tap on the already selected line executes it; elsewhere it is a trackpad (drag moves, short tap clicks) */
     int left_touch = 0;
+    if (textcap_menu_active()) tmenu_gone = 0; else if (++tmenu_gone > 30) tsel_valid = 0;
     if (held & KEY_TOUCH) {
         touchPosition tp; hidTouchRead(&tp);
         int gx, gy;
         if (!touch_active) {
             touch_active = 1; touch_x0 = touch_lx = tp.px; touch_y0 = touch_ly = tp.py; touch_age = 0; touch_moved = 0;
             touch_menu = textcap_hit(m, tp.px, tp.py, &gx, &gy);
-            if (touch_menu) { m->mouse_x = gx; m->mouse_y = gy; mx_acc = my_acc = 0; }
-        } else if (touch_menu) {                                     /* choice menu: the mouse follows the finger from line to line */
-            if (textcap_hit(m, tp.px, tp.py, &gx, &gy)) { m->mouse_x = gx; m->mouse_y = gy; }
+            if (touch_menu) {
+                m->mouse_x = tcur_gx = gx; m->mouse_y = tcur_gy = gy; mx_acc = my_acc = 0;
+                tdown_sel = tsel_valid && gx == tsel_gx && gy == tsel_gy;
+            }
+        } else if (touch_menu) {                                     /* menu: the mouse follows the finger from line to line */
+            if (textcap_hit(m, tp.px, tp.py, &gx, &gy)) { m->mouse_x = tcur_gx = gx; m->mouse_y = tcur_gy = gy; }
             touch_lx = tp.px; touch_ly = tp.py; touch_age++;
         } else {
             mouse_move(m, (tp.px - touch_lx) * 2.0f, (tp.py - touch_ly) * 2.0f);
@@ -427,7 +435,10 @@ static void input_frame(Machine *m) {
             if (abs(tp.px - touch_x0) + abs(tp.py - touch_y0) > 8) touch_moved = 1;
         }
     } else if (touch_active) {
-        if (touch_menu) left_touch = 1;                              /* lifting the finger on a choice selects it */
+        if (touch_menu) {
+            if (tdown_sel && tcur_gx == tsel_gx && tcur_gy == tsel_gy) { left_touch = 1; tsel_valid = 0; }   /* second tap on the selected line: execute */
+            else { tsel_valid = 1; tsel_gx = tcur_gx; tsel_gy = tcur_gy; }                                  /* first tap (or another line): just select */
+        }
         else if (!touch_moved && touch_age < 15) left_touch = 1;
         touch_active = 0; touch_menu = 0;
     }
@@ -444,7 +455,7 @@ static void input_frame(Machine *m) {
 static void input_release_all(Machine *m) {
     for (unsigned i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++)
         if (key_sent & (1u << i)) machine_key(m, KEYS[i].sc, 0, KEYS[i].ascii);
-    key_sent = 0; prev_held = 0; m->mouse_btn = 0; lb_frames = rb_frames = 0; touch_active = 0; touch_menu = 0;
+    key_sent = 0; prev_held = 0; m->mouse_btn = 0; lb_frames = rb_frames = 0; touch_active = 0; touch_menu = 0; tsel_valid = 0;
 }
 
 /* ------------------------------------------------------------------ rendering */

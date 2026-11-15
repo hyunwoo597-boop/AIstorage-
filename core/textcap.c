@@ -307,11 +307,16 @@ static HitLine g_hit[256];
 static int g_nhit, g_menu;
 int textcap_hit(Machine *m, int tx, int ty, int *gx, int *gy) {
     (void)m; (void)tx;
-    if (!g_menu) return 0;
-    for (int i = 0; i < g_nhit; i++)
-        if (ty >= g_hit[i].y0 && ty < g_hit[i].y1) { *gx = g_hit[i].gx; *gy = g_hit[i].gy; return 1; }
-    return 0;
+    if (!g_menu || g_nhit <= 0) return 0;
+    int best = 0, bd = 1 << 30;                      /* the line under the finger; a touch between/outside the lines picks the nearest one */
+    for (int i = 0; i < g_nhit; i++) {
+        int d = ty < g_hit[i].y0 ? g_hit[i].y0 - ty : ty >= g_hit[i].y1 ? ty - g_hit[i].y1 + 1 : 0;
+        if (d < bd) { bd = d; best = i; }
+    }
+    *gx = g_hit[best].gx; *gy = g_hit[best].gy;
+    return 1;
 }
+int textcap_menu_active(void) { return g_menu; }
 static float g_max_scale = 1.5f;
 void textcap_set_max_scale(float s) { g_max_scale = s; }
 

@@ -17,4 +17,5 @@ void textcap_set_max_scale(float s);
 /* Touch on a choice menu: after textcap_render, 1 if the layout contains a highlighted line (a menu) and the bottom-screen y coordinate ty is on one of its
  * lines; then (*gx, *gy) is a point on the engine's 640x480 screen inside the first character of that line's logical line (where a mouse click selects it). */
 int textcap_hit(Machine *m, int tx, int ty, int *gx, int *gy);
+int textcap_menu_active(void);      /* 1 while a menu with a highlighted entry is shown on the bottom screen (as of the last textcap_render) */
 #endif
