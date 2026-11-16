@@ -49,6 +49,7 @@ static void pump(void) {
     g_touching = t;
 }
 void plat_poll(void) { pump(); }
+const char *plat_goto_override(void) { return NULL; }   /* test hook used by the headless build only */
 void plat_cursor(int *x, int *y, bool set) { if (set) { g_cx = *x; g_cy = *y; } else { *x = g_cx; *y = g_cy; } }
 bool plat_key(int key) {
     switch (key) {
