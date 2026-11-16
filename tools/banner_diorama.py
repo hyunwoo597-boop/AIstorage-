@@ -6,7 +6,8 @@
 
 bannertool 이 만든 평면 배너의 모델(사각형 한 장 + 256x128 RGBA4444 그림)을 틀로 쓴다.
  - 그림: 조각 모음(아틀라스, RGBA PNG)을 RGBA4444 로 바꿔 파일 끝에 덧붙이고 TXOB 의 크기·위치를 고친다.
- - 모양: 조각마다 사각형 하나를 제 깊이(z)에 세운다. 뒤에서 앞 순서로 그려 반투명 가장자리가 맞게 섞인다.
+ - 모양: 조각마다 사각형 하나를 제 깊이(z)에 세운다(바닥은 위쪽을 뒤로 기울인다). 배치표 순서(뒤→앞)대로 그려
+   반투명 가장자리가 맞게 섞인다.
 재질·셰이더 등 나머지는 그대로 둔다. 배치표는 tools/gen_banner_layers.py 가 만든다.
 """
 import json, struct, sys, zlib
@@ -118,15 +119,17 @@ def build(cgfx, atlas, layout):
     g = bytearray(cgfx); f = find_parts(g)
     w, h, rows = atlas
     assert [w, h] == layout['atlas'] and w & (w - 1) == 0 and h & (h - 1) == 0 and 8 <= w <= 1024 and 8 <= h <= 1024, '조각 모음 크기는 2의 거듭제곱'
-    layers = sorted(layout['layers'], key=lambda l: l['z'])           # 뒤 → 앞
+    layers = layout['layers']                                        # 배치표 순서 = 그리는 순서 (뒤 → 앞)
     assert len(layers) * 4 <= 256
     verts = bytearray(); idx = bytearray(); zmax = 0.0
     for n, l in enumerate(layers):
-        x0, y0, x1, y1 = l['quad']; ax, ay, aw, ah = l['uv']; z = float(l['z']); zmax = max(zmax, abs(z))
+        x0, y0, x1, y1 = l['quad']; ax, ay, aw, ah = l['uv']
+        zb, zt = l['z'] if isinstance(l['z'], list) else (l['z'], l['z'])   # [아래쪽 z, 위쪽 z] 면 기울어진 판(바닥)
+        zmax = max(zmax, abs(zb), abs(zt))
         u0, u1 = (ax + 0.25) / w, (ax + aw - 0.25) / w
         vt, vb_ = 1 - (ay + 0.25) / h, 1 - (ay + ah - 0.25) / h        # 그림 위쪽 행이 v=1
-        for (x, y, u, v) in ((x0, y0, u0, vb_), (x1, y0, u1, vb_), (x0, y1, u0, vt), (x1, y1, u1, vt)):
-            verts += struct.pack('<5f', x, y, z, u, v)
+        for (x, y, z, u, v) in ((x0, y0, zb, u0, vb_), (x1, y0, zb, u1, vb_), (x0, y1, zt, u0, vt), (x1, y1, zt, u1, vt)):
+            verts += struct.pack('<5f', x, y, float(z), u, v)
         b = n * 4
         idx += bytes([b, b + 1, b + 2, b + 1, b + 3, b + 2])
     tex = encode_rgba4444(w, h, rows)
