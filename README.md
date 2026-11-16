@@ -29,7 +29,11 @@ SD:/3ds/nonomura/              ← 게임 파일 전부 (SILV1.COM, SILV.EXE, MU
 
 **설치형(CIA)**: `nonomura.cia`를 FBI 등으로 설치하면 HOME 메뉴에 아이콘/배너로 나타납니다(타이틀 ID `0004000000FA3D10`). 게임 파일 위치는 같습니다(`SD:/3ds/nonomura/`). CIA 는 New 3DS 804MHz·L2 캐시와 SD 카드 접근 권한을 앱 정보(`ctr/nonomura.rsf`)에 직접 적어 둡니다. 소리를 내려면 홈브루 때와 마찬가지로 `SD:/3ds/dspfirm.cdc`(DSP 펌웨어 덤프)가 있어야 합니다.
 
-**입체 홈 메뉴 배너**: 공식 게임처럼 배경이 뚫린 '오려 세운 조각' 무대입니다. 조각 그림(배경이 투명한 PNG — 무대·병원·인물 넷·로고)은 `ctr/banner_parts/`에 있고, `tools/gen_banner_layers.py`(PC 에서 한 번, numpy·Pillow·opencv 필요)가 이를 512x256 조각 모음 `ctr/banner_atlas.png`에 채우고 배치표 `ctr/banner_layout.json`(조각별 위치·깊이, 뒤→앞 순서)을 씁니다. CI 에서는 `tools/banner_diorama.py`(외부 모듈 없음)가 bannertool 의 평면 배너를 틀로 삼아 그림을 조각 모음(RGBA4444)으로, 사각형 한 장을 조각별 사각형(제각기 다른 z, 바닥 무대는 위쪽을 뒤로 기울임)으로 바꿉니다. 새 자료는 CGFX 끝에 덧붙이고 그것을 가리키는 값만 고칩니다. 위치·크기·깊이는 `gen_banner_layers.py`의 `LAYOUT`. `ctr/banner.png`는 이 단계가 실패했을 때 쓰는 평면 그림입니다.
+**움직이는 입체 홈 메뉴 배너**: 공식 게임처럼 배경이 뚫린 '오려 세운 조각' 무대이고, 천천히 움직입니다(무대 전체가 좌우로 돌고, 로고가 떠다니고, 인물이 살짝 흔들림 — 8초 반복). 만드는 순서(PC 에서, 결과물을 커밋):
+1. `tools/gen_banner_layers.py ctr/banner_parts ctr` — 조각 그림(`ctr/banner_parts/`, 배경이 투명한 PNG: 무대·병원·인물 넷·로고)을 512x256 조각 모음 `ctr/banner_atlas.png`에 채우고 배치표 `ctr/banner_layout.json`(위치·깊이, 뒤→앞 순서)을 씀. 배치는 `LAYOUT`.
+2. `tools/gen_banner_cgfx.py ctr/banner_atlas.png ctr/banner_layout.json ctr/banner.cgfx [미리보기.gif]` — 조각마다 뼈 하나와 사각형 하나로 장면을 짜고 움직임(`ANIM`)을 붙여 CGFX 로 씀. CGFX 쓰기는 `tools/pycgfx/`(skyfloogle/pycgfx 사본, MIT — 바꾼 점은 그 폴더 README)가 맡음.
+
+CI 는 `ctr/banner.cgfx`를 bannertool 로 묶기만 합니다(실패하면 `ctr/banner.png` 평면 배너). `tools/banner_diorama.py`는 움직임 없는 이전 방식(bannertool 평면 배너를 틀로 고침)으로, 지금은 쓰지 않지만 되돌릴 때를 위해 남겨 둡니다.
 
 **게임 포함 CIA 만들기 도구 (HTML)**: 릴리스 `latest`의 `nonomura_cia_maker.html`을 휴대폰이나 PC 브라우저로 열고 게임 파일(zip 또는 파일 여러 개)과, 따로 있다면 한글 번역 파일을 고르면 게임 파일이 든 CIA 를 그 자리에서 만들어 저장합니다. 파일은 기기 밖으로 나가지 않고, 도구 안에는 게임 파일 없는 `nonomura.cia`만 들어 있습니다. 소스는 `tools/cia_maker/`(`ciacore.js`: zip 풀기·RomFS 생성·NCCH/TMD 갱신·시험용 키 재서명, `template.html`: 화면, `build.py`: 조립). 같은 파일 순서로 만들면 무작위 값(티켓, 콘텐츠 ID)을 빼고 makerom 결과와 바이트 단위로 같습니다.
 
