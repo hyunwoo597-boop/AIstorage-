@@ -44,6 +44,8 @@ typedef struct {
 
 struct OPL {
     int rate;                         /* output rate */
+    int div;                          /* 1: chip at its own rate; 2: half rate (slow machines — about half the synthesis work) */
+    double chip_rate;                 /* CHIP_RATE / div */
     opl_clock_fn now_ns; void *clk_ctx;
     /* registers kept for timers & misc */
     uint8_t regs[512];
@@ -132,7 +134,7 @@ static double bessel_i0(double x) {
     return s;
 }
 static void build_kernel(OPL *o) {
-    double fc = 0.5 * (o->rate < CHIP_RATE ? o->rate / CHIP_RATE : 1.0) * 0.90;      /* cycles per chip sample */
+    double fc = 0.5 * (o->rate < o->chip_rate ? o->rate / o->chip_rate : 1.0) * 0.90;      /* cycles per chip sample */
     const double beta = 6.5, L = NT / 2.0, i0b = bessel_i0(beta);
     for (int ph = 0; ph < NPH; ph++) {
         double frac = (ph + 0.5) / NPH, row[NT], sum = 0;
@@ -177,7 +179,7 @@ static void refresh_op(OPL *o, Op *p, const Chan *c) {
         fnum += range;
     }
     uint64_t base = (((uint64_t)fnum << c->block) >> 1) * mult_x2[p->mult] >> 1;
-    p->inc = (uint32_t)(base * 8192ull);
+    p->inc = (uint32_t)(base * 8192ull * (uint64_t)o->div);       /* per (possibly halved-rate) chip sample */
     p->att0 = (p->tl << 2) + ksl_att(p, c);
     p->wfe = (uint8_t)(o->newmode ? p->wf : (p->wf & 3));
     p->er_ar = (uint8_t)eff_rate(p, c, o->nts, p->ar);
@@ -254,12 +256,12 @@ static inline int op_eval(Op *p, int mod, int trem) {
 static void gen_chip(OPL *o, int *outl, int *outr) {
     if (o->dirty_all) { for (int ch = 0; ch < 18; ch++) refresh_ch(o, ch); o->dirty_all = 0; o->dirty_ch = 0; }
     else if (o->dirty_ch) { for (int ch = 0; ch < 18; ch++) if ((o->dirty_ch >> ch) & 1) refresh_ch(o, ch); o->dirty_ch = 0; }
-    if (++o->vib_cnt >= 1024) { o->vib_cnt = 0; o->vibpos = (o->vibpos + 1) & 7; o->dirty_all = 1; }
-    if (++o->trem_cnt >= 64) {
+    if (++o->vib_cnt >= 1024u / o->div) { o->vib_cnt = 0; o->vibpos = (o->vibpos + 1) & 7; o->dirty_all = 1; }
+    if (++o->trem_cnt >= 64u / o->div) {
         o->trem_cnt = 0; o->trempos = (o->trempos + 1) % 210;
         o->trem = (o->trempos < 105 ? o->trempos : 210 - o->trempos) >> (o->dam ? 2 : 4);
     }
-    int trem = o->trem, envtick = (o->tick++ % ENV_DIV) == 0;
+    int trem = o->trem, envtick = (o->tick++ % (ENV_DIV / o->div)) == 0;   /* envelopes keep their 12.4 kHz clock at either rate */
 
     int L = 0, R = 0;
     int nch = o->newmode ? 18 : 9, nop = nch * 2, any = 0;
@@ -359,12 +361,18 @@ void opl_sync(OPL *o) {
     }
 }
 
-OPL *opl_new(int rate) {
+OPL *opl_new(int rate) { return opl_new_div(rate, 1); }
+
+/* div 2 runs the chip at half its rate (24.9 kHz): pitch, envelopes, vibrato and tremolo keep their speed,
+ * only the very top of the spectrum (above ~11 kHz) is lost.  For machines too slow for the full rate (Old 3DS). */
+OPL *opl_new_div(int rate, int div) {
     init_tables();
     OPL *o = calloc(1, sizeof(OPL));
     if (rate < 8000) rate = 8000;
     o->rate = rate;
-    o->step_q32 = (uint64_t)(CHIP_RATE / rate * 4294967296.0);
+    o->div = div == 2 ? 2 : 1;
+    o->chip_rate = CHIP_RATE / o->div;
+    o->step_q32 = (uint64_t)(o->chip_rate / rate * 4294967296.0);
     o->pos_q32 = (uint64_t)(NT / 2) << 32;
     build_rates(o); build_kernel(o);
     for (int i = 0; i < 36; i++) { o->op[i].env = 511 << 16; o->op[i].state = ST_OFF; }

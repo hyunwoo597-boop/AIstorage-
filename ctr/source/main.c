@@ -894,7 +894,7 @@ int main(void) {
     Machine *m = machine_new(gdir);
     if (!m) { message_screen("메모리 부족", "가상 PC를 만들 메모리가 없습니다."); gfxExit(); return 0; }
     m->verbose = 0;
-    m->opl = opl_new(AUD_RATE);
+    m->opl = opl_new_div(AUD_RATE, is_new ? 1 : 2);   /* Old 3DS: half-rate FM synthesis (it was over half of all the work) */
     opl_attach(m->opl, (opl_clock_fn)machine_vtime_ns, m);
     textcap_init(m);
     idle_init(m);

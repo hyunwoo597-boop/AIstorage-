@@ -43,7 +43,7 @@ static inline void gspWaitForVBlank(void) { if (_costmodel) { static int seeded;
     int n = 1; if (_stallp) { if (!_stall_seeded) { srand(getenv("STUB_SEED") ? atoi(getenv("STUB_SEED")) : 1); _stall_seeded = 1; } if (rand() % 1000 < _stallp) n += (int)(_stallms * 59.83 / 1000.0 + 0.5); } _frame += n; _dsp_run(n / 59.83);
     if (_slow > 1) { u64 fr = SYSCLOCK_ARM11 / 60, now = svcGetSystemTick(), nb = (now / fr + 1) * fr; while (svcGetSystemTick() < nb) usleep(200); } }
 static inline void osSetSpeedupEnable(bool e) {}
-static inline Result APT_CheckNew3DS(bool *o) { *o = true; return 0; }
+static inline Result APT_CheckNew3DS(bool *o) { *o = !getenv("STUB_OLD3DS"); return 0; }   /* STUB_OLD3DS=1: behave as an Old 3DS */
 static int _script_frames; static int _scans;
 static inline bool aptMainLoop(void) { return _scans < _script_frames; }
 static u32 _held, _down_prev; static touchPosition _tp; static circlePosition _cp;

@@ -137,6 +137,7 @@ int  dos_exec(Machine *m, const char *name, const char *args);
 void hle_call(Machine *m, int id);
 /* opl */
 OPL *opl_new(int rate);
+OPL *opl_new_div(int rate, int div);   /* div 2: half-rate chip, about half the synthesis work (slow machines) */
 void opl_write(OPL *o, uint16_t port, uint8_t v);
 uint8_t opl_read(OPL *o, uint16_t port);
 typedef uint64_t (*opl_clock_fn)(void *ctx);
