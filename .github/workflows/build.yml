@@ -1,0 +1,21 @@
+name: Build NONOXP 3DS
+on:
+  push:
+    branches: [nonoxp-3ds]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make sure the 3DS libraries are present
+        run: dkp-pacman -Sy --noconfirm --needed 3ds-dev || true
+      - name: Build
+        run: make
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nonoxp-3dsx
+          path: |
+            nonoxp.3dsx
+            nonoxp.smdh
