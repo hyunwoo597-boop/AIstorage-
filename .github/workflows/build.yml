@@ -87,6 +87,13 @@ jobs:
           banner=""
           if [ -x ./bannertool ]; then
             ./bannertool makebanner -i ctr/banner.png -a ctr/banner.wav -o out/banner.bnr
+            # 입체 배너: 평면 모델을 깊이 지도대로 굴곡진 격자로 바꿔 다시 묶는다 (실패하면 평면 그대로)
+            if python3 tools/banner3d.py out/banner.bnr ctr/banner_depth.png out/banner3d.cgfx \
+               && ./bannertool makebanner -ci out/banner3d.cgfx -a ctr/banner.wav -o out/banner3d.bnr; then
+              mv out/banner3d.bnr out/banner.bnr
+            else
+              echo "::warning::3D banner step failed - keeping the flat banner"
+            fi
             banner="-banner out/banner.bnr"
           else
             echo "::warning::bannertool not available - building the CIA without a banner"

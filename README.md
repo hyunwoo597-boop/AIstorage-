@@ -29,6 +29,8 @@ SD:/3ds/nonomura/              ← 게임 파일 전부 (SILV1.COM, SILV.EXE, MU
 
 **설치형(CIA)**: `nonomura.cia`를 FBI 등으로 설치하면 HOME 메뉴에 아이콘/배너로 나타납니다(타이틀 ID `0004000000FA3D10`). 게임 파일 위치는 같습니다(`SD:/3ds/nonomura/`). CIA 는 New 3DS 804MHz·L2 캐시와 SD 카드 접근 권한을 앱 정보(`ctr/nonomura.rsf`)에 직접 적어 둡니다. 소리를 내려면 홈브루 때와 마찬가지로 `SD:/3ds/dspfirm.cdc`(DSP 펌웨어 덤프)가 있어야 합니다.
 
+**입체 홈 메뉴 배너**: `ctr/banner.png`(256x128)로 bannertool 이 만든 평면 배너의 모델을 `tools/banner3d.py`가 `ctr/banner_depth.png`(깊이 지도, 128 = 평면, 밝을수록 앞)대로 굴곡진 21x11 격자로 바꿉니다. 정점·색인 자료만 CGFX 끝에 덧붙이고 그것을 가리키는 값만 고칩니다. 깊이 지도는 `tools/gen_banner_depth.py`로 만듭니다(영역은 손으로 잡은 다각형). 깊이 범위는 `banner3d.py`의 마지막 두 인자(기본 -1.5, 2.5)로 바꿉니다.
+
 **게임 포함 CIA 만들기 도구 (HTML)**: 릴리스 `latest`의 `nonomura_cia_maker.html`을 휴대폰이나 PC 브라우저로 열고 게임 파일(zip 또는 파일 여러 개)과, 따로 있다면 한글 번역 파일을 고르면 게임 파일이 든 CIA 를 그 자리에서 만들어 저장합니다. 파일은 기기 밖으로 나가지 않고, 도구 안에는 게임 파일 없는 `nonomura.cia`만 들어 있습니다. 소스는 `tools/cia_maker/`(`ciacore.js`: zip 풀기·RomFS 생성·NCCH/TMD 갱신·시험용 키 재서명, `template.html`: 화면, `build.py`: 조립). 같은 파일 순서로 만들면 무작위 값(티켓, 콘텐츠 ID)을 빼고 makerom 결과와 바이트 단위로 같습니다.
 
 **게임 파일 내장 CIA**: 게임 파일(저작물)은 저장소·릴리스에 올리지 않으므로, 이 CIA 는 따로 만듭니다. 릴리스 `tools`의 `makerom`·`nonomura.elf`·`banner.bnr`와 릴리스 `latest`의 `nonomura.smdh`를 받아, `ctr/nonomura.rsf` 끝에 `RomFs:` / `  RootPath: <게임 파일 폴더>`를 덧붙인 RSF 로 `makerom -f cia -o out.cia -elf nonomura.elf -rsf full.rsf -icon nonomura.smdh -banner banner.bnr -exefslogo -target t`를 실행합니다. 앱은 시작할 때 RomFS 에 든 파일 중 SD 카드(`SD:/3ds/nonomura/`)에 없는 것만 복사하고(`install_embedded_files`, 진행 상황을 하단 화면에 표시) 그 폴더에서 실행하므로, 세이브(FLAG*, SILK*.DAT)는 SD 카드에 저장되고 다시 설치해도 덮어쓰이지 않습니다. 공개 릴리스의 `nonomura.cia`에는 RomFS 가 없어 게임 파일을 SD 카드에 직접 복사해야 합니다.
