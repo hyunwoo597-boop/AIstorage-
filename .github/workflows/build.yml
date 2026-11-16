@@ -3,6 +3,8 @@ on:
   push:
     branches: [nonoxp-3ds]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,3 +21,12 @@ jobs:
           path: |
             nonoxp.3dsx
             nonoxp.smdh
+      - name: Publish binary to branch nonoxp-3ds-bin
+        run: |
+          mkdir out && cp nonoxp.3dsx nonoxp.smdh out/ && cd out
+          git init -q
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add .
+          git commit -qm "build ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/nonoxp-3ds-bin
