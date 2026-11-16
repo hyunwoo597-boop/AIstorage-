@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>노노무라 병원 사람들 3DS — CIA 만들기</title>
+<style>
+:root { --bg:#f4f1ea; --card:#fffdf8; --ink:#1f2328; --sub:#667079; --line:#d9d3c5; --acc:#b3261e; --acc2:#8c1d17; --ok:#1d6b3a; --warn:#8a5a00; --chip:#ece7da; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#15171a; --card:#1e2125; --ink:#e8e6e1; --sub:#9aa3ab; --line:#33383e; --acc:#e0574e; --acc2:#f07a72; --ok:#6fcf8f; --warn:#e3b35a; --chip:#2a2e33; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif; -webkit-text-size-adjust:100%; }
+main { max-width:640px; margin:0 auto; padding:20px 16px 40px; }
+h1 { font-size:22px; line-height:1.3; margin:8px 0 4px; letter-spacing:-.02em; }
+.lead { color:var(--sub); margin:0 0 18px; font-size:14.5px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin:0 0 12px; }
+.step { display:flex; align-items:baseline; gap:8px; margin:0 0 4px; font-weight:700; font-size:16px; }
+.num { flex:none; width:22px; height:22px; border-radius:50%; background:var(--acc); color:#fff; font-size:13px; line-height:22px; text-align:center; }
+.opt { font-weight:400; font-size:13px; color:var(--sub); }
+.hint { color:var(--sub); font-size:13.5px; margin:0 0 10px; }
+.pick { display:block; width:100%; padding:12px; border:1.5px dashed var(--line); border-radius:10px; background:transparent; color:var(--ink); font:inherit; text-align:center; cursor:pointer; }
+.pick:active, .pick.over { border-color:var(--acc); }
+input[type=file] { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+.picked { margin:8px 0 0; font-size:13.5px; color:var(--sub); word-break:break-all; }
+.clear { border:0; background:none; color:var(--acc2); font:inherit; font-size:13.5px; padding:0 0 0 6px; cursor:pointer; text-decoration:underline; }
+table { width:100%; border-collapse:collapse; font-size:13.5px; margin-top:6px; }
+td { padding:4px 0; border-top:1px solid var(--line); }
+td:last-child { text-align:right; color:var(--sub); white-space:nowrap; font-variant-numeric:tabular-nums; }
+.tag { display:inline-block; margin-left:6px; padding:0 6px; border-radius:8px; background:var(--chip); font-size:11.5px; color:var(--sub); }
+.sum { margin:8px 0 0; font-size:13.5px; color:var(--sub); }
+.go { display:block; width:100%; padding:14px; border:0; border-radius:10px; background:var(--acc); color:#fff; font:inherit; font-weight:700; font-size:17px; cursor:pointer; }
+.go:disabled { opacity:.4; cursor:default; }
+.msg { margin:10px 0 0; font-size:14px; }
+.msg.err { color:var(--acc2); } .msg.ok { color:var(--ok); } .msg.warn { color:var(--warn); }
+.save { display:block; margin:12px 0 0; padding:13px; border-radius:10px; border:1.5px solid var(--ok); color:var(--ok); text-align:center; font-weight:700; text-decoration:none; }
+details { font-size:14px; } summary { cursor:pointer; color:var(--sub); }
+ol.how { margin:8px 0 0; padding-left:20px; font-size:14px; } ol.how li { margin:3px 0; }
+footer { color:var(--sub); font-size:12.5px; margin-top:18px; text-align:center; }
+code { font-family:ui-monospace, Menlo, Consolas, monospace; font-size:.92em; }
+[hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>노노무라 병원 사람들 3DS<br>게임 포함 CIA 만들기</h1>
+  <p class="lead">가지고 있는 DOS 게임 파일을 고르면, 게임 파일이 들어 있는 설치형 CIA 를 이 기기 안에서 바로 만듭니다. 고른 파일은 어디에도 전송되지 않습니다.</p>
+
+  <section class="card">
+    <div class="step"><span class="num">1</span>게임 파일</div>
+    <p class="hint">게임 폴더를 압축한 zip 하나, 또는 게임 폴더 안의 파일 전부를 고르세요. (<code>SILV1.COM</code> 이 있는 폴더)</p>
+    <label class="pick" id="dropGame">여기를 눌러 zip 또는 파일 고르기<input type="file" id="inGame" multiple></label>
+    <div class="picked" id="pickedGame" hidden></div>
+  </section>
+
+  <section class="card">
+    <div class="step"><span class="num">2</span>한글 번역 파일 <span class="opt">선택 사항</span></div>
+    <p class="hint">한글 패치가 따로 있으면 그 zip 이나 파일을 고르세요. 이름이 같은 파일은 번역 파일로 바뀌고, 새 파일은 추가됩니다. 이미 한글화된 게임 파일이면 비워 두세요.</p>
+    <label class="pick" id="dropKor">여기를 눌러 zip 또는 파일 고르기<input type="file" id="inKor" multiple></label>
+    <div class="picked" id="pickedKor" hidden></div>
+  </section>
+
+  <section class="card" id="listCard" hidden>
+    <div class="step">CIA 에 들어갈 파일</div>
+    <table id="list"></table>
+    <p class="sum" id="sum"></p>
+    <p class="msg warn" id="skip" hidden></p>
+  </section>
+
+  <section class="card">
+    <button class="go" id="go" disabled>CIA 만들기</button>
+    <p class="msg" id="msg" hidden></p>
+    <a class="save" id="save" hidden></a>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>설치와 실행</summary>
+      <ol class="how">
+        <li>만든 CIA 를 SD 카드에 넣고 FBI 등으로 설치합니다. (커스텀 펌웨어가 설치된 New 3DS)</li>
+        <li>처음 실행하면 들어 있는 게임 파일을 <code>SD:/3ds/nonomura/</code> 로 복사합니다. 몇 초 걸립니다.</li>
+        <li>세이브는 그 폴더에 저장됩니다. 이미 있는 파일은 덮어쓰지 않으므로 다시 설치해도 세이브는 남습니다.</li>
+      </ol>
+    </details>
+    <details style="margin-top:10px">
+      <summary>다른 버전의 프로그램으로 만들기</summary>
+      <p class="hint" style="margin-top:8px">이 도구에는 프로그램(<span id="baseInfo"></span>)이 들어 있습니다. 더 새 버전의 게임 파일 없는 <code>nonomura.cia</code> 가 있으면 여기에서 골라 그것으로 만들 수 있습니다.</p>
+      <label class="pick">nonomura.cia 고르기<input type="file" id="inBase"></label>
+      <div class="picked" id="pickedBase" hidden></div>
+    </details>
+  </section>
+
+  <footer>3DS 포팅 제작자 : DC인사이드 -루카-<br>이 도구에는 게임 파일이 들어 있지 않습니다.</footer>
+</main>
+
+<script id="base" type="application/octet-stream">__BASE64__</script>
+<script>
+/*__CORE__*/
+</script>
+<script>
+(function () {
+'use strict';
+var $ = function (id) { return document.getElementById(id); };
+var MAX_FILES = 64;
+var sets = { game: null, kor: null }, customBase = null, merged = [], lastUrl = null;
+$('baseInfo').textContent = '__BASEINFO__';
+
+function fmt(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B'; }
+function readFile(f) {
+    return new Promise(function (ok, no) {
+        var r = new FileReader();
+        r.onload = function () { ok(new Uint8Array(r.result)); };
+        r.onerror = function () { no(new Error(f.name + ' 파일을 읽지 못했습니다')); };
+        r.readAsArrayBuffer(f);
+    });
+}
+function say(text, cls) { var m = $('msg'); m.hidden = !text; m.className = 'msg ' + (cls || ''); m.textContent = text || ''; }
+
+/* 고른 것들(zip 이든 낱개 파일이든)을 하나의 파일 묶음으로 */
+function loadSet(fileList) {
+    var fl = Array.prototype.slice.call(fileList);
+    return Promise.all(fl.map(readFile)).then(function (bufs) {
+        var entries = [];
+        bufs.forEach(function (b, i) {
+            var nm = fl[i].name;
+            if (/\.zip$/i.test(nm) || (fl.length === 1 && CiaCore.isZip(b))) {
+                if (!CiaCore.isZip(b)) throw new Error(nm + ' 은(는) zip 파일이 아닙니다');
+                entries = entries.concat(CiaCore.parseZip(b));
+            } else if (/\.(rar|7z|lzh|alz|egg)$/i.test(nm)) {
+                throw new Error(nm + ' — zip 만 풀 수 있습니다. 압축을 풀어 파일을 직접 고르거나 zip 으로 다시 묶어 주세요');
+            } else entries.push({ name: nm, data: b, ascii: /^[\x00-\x7f]*$/.test(nm) });
+        });
+        return CiaCore.pickGameFiles(entries);
+    });
+}
+
+function refresh() {
+    var map = {}, skipped = [];
+    ['game', 'kor'].forEach(function (k) {
+        if (!sets[k]) return;
+        sets[k].files.forEach(function (f) { map[f.name] = { name: f.name, data: f.data, from: k, replaced: k === 'kor' && !!map[f.name] }; });
+        skipped = skipped.concat(sets[k].skipped);
+    });
+    merged = Object.keys(map).sort().map(function (n) { return map[n]; });
+    var t = $('list'); t.textContent = '';
+    var total = 0;
+    merged.forEach(function (f) {
+        total += f.data.length;
+        var tr = t.insertRow(), a = tr.insertCell(), b = tr.insertCell();
+        a.textContent = f.name;
+        if (f.from === 'kor') { var s = document.createElement('span'); s.className = 'tag'; s.textContent = f.replaced ? '번역으로 교체' : '번역 추가'; a.appendChild(s); }
+        b.textContent = fmt(f.data.length);
+    });
+    $('listCard').hidden = !merged.length;
+    $('sum').textContent = '파일 ' + merged.length + '개 · ' + fmt(total);
+    $('skip').hidden = !skipped.length;
+    $('skip').textContent = skipped.length ? '넣지 않은 파일 ' + skipped.length + '개 (다른 폴더에 있거나 DOS 파일 이름이 아님): ' + skipped.slice(0, 8).join(', ') + (skipped.length > 8 ? ' …' : '') : '';
+    var err = '';
+    if (merged.length) {
+        if (!map['SILV1.COM']) err = '게임 실행 파일 SILV1.COM 이 없습니다. 게임 폴더의 파일을 모두 골랐는지 확인하세요.';
+        else if (merged.length > MAX_FILES) err = '파일이 ' + MAX_FILES + '개를 넘습니다. 게임 폴더의 파일만 골라 주세요.';
+    }
+    $('go').disabled = !merged.length || !!err;
+    $('save').hidden = true;
+    say(err, 'err');
+}
+
+function wire(key, inputId, pickedId, dropId) {
+    var inp = $(inputId), box = $(pickedId);
+    function take(list) {
+        if (!list || !list.length) return;
+        say('파일을 읽는 중…');
+        loadSet(list).then(function (s) {
+            if (!s.files.length) throw new Error('쓸 수 있는 파일이 없습니다');
+            sets[key] = s;
+            box.hidden = false; box.textContent = (list.length === 1 ? list[0].name : '파일 ' + list.length + '개') + ' — ' + s.files.length + '개 읽음';
+            var c = document.createElement('button'); c.className = 'clear'; c.textContent = '지우기';
+            c.onclick = function (e) { e.preventDefault(); sets[key] = null; box.hidden = true; inp.value = ''; refresh(); };
+            box.appendChild(c);
+            refresh();
+        }).catch(function (e) { inp.value = ''; refresh(); say(e.message || String(e), 'err'); });
+    }
+    inp.addEventListener('change', function () { take(inp.files); });
+    var d = $(dropId);
+    d.addEventListener('dragover', function (e) { e.preventDefault(); d.classList.add('over'); });
+    d.addEventListener('dragleave', function () { d.classList.remove('over'); });
+    d.addEventListener('drop', function (e) { e.preventDefault(); d.classList.remove('over'); take(e.dataTransfer.files); });
+}
+wire('game', 'inGame', 'pickedGame', 'dropGame');
+wire('kor', 'inKor', 'pickedKor', 'dropKor');
+
+$('inBase').addEventListener('change', function () {
+    var f = this.files[0], box = $('pickedBase'), self = this;
+    if (!f) return;
+    readFile(f).then(function (b) {
+        CiaCore.parseCia(b);
+        customBase = b; box.hidden = false; box.textContent = f.name + ' (' + fmt(b.length) + ') 사용';
+    }).catch(function (e) { customBase = null; self.value = ''; box.hidden = false; box.textContent = e.message || String(e); });
+});
+
+function embeddedBase() {
+    var s = atob($('base').textContent.replace(/\s+/g, '')), b = new Uint8Array(s.length);
+    for (var i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
+    return b;
+}
+
+$('go').addEventListener('click', function () {
+    var btn = this; btn.disabled = true; $('save').hidden = true;
+    say('CIA 를 만드는 중…');
+    setTimeout(function () {
+        try {
+            var out = CiaCore.buildCia(customBase || embeddedBase(), merged.map(function (f) { return { name: f.name, data: f.data }; }));
+            if (lastUrl) URL.revokeObjectURL(lastUrl);
+            lastUrl = URL.createObjectURL(new Blob([out], { type: 'application/octet-stream' }));
+            var a = $('save'); a.href = lastUrl; a.download = 'nonomura_게임포함.cia';
+            a.textContent = 'nonomura_게임포함.cia 저장 (' + fmt(out.length) + ')'; a.hidden = false;
+            say('완성했습니다. 아래 버튼을 눌러 저장하세요.', 'ok');
+        } catch (e) { say('만들지 못했습니다: ' + (e.message || e), 'err'); }
+        btn.disabled = false;
+    }, 30);
+});
+})();
+</script>
+</body>
+</html>

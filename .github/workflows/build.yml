@@ -92,6 +92,7 @@ jobs:
             echo "::warning::bannertool not available - building the CIA without a banner"
           fi
           ./makerom -f cia -o out/nonomura.cia -elf out/nonomura.elf -rsf ctr/nonomura.rsf -icon out/nonomura.smdh $banner -exefslogo -target t
+          python3 tools/cia_maker/build.py out/nonomura.cia out/nonomura_cia_maker.html "$(date -u +%Y-%m-%d) 판"
           ls -l out
       - uses: actions/upload-artifact@v4
         with:
@@ -102,7 +103,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          files: out/nonomura.cia
+          files: |
+            out/nonomura.cia
+            out/nonomura_cia_maker.html
       - name: Keep the CIA tools for building a CIA that carries the game files (done by hand, not in CI)
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
