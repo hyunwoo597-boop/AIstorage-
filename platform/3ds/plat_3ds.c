@@ -114,7 +114,7 @@ int main(void) {
     gfxInitDefault(); gfxSetDoubleBuffering(GFX_TOP, true); gfxSetDoubleBuffering(GFX_BOTTOM, true);
     osSetSpeedupEnable(true);
     static vm_t vm; g_vm = &vm;
-    if (!vm_init(&vm)) fatal("Archives not found (MES/DATA/BG/MUSIC/VOICE.ARC).");
+    if (!vm_init(&vm)) fatal("Archives not found (MES.ARC DATA.ARC BG.ARC).");
     else if (!vm_load_mes(&vm, "MAIN.MES")) fatal("MAIN.MES missing in MES.ARC.");
     else vm_run(&vm);
     gfxExit(); return 0;
