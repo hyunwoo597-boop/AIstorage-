@@ -29,7 +29,7 @@ SD:/3ds/nonomura/              ← 게임 파일 전부 (SILV1.COM, SILV.EXE, MU
 
 **설치형(CIA)**: `nonomura.cia`를 FBI 등으로 설치하면 HOME 메뉴에 아이콘/배너로 나타납니다(타이틀 ID `0004000000FA3D10`). 게임 파일 위치는 같습니다(`SD:/3ds/nonomura/`). CIA 는 New 3DS 804MHz·L2 캐시와 SD 카드 접근 권한을 앱 정보(`ctr/nonomura.rsf`)에 직접 적어 둡니다. 소리를 내려면 홈브루 때와 마찬가지로 `SD:/3ds/dspfirm.cdc`(DSP 펌웨어 덤프)가 있어야 합니다.
 
-**입체 홈 메뉴 배너**: `ctr/banner.png`(256x128)로 bannertool 이 만든 평면 배너의 모델을 `tools/banner3d.py`가 `ctr/banner_depth.png`(깊이 지도, 128 = 평면, 밝을수록 앞)대로 굴곡진 21x11 격자로 바꿉니다. 정점·색인 자료만 CGFX 끝에 덧붙이고 그것을 가리키는 값만 고칩니다. 깊이 지도는 손으로 영역을 잡은 회색조 그림을 `tools/gen_banner_depth.py`로 256x128·평면 기준 128 로 옮긴 것입니다. 깊이 범위는 `banner3d.py`의 마지막 두 인자(기본 -1.5, 2.5)로 바꿉니다.
+**입체 홈 메뉴 배너**: 공식 게임처럼 배경이 뚫린 '오려 세운 조각' 무대입니다. `tools/gen_banner_layers.py`(PC 에서 한 번, opencv 필요)가 원화 `ctr/banner_src.png`에서 로고·인물 넷·달·병원을 오려 512x256 조각 모음 `ctr/banner_atlas.png`과 배치표 `ctr/banner_layout.json`(조각별 위치·깊이)을 만들고, CI 에서 `tools/banner_diorama.py`(외부 모듈 없음)가 bannertool 의 평면 배너를 틀로 삼아 그림을 조각 모음(RGBA4444)으로, 사각형 한 장을 조각별 사각형(뒤→앞 순서, 제각기 다른 z)으로 바꿉니다. 새 자료는 CGFX 끝에 덧붙이고 그것을 가리키는 값만 고칩니다. 깊이는 `gen_banner_layers.py`의 `Z`, 조각 크기는 `SC`. `ctr/banner.png`는 이 단계가 실패했을 때 쓰는 평면 그림입니다.
 
 **게임 포함 CIA 만들기 도구 (HTML)**: 릴리스 `latest`의 `nonomura_cia_maker.html`을 휴대폰이나 PC 브라우저로 열고 게임 파일(zip 또는 파일 여러 개)과, 따로 있다면 한글 번역 파일을 고르면 게임 파일이 든 CIA 를 그 자리에서 만들어 저장합니다. 파일은 기기 밖으로 나가지 않고, 도구 안에는 게임 파일 없는 `nonomura.cia`만 들어 있습니다. 소스는 `tools/cia_maker/`(`ciacore.js`: zip 풀기·RomFS 생성·NCCH/TMD 갱신·시험용 키 재서명, `template.html`: 화면, `build.py`: 조립). 같은 파일 순서로 만들면 무작위 값(티켓, 콘텐츠 ID)을 빼고 makerom 결과와 바이트 단위로 같습니다.
 

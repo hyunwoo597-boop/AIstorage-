@@ -87,8 +87,8 @@ jobs:
           banner=""
           if [ -x ./bannertool ]; then
             ./bannertool makebanner -i ctr/banner.png -a ctr/banner.wav -o out/banner.bnr
-            # 입체 배너: 평면 모델을 깊이 지도대로 굴곡진 격자로 바꿔 다시 묶는다 (실패하면 평면 그대로)
-            if python3 tools/banner3d.py out/banner.bnr ctr/banner_depth.png out/banner3d.cgfx \
+            # 입체 배너: 평면 배너를 틀로, 오려 낸 조각들을 깊이별로 세운 모델로 바꿔 다시 묶는다 (실패하면 평면 그대로)
+            if python3 tools/banner_diorama.py out/banner.bnr ctr/banner_atlas.png ctr/banner_layout.json out/banner3d.cgfx \
                && ./bannertool makebanner -ci out/banner3d.cgfx -a ctr/banner.wav -o out/banner3d.bnr; then
               mv out/banner3d.bnr out/banner.bnr
             else
