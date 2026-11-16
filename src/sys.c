@@ -70,17 +70,23 @@ static void once(vm_t *vm, uint32_t fn, const char *note) {
     plat_log("%s", b);
 }
 /* ---- graphics ---- */
-static void load_image(vm_t *vm, const char *name, int dst) {   /* SYS 25 [EXE 0x421b30 not fully read: plane handling for non-mask images is a guess] */
+/* load a GCC image into surface dst.  [EXE 0x41ab80, used by SYS 9 (0x420540) and SYS 25 (0x421b30)]
+   ox/oy: -1 = use the file's position; otherwise the colour rect is moved by (ox,oy) and the mask rect is placed AT (ox,oy).
+   Only the m variants write the mask plane. The resulting rectangle goes to sys16[17..20] (x, y, w, h). */
+static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
     size_t n; uint8_t *raw = arc_load(&vm->arc_bg, name, &n); if (!raw) { plat_log("missing image %s", name); return; }
     gcc_image im; dst %= NSURF;
     if (!gcc_decode(raw, n, &im)) {
-        if (dst != 0) surf_ensure(dst, im.x + im.w, im.y + im.h);
-        for (int y = 0; y < im.h; y++) { int dy = im.y + y; const uint8_t *s = im.bgr + (size_t)(im.h - 1 - y) * im.w * 3;
-            for (int x = 0; x < im.w; x++) { int dx = im.x + x; if (!INS(dst, dx, dy)) continue;
-                uint8_t *d = PIX(dst, dx, dy); d[0] = s[x * 3 + 2]; d[1] = s[x * 3 + 1]; d[2] = s[x * 3];
-                if (!im.has_alpha) MSK(dst, dx, dy) = 255; } }
-        if (im.has_alpha) for (int y = 0; y < im.ah; y++) { int dy = im.ay + y; const uint8_t *s = im.alpha + (size_t)(im.ah - 1 - y) * im.aw;
-            for (int x = 0; x < im.aw; x++) { int dx = im.ax + x; if (INS(dst, dx, dy)) MSK(dst, dx, dy) = s[x]; } }
+        int cx = im.x + (ox != -1 ? ox : 0), cy = im.y + (oy != -1 ? oy : 0);
+        int ax = ox != -1 ? ox : im.ax, ay = oy != -1 ? oy : im.ay;
+        if (dst != 0) { surf_ensure(dst, cx + im.w, cy + im.h); if (im.has_alpha) surf_ensure(dst, ax + im.aw, ay + im.ah); }
+        for (int y = 0; y < im.h; y++) { int dy = cy + y; const uint8_t *s = im.bgr + (size_t)(im.h - 1 - y) * im.w * 3;
+            for (int x = 0; x < im.w; x++) { int dx = cx + x; if (!INS(dst, dx, dy)) continue;
+                uint8_t *d = PIX(dst, dx, dy); d[0] = s[x * 3 + 2]; d[1] = s[x * 3 + 1]; d[2] = s[x * 3]; } }
+        if (im.has_alpha) for (int y = 0; y < im.ah; y++) { int dy = ay + y; const uint8_t *s = im.alpha + (size_t)(im.ah - 1 - y) * im.aw;
+            for (int x = 0; x < im.aw; x++) { int dx = ax + x; if (INS(dst, dx, dy)) MSK(dst, dx, dy) = s[x]; } }
+        int w = im.w, h = im.h; if (cx + w > sw[dst]) w = sw[dst] - cx; if (cy + h > sh[dst]) h = sh[dst] - cy;
+        SET_SYS16(vm, 17, cx); SET_SYS16(vm, 18, cy); SET_SYS16(vm, 19, w > 0 ? w : 0); SET_SYS16(vm, 20, h > 0 ? h : 0);
         free(im.bgr); free(im.alpha);
     }
     free(raw);
@@ -277,7 +283,11 @@ void sys_call(vm_t *vm, uint32_t fn) {
         break;
     case 19: if (sub == 3 || sub == 4) SET_V32(vm, 18, 0); return;                         /* backlog: [EXE] 0x405ec0, not implemented yet */
     case 13: col_bg = p[0].val; col_fg = p[1].val; return;                                 /* [EXE] */
-    case 25: if (sub == 0) { load_image(vm, p[1].str, SYS16(vm, 1)); return; } break;      /* [guess] */
+    case 25: if (sub == 0) { load_image(vm, p[1].str, SYS16(vm, 1), -1, -1); return; } break;   /* [EXE 0x421b30 -> 0x41ab80; its image cache (0x41f430) is not reproduced] */
+    case 9:                            /* [EXE 0x41e4b0 -> 0x420540] load image into surface sys16[1], optionally at (p1,p2) */
+        if (vm->nparams >= 3) load_image(vm, p[0].str, SYS16(vm, 1), (int)p[1].val, (int)p[2].val);
+        else load_image(vm, p[0].str, SYS16(vm, 1), -1, -1);
+        return;
     }
     once(vm, fn, "unimplemented");
 }
