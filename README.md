@@ -31,7 +31,7 @@ SD:/3ds/nonomura/              ← 게임 파일 전부 (SILV1.COM, SILV.EXE, MU
 
 **움직이는 입체 홈 메뉴 배너**: 공식 게임처럼 배경이 뚫린 '오려 세운 조각' 무대이고, 천천히 움직입니다(무대 전체가 좌우로 돌고, 로고가 떠다니고, 인물이 살짝 흔들림 — 8초 반복). 만드는 순서(PC 에서, 결과물을 커밋):
 1. `tools/gen_banner_layers.py ctr/banner_parts ctr` — 조각 그림(`ctr/banner_parts/`, 배경이 투명한 PNG: 무대·병원·인물 넷·로고)을 512x256 조각 모음 `ctr/banner_atlas.png`에 채우고 배치표 `ctr/banner_layout.json`(위치·깊이, 뒤→앞 순서)을 씀. 배치는 `LAYOUT`.
-2. `tools/gen_banner_cgfx.py ctr/banner_atlas.png ctr/banner_layout.json ctr/banner.cgfx [미리보기.gif]` — 조각마다 뼈 하나와 사각형 하나로 장면을 짜고 움직임(`ANIM`)을 붙여 CGFX 로 씀. CGFX 쓰기는 `tools/pycgfx/`(skyfloogle/pycgfx 사본, MIT — 바꾼 점은 그 폴더 README)가 맡음.
+2. `tools/gen_banner_cgfx.py ctr/banner_atlas.png ctr/banner_layout.json ctr/banner.cgfx [미리보기.gif]` — 조각마다 뼈 하나와 사각형 하나로 장면을 짜고 움직임(`ANIM`)을 붙여 CGFX 로 씀. 홈 메뉴는 배너 모델을 스스로 세로축으로 돌리므로, 무대 전체(`diorama`)와 조각마다 Y축 빌보드(5)를 걸어 늘 화면을 보게 하고 재질은 양면으로 그림(앞면만 있는 판이 옆·뒤를 향해 사라지는 것 방지). CGFX 쓰기는 `tools/pycgfx/`(skyfloogle/pycgfx 사본, MIT — 바꾼 점은 그 폴더 README)가 맡음.
 
 CI 는 `ctr/banner.cgfx`를 bannertool 로 묶기만 합니다(실패하면 `ctr/banner.png` 평면 배너). `tools/banner_diorama.py`는 움직임 없는 이전 방식(bannertool 평면 배너를 틀로 고침)으로, 지금은 쓰지 않지만 되돌릴 때를 위해 남겨 둡니다.
 

@@ -4,7 +4,8 @@
     python3 tools/gen_banner_cgfx.py ctr/banner_atlas.png ctr/banner_layout.json ctr/banner.cgfx [미리보기.gif]
 
 조각 모음과 배치표(tools/gen_banner_layers.py 가 만든 것)로 장면을 짠다:
-  무대 전체(뿌리) ─ 조각마다 뼈 하나 + 사각형 하나.
+  diorama(Y축 빌보드) ─ turntable(좌우 흔들림) ─ 조각마다 뼈 하나(Y축 빌보드) + 사각형 하나.
+홈 메뉴는 배너 모델을 스스로 세로축으로 돌리므로, 빌보드로 그 회전을 상쇄해 조각이 옆·뒤를 향해 사라지지 않게 한다.
 움직임(8초 반복, 60프레임/초): 무대 전체가 좌우로 천천히 돌고, 로고는 위아래로 떠다니고,
 인물은 발끝을 축으로 살짝 흔들리고, 스쿠터는 잘게 떤다. ANIM 을 고쳐 조절한다.
 CGFX 쓰기는 tools/pycgfx (skyfloogle/pycgfx, MIT) 가 한다. CI 는 만들어진 banner.cgfx 를 bannertool 로 묶기만 한다.
@@ -86,9 +87,10 @@ def build(atlas_png, layout):
             wave = [math.sin(2 * math.pi * (tm / a['period'] + ph)) for tm in times]
             if 'bob' in a: animate(nid, 'translation', [[base[0], base[1] + a['bob'] * s, base[2]] for s in wave])
             if 'roll' in a: animate(nid, 'rotation', [quat('z', a['roll'] * s) for s in wave])
-    nodes.append(N(name='diorama', children=kids)); root = len(nodes) - 1
+    nodes.append(N(name='turntable', children=kids)); turn = len(nodes) - 1
     a = ANIM.get('_root')
-    if a: animate(root, 'rotation', [quat('y', a['yaw'] * math.sin(2 * math.pi * tm / a['period'])) for tm in times])
+    if a: animate(turn, 'rotation', [quat('y', a['yaw'] * math.sin(2 * math.pi * tm / a['period'])) for tm in times])
+    nodes.append(N(name='diorama', children=[turn])); root = len(nodes) - 1
 
     model = N(
         scene=0, scenes=[N(nodes=[root])], nodes=nodes, meshes=meshes, accessors=accs, bufferViews=views,
@@ -100,7 +102,30 @@ def build(atlas_png, layout):
     )
     res = {'scene.bin': N(data=bytes(buf)), 'atlas.png': N(data=atlas_png)}
     gltf = N(model=model); gltf.get_resource = lambda uri: res[uri]
-    return pycgfx.write(pycgfx.convert_gltf(gltf))
+    cgfx = pycgfx.convert_gltf(gltf)
+    patch(cgfx, [l['name'] for l in layout['layers']])
+    return pycgfx.write(cgfx)
+
+
+def patch(cgfx, pieces):
+    """glTF 로는 적을 수 없는 CGFX 설정.
+    홈 메뉴는 배너 모델을 스스로 세로축으로 돌린다. 조각은 앞면만 있는 납작한 판이라 옆·뒤를 향하면 사라지므로
+    - 무대 전체(diorama)와 조각마다 Y축 빌보드(5): 늘 보는 사람 쪽을 향한다
+    - 재질은 양면 그리기(면 제거 끔): 혹시 돌아가도 사라지지 않게
+    """
+    from cgfx.sobj import BillboardMode
+    from cgfx.mtob import CullMode
+    cmdl = cgfx.data.models['COMMON']
+    names = set(pieces) | {'diorama'}
+    hit = set()
+    for b in cmdl.skeleton.bones:
+        if b in names:
+            cmdl.skeleton.bones[b].billboard_mode = BillboardMode.YAxial; hit.add(b)
+    assert hit == names, ('빌보드를 걸 뼈가 없음', names - hit)
+    for m in cmdl.materials:
+        r = cmdl.materials[m].rasterization
+        r.cull_mode = CullMode.Never
+        r.command.param = int(CullMode.Never)
 
 
 def dithered(path):
