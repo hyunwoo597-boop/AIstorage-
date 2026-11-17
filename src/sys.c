@@ -129,14 +129,15 @@ static const uint8_t *menu_bottom(void) {
             for (int q = 0; q < 3; q++) d[q] = (d[q] * (255 - a) + c[q] * a) / 255; } }
     if (k == 2) {                                /* slot list as text rows (22 px) + page tabs */
         int cx, cy; plat_cursor(&cx, &cy, false); int hot = (cx >= 40 && cx < 556 && cy >= 52 && cy < 444) ? (cy - 52) / 40 : -1;
-        fill_b(0, 0, 320, 240, 24, 16, 10);
-        for (int r = 0; r < 10; r++) { int y = r * 22, sy = 52 + 40 * r + 5;   /* the row's number/date/"unused" are images: crop them 1:1 */
-            for (int yy = 0; yy < 22; yy++) memcpy(bottom_buf + ((y + yy) * 320 + 2) * 3, surf[0] + ((sy + yy) * SW + 44) * 3, 316 * 3);
-            if (r == hot) { fill_b(0, y, 320, 2, 239, 0, 95); fill_b(0, y + 20, 320, 2, 239, 0, 95); fill_b(0, y, 2, 22, 239, 0, 95); fill_b(318, y, 2, 22, 239, 0, 95); } }
+        dim_bg();
+        for (int r = 0; r < 10; r++) { int y = r * 22 + 1, sy = 52 + 40 * r + 8;   /* clean bar per slot, the row's text (images) copied 1:1 */
+            bool h = r == hot; fill_b(4, y, 312, 20, h ? 239 : 150, h ? 0 : 130, h ? 95 : 100); fill_b(5, y + 1, 310, 18, 8, 8, 12);
+            for (int yy = 0; yy < 16; yy++) for (int xx = 0; xx < 300; xx++) { const uint8_t *c = surf[0] + ((sy + yy) * SW + 50 + xx) * 3;
+                if (c[0] + c[1] + c[2] < 60) continue; memcpy(bottom_buf + ((y + 2 + yy) * 320 + 10 + xx) * 3, c, 3); } }
         /* page tabs: "1쪽".."4쪽", "닫기" through the Korean glyph slots; digits / "X" with the Japanese font */
         static const char *kr[5] = { "1\x99\xf9", "2\x99\xf9", "3\x99\xf9", "4\x99\xf9", "\x90\x70\x8b\xa3" }, *jp[5] = { "1", "2", "3", "4", "X" };
         for (int t = 0; t < 5; t++) { int x = t * 64; const char *l = (font_flags & 1) ? kr[t] : jp[t]; int w = (int)strlen(l) == 1 ? 8 : (t < 4 ? 24 : 32);
-            bool on = false; fill_b(x + 2, 222, 60, 17, on ? 255 : 230, on ? 200 : 220, on ? 120 : 190);
+            fill_b(x + 3, 222, 58, 17, 150, 130, 100); fill_b(x + 4, 223, 56, 15, 236, 226, 200);
             bt_text(x + 32 - w / 2, 223, l, 40, 20, 10); }
     }
     if (k == 3) { fit_sx = 128; fit_sy = 188; fit_sw = 384; fit_sh = 104; }
