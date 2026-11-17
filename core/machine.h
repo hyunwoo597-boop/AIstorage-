@@ -138,6 +138,9 @@ void hle_call(Machine *m, int id);
 /* opl */
 OPL *opl_new(int rate);
 OPL *opl_new_div(int rate, int div);   /* div 2: half-rate chip, about half the synthesis work (slow machines) */
+/* worker mode: register writes are queued, ONE other thread calls opl_worker() in a loop (0 = idle, sleep a little) */
+void opl_async(OPL *o, void (*lock)(void *), void (*unlock)(void *), void (*nap)(void *), void *ctx);
+int  opl_worker(OPL *o);
 void opl_write(OPL *o, uint16_t port, uint8_t v);
 uint8_t opl_read(OPL *o, uint16_t port);
 typedef uint64_t (*opl_clock_fn)(void *ctx);

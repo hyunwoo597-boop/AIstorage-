@@ -20,7 +20,9 @@
 #define ENV_DIV     4                /* envelopes advance every 4th chip sample (12.4 kHz: far finer than any envelope) */
 #define NT          24               /* resampler taps */
 #define NPH         256              /* resampler sub-sample phases */
+#define NT2         8                /* taps of the light resampler (half-rate chip on slow machines) */
 #define CS_N        64               /* chip-sample history (power of two) */
+#define EVQ_N       8192             /* queued register writes in worker mode (power of two) */
 
 enum { ST_OFF = 0, ST_ATTACK, ST_DECAY, ST_SUSTAIN, ST_RELEASE };
 
@@ -62,9 +64,17 @@ struct OPL {
     int32_t cs[CS_N][2]; uint64_t chip_n;
     uint64_t pos_q32, step_q32;
     int16_t kern[NPH][NT];
+    int16_t kern2[NPH][NT2];              /* light resampler, scaled to 2048 so that 32-bit sums are enough */
     uint64_t gen_samples;                 /* output samples produced */
     /* ring */
     int16_t ring[RING_FRAMES * 2]; uint32_t rd, wr;
+    uint32_t wloc;                        /* the generator's own write index (== wr unless a worker thread is generating) */
+    /* worker mode (opl_async): register writes are queued with their time, a second thread synthesizes.
+     * Shared with the worker, under lock: evq/ev_rd/ev_wr, target, rd, wr.  Everything else above is the worker's alone,
+     * except regs/status/timers (main thread only). */
+    int async; void (*lock)(void *), (*unlock)(void *), (*nap)(void *); void *lctx;
+    struct { uint64_t t; uint16_t reg; uint8_t v; } evq[EVQ_N]; uint32_t ev_rd, ev_wr;
+    uint64_t target;
     /* derived tables (per envelope step) */
     int32_t dec_step[64];              /* per-step decay (16.16) by effective rate */
     int32_t att_alpha[64];             /* per-step attack coefficient (0.16) */
@@ -145,6 +155,17 @@ static void build_kernel(OPL *o) {
             row[j] = 2 * fc * sinc * w; sum += row[j];
         }
         for (int j = 0; j < NT; j++) o->kern[ph][j] = (int16_t)lround(row[j] / sum * 32768.0);
+    }
+    const double L2 = NT2 / 2.0;
+    for (int ph = 0; ph < NPH; ph++) {
+        double frac = (ph + 0.5) / NPH, row[NT2], sum = 0;
+        for (int j = 0; j < NT2; j++) {
+            double t = (j - (NT2 / 2 - 1)) - frac;
+            double x = 2 * fc * t, sinc = fabs(x) < 1e-9 ? 1.0 : sin(M_PI * x) / (M_PI * x);
+            double r = t / L2, w = fabs(r) < 1.0 ? bessel_i0(beta * sqrt(1.0 - r * r)) / i0b : 0.0;
+            row[j] = 2 * fc * sinc * w; sum += row[j];
+        }
+        for (int j = 0; j < NT2; j++) o->kern2[ph][j] = (int16_t)lround(row[j] / sum * 2048.0);
     }
 }
 
@@ -325,9 +346,11 @@ static inline int limit(int x) {
 
 static void push_out(OPL *o, int l, int r) {
     l = limit(l * 3); r = limit(r * 3);
-    uint32_t w = o->wr & (RING_FRAMES - 1);
+    uint32_t w = o->wloc & (RING_FRAMES - 1);
     o->ring[w * 2] = (int16_t)l; o->ring[w * 2 + 1] = (int16_t)r;
-    o->wr++;
+    o->wloc++;
+    if (o->async) return;                                             /* the worker publishes wr itself, in batches */
+    o->wr = o->wloc;
     if (o->wr - o->rd > RING_FRAMES) o->rd = o->wr - RING_FRAMES;     /* overrun: drop oldest */
 }
 
@@ -339,6 +362,18 @@ static void gen_out(OPL *o) {
         o->zero_run = (l | r) ? 0 : o->zero_run + 1;
     }
     if (o->zero_run > NT + 2) { push_out(o, 0, 0); o->pos_q32 += o->step_q32; return; }      /* silence: nothing to filter */
+    if (o->div == 2) {                                                 /* slow machine: 8 taps, 32-bit sums */
+        const int16_t *k2 = o->kern2[(o->pos_q32 >> 24) & (NPH - 1)];
+        uint32_t j0 = (uint32_t)(ip - (NT2 / 2 - 1));
+        int32_t sl = 0, sr = 0;
+        for (int j = 0; j < NT2; j++) {
+            const int32_t *s = o->cs[(j0 + j) & (CS_N - 1)];
+            sl += s[0] * k2[j]; sr += s[1] * k2[j];
+        }
+        push_out(o, sl >> 11, sr >> 11);
+        o->pos_q32 += o->step_q32;
+        return;
+    }
     const int16_t *k = o->kern[(o->pos_q32 >> 24) & (NPH - 1)];
     uint64_t i0 = ip - (NT / 2 - 1);
     int64_t al = 0, ar = 0;
@@ -350,15 +385,18 @@ static void gen_out(OPL *o) {
     o->pos_q32 += o->step_q32;
 }
 
+static void skip_to(OPL *o, uint64_t target) {                             /* give up on the time in between (silence) */
+    o->gen_samples = target;
+    memset(o->cs, 0, sizeof o->cs);
+    o->pos_q32 = (o->chip_n + NT / 2) << 32;
+}
+
 void opl_sync(OPL *o) {
     uint64_t target = now_samples(o);
+    if (o->async) { o->lock(o->lctx); if (target > o->target) o->target = target; o->unlock(o->lctx); return; }
     int guard = 0;
     while (o->gen_samples < target && guard++ < RING_FRAMES) { gen_out(o); o->gen_samples++; }
-    if (o->gen_samples < target) {                                         /* far behind: skip ahead */
-        o->gen_samples = target;
-        memset(o->cs, 0, sizeof o->cs);
-        o->pos_q32 = (o->chip_n + NT / 2) << 32;
-    }
+    if (o->gen_samples < target) skip_to(o, target);                       /* far behind: skip ahead */
 }
 
 OPL *opl_new(int rate) { return opl_new_div(rate, 1); }
@@ -384,15 +422,19 @@ void opl_free(OPL *o) { free(o); }
 void opl_attach(OPL *o, opl_clock_fn now_ns, void *ctx) { o->now_ns = now_ns; o->clk_ctx = ctx; }
 
 /* frames available / pull */
-uint32_t opl_available(OPL *o) { return o->wr - o->rd; }
-void opl_discard(OPL *o, uint32_t frames) { uint32_t a = o->wr - o->rd; o->rd += frames > a ? a : frames; }
+#define LOCK(o)   do { if ((o)->async) (o)->lock((o)->lctx); } while (0)
+#define UNLOCK(o) do { if ((o)->async) (o)->unlock((o)->lctx); } while (0)
+uint32_t opl_available(OPL *o) { LOCK(o); uint32_t a = o->wr - o->rd; UNLOCK(o); return a; }
+void opl_discard(OPL *o, uint32_t frames) { LOCK(o); uint32_t a = o->wr - o->rd; o->rd += frames > a ? a : frames; UNLOCK(o); }
 void opl_mix(OPL *o, int16_t *out, int frames) {
+    LOCK(o); uint32_t rd = o->rd, wr = o->wr; UNLOCK(o);                /* frames below wr are finished: copy them without the lock */
     for (int i = 0; i < frames; i++) {
-        if (o->rd == o->wr) { out[i * 2] = out[i * 2 + 1] = 0; continue; }
-        uint32_t r = o->rd & (RING_FRAMES - 1);
+        if (rd == wr) { out[i * 2] = out[i * 2 + 1] = 0; continue; }
+        uint32_t r = rd & (RING_FRAMES - 1);
         out[i * 2] = o->ring[r * 2]; out[i * 2 + 1] = o->ring[r * 2 + 1];
-        o->rd++;
+        rd++;
     }
+    LOCK(o); o->rd = rd; UNLOCK(o);
 }
 
 /* ------------------------------------------------------------------ timers (driver detection) */
@@ -418,7 +460,8 @@ static void update_4op(OPL *o) {
     for (int k = 0; k < 6; k++) if ((o->conn4 >> k) & 1) { o->ch[pairs[k]].is4op = 1; o->ch[pairs[k] + 3].second = 1; }
 }
 
-static void write_reg(OPL *o, int bank, int reg, uint8_t v) {
+/* the part of a register write that belongs to the caller's thread: the register copy and the timers.  1 = nothing else to do */
+static int write_main(OPL *o, int bank, int reg, uint8_t v) {
     int full = bank * 256 + reg;
     o->regs[full] = v;
     if (bank == 0 && reg == 4) {
@@ -427,8 +470,13 @@ static void write_reg(OPL *o, int bank, int reg, uint8_t v) {
             if (v & 1) { if (!o->t1_run) { o->t1_start = usec(o); o->t1_run = 1; } } else o->t1_run = 0;
             if (v & 2) { if (!o->t2_run) { o->t2_start = usec(o); o->t2_run = 1; } } else o->t2_run = 0;
         }
-        return;
+        return 1;
     }
+    return 0;
+}
+
+/* the synthesis part of a register write (worker thread in worker mode) */
+static void write_synth(OPL *o, int bank, int reg, uint8_t v) {
     if (bank == 1 && reg == 5) { o->newmode = v & 1; update_4op(o); o->dirty_all = 1; return; }
     if (bank == 1 && reg == 4) { o->conn4 = v & 0x3F; update_4op(o); o->dirty_all = 1; return; }
     if (bank == 0 && reg == 8) { o->nts = (v >> 6) & 1; o->dirty_all = 1; return; }
@@ -482,11 +530,72 @@ void opl_write(OPL *o, uint16_t port, uint8_t v) {
     int bank = o->lbank, reg = o->lreg;
     if (opl_dbg_log && opl_dbg_writes < opl_dbg_log) fprintf(stderr, "[opl] reg %d:%02X = %02X  (t=%llu)\n", bank, reg, v, (unsigned long long)usec(o));
     opl_dbg_writes++;
-    opl_sync(o);
 #ifdef OPL_TRACE
     { extern void opl_trace_hook(uint64_t us, int bank, int reg, int val); opl_trace_hook(usec(o), bank, reg, v); }
 #endif
-    write_reg(o, bank, reg, v);
+    if (!o->async) { opl_sync(o); if (!write_main(o, bank, reg, v)) write_synth(o, bank, reg, v); return; }
+    if (write_main(o, bank, reg, v)) return;
+    uint64_t t = now_samples(o);
+    for (;;) {                                                           /* queue it with its time for the worker */
+        o->lock(o->lctx);
+        if (o->ev_wr - o->ev_rd < EVQ_N) {
+            uint32_t w = o->ev_wr++ & (EVQ_N - 1);
+            o->evq[w].t = t; o->evq[w].reg = (uint16_t)(bank * 256 + reg); o->evq[w].v = v;
+            if (t > o->target) o->target = t;
+            o->unlock(o->lctx);
+            return;
+        }
+        o->unlock(o->lctx);
+        if (o->nap) o->nap(o->lctx);                                     /* queue full (the worker is stalled): wait for it */
+    }
+}
+
+/* ------------------------------------------------------------------ worker mode */
+/* From now on register writes are queued and opl_worker() - called in a loop by ONE other thread - does the synthesis.
+ * lock/unlock guard the few shared fields; nap is called when the caller has to wait for the worker. */
+void opl_async(OPL *o, void (*lock)(void *), void (*unlock)(void *), void (*nap)(void *), void *ctx) {
+    if (!lock) { o->async = 0; o->wr = o->wloc; return; }               /* back to single-threaded (no worker was ever started) */
+    opl_sync(o);
+    o->lock = lock; o->unlock = unlock; o->nap = nap; o->lctx = ctx;
+    o->wloc = o->wr; o->target = o->gen_samples; o->ev_rd = o->ev_wr = 0;
+    o->async = 1;
+}
+
+static int gen_until(OPL *o, uint64_t t, uint32_t *rd) {
+    int did = 0;
+    if (t > o->gen_samples + RING_FRAMES) { skip_to(o, t); return 1; }   /* hopelessly behind */
+    while (o->gen_samples < t) {
+        uint64_t need = t - o->gen_samples; uint32_t c = need > 256 ? 256 : (uint32_t)need;
+        if (RING_FRAMES - (o->wloc - *rd) < c) {                         /* ring full? look again */
+            o->lock(o->lctx); *rd = o->rd; o->unlock(o->lctx);
+            if (RING_FRAMES - (o->wloc - *rd) < c) { skip_to(o, t); return did + 1; }   /* nobody is listening: let the time pass */
+        }
+        for (uint32_t k = 0; k < c; k++) { gen_out(o); o->gen_samples++; }
+        o->lock(o->lctx); o->wr = o->wloc; *rd = o->rd; o->unlock(o->lctx);
+        did += (int)c;
+    }
+    return did;
+}
+
+/* one round of work; returns 0 when there was nothing to do (the caller then sleeps a millisecond or two) */
+int opl_worker(OPL *o) {
+    struct { uint64_t t; uint16_t reg; uint8_t v; } ev[64];
+    int n = 0;
+    o->lock(o->lctx);
+    while (o->ev_rd != o->ev_wr && n < 64) {
+        uint32_t r = o->ev_rd++ & (EVQ_N - 1);
+        ev[n].t = o->evq[r].t; ev[n].reg = o->evq[r].reg; ev[n].v = o->evq[r].v; n++;
+    }
+    int more = o->ev_rd != o->ev_wr;
+    uint64_t target = o->target; uint32_t rd = o->rd;
+    o->unlock(o->lctx);
+    int did = n;
+    for (int i = 0; i < n; i++) {
+        did += gen_until(o, ev[i].t, &rd);
+        write_synth(o, ev[i].reg >> 8, ev[i].reg & 0xFF, ev[i].v);
+    }
+    if (!more) did += gen_until(o, target, &rd);
+    return did;
 }
 
 uint8_t opl_read(OPL *o, uint16_t port) {

@@ -41,8 +41,30 @@ static int _stallp, _stallms, _stall_seeded;
 static inline void gspWaitForVBlank(void) { if (_costmodel) { static int seeded; if (_stallp && !seeded) { srand(getenv("STUB_SEED") ? atoi(getenv("STUB_SEED")) : 1); seeded = 1; }
         double nb = ((double)(long)(_now * 59.83) + 1.0) / 59.83; if (_stallp && rand() % 1000 < _stallp) nb += _stallms / 1000.0; _frame = (int)(nb * 59.83); _advance(nb); return; }
     int n = 1; if (_stallp) { if (!_stall_seeded) { srand(getenv("STUB_SEED") ? atoi(getenv("STUB_SEED")) : 1); _stall_seeded = 1; } if (rand() % 1000 < _stallp) n += (int)(_stallms * 59.83 / 1000.0 + 0.5); } _frame += n; _dsp_run(n / 59.83);
+    { static int rt = -1; if (rt < 0) rt = getenv("STUB_RT") ? 1 : 0; if (rt) usleep(16714 * n); }   /* STUB_RT=1: frames take real time (needed when a worker thread synthesizes) */
     if (_slow > 1) { u64 fr = SYSCLOCK_ARM11 / 60, now = svcGetSystemTick(), nb = (now / fr + 1) * fr; while (svcGetSystemTick() < nb) usleep(200); } }
 static inline void osSetSpeedupEnable(bool e) {}
+/* threads (Old 3DS synth worker): plain pthreads */
+typedef int32_t s32; typedef int64_t s64;
+#include <pthread.h>
+typedef pthread_mutex_t LightLock;
+static inline void LightLock_Init(LightLock *l) { pthread_mutex_init(l, NULL); }
+static inline void LightLock_Lock(LightLock *l) { pthread_mutex_lock(l); }
+static inline void LightLock_Unlock(LightLock *l) { pthread_mutex_unlock(l); }
+typedef struct _StubThread { pthread_t t; void (*f)(void *); void *a; } *Thread;
+static void *_thr_tramp(void *p) { Thread t = p; t->f(t->a); return NULL; }
+static inline Thread threadCreate(void (*f)(void *), void *a, size_t stack, int prio, int core, bool detached) {
+    if (getenv("STUB_NOTHREAD")) return NULL;
+    Thread t = calloc(1, sizeof *t); t->f = f; t->a = a; pthread_create(&t->t, NULL, _thr_tramp, t); return t; }
+static inline Result threadJoin(Thread t, u64 ns) { pthread_join(t->t, NULL); return 0; }
+static inline void threadFree(Thread t) { free(t); }
+static inline Result APT_SetAppCpuTimeLimit(u32 p) { return 0; }
+#define CUR_THREAD_HANDLE 0
+static inline Result svcGetThreadPriority(s32 *p, int h) { *p = 0x30; return 0; }
+static inline void svcSleepThread(s64 ns) { usleep((useconds_t)(ns / 1000)); }
+#ifndef U64_MAX
+#define U64_MAX 0xFFFFFFFFFFFFFFFFull
+#endif
 static inline Result APT_CheckNew3DS(bool *o) { *o = !getenv("STUB_OLD3DS"); return 0; }   /* STUB_OLD3DS=1: behave as an Old 3DS */
 static int _script_frames; static int _scans;
 static inline bool aptMainLoop(void) { return _scans < _script_frames; }

@@ -270,6 +270,33 @@ static void audio_set_speed(double ratio) {
     if (r != audio_rate) { audio_rate = r; ndspChnSetRate(0, r); }
 }
 static double now_ms(void) { return (double)svcGetSystemTick() * 1000.0 / TICKS_PER_SEC; }
+
+/* ---- Old 3DS: the FM synthesis (over half of all the work) runs on the second CPU core ----
+ * Register writes are queued with their time (opl_async) and this thread turns them into samples; the main thread
+ * keeps the first core for the emulated CPU and the screen.  If the thread cannot be made, everything stays as it was. */
+static LightLock synth_lock; static Thread synth_thread; static volatile int synth_quit, synth_alive, synth_go;
+static void synth_lk(void *c) { (void)c; LightLock_Lock(&synth_lock); }
+static void synth_ul(void *c) { (void)c; LightLock_Unlock(&synth_lock); }
+static void synth_nap(void *c) { (void)c; svcSleepThread(1000000LL); }
+static void synth_main(void *arg) { OPL *o = arg; synth_alive = 1; while (!synth_quit) if (!synth_go || !opl_worker(o)) svcSleepThread(3000000LL); }
+static int synth_start(OPL *o) {
+    LightLock_Init(&synth_lock);
+    APT_SetAppCpuTimeLimit(80);                       /* the share of core 1 an application may use (the system keeps the rest) */
+    s32 prio = 0x30; svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    synth_quit = 0; synth_alive = 0; synth_go = 0;
+    synth_thread = threadCreate(synth_main, o, 32 * 1024, prio - 1, 1, false);
+    if (!synth_thread) return 0;
+    /* make sure core 1 really runs it before the synthesizer is handed over (nothing is queued or generated until then) */
+    for (int i = 0; i < 300 && !synth_alive; i++) svcSleepThread(1000000LL);
+    if (!synth_alive) { synth_quit = 1; synth_thread = NULL; return 0; }     /* never scheduled: it exits at once if it ever is */
+    opl_async(o, synth_lk, synth_ul, synth_nap, NULL);
+    synth_go = 1;                                     /* only now may the worker touch the synthesizer */
+    return 1;
+}
+static void synth_stop(void) {
+    if (!synth_thread) return;
+    synth_quit = 1; threadJoin(synth_thread, U64_MAX); threadFree(synth_thread); synth_thread = NULL;
+}
 static void audio_pump(Machine *m) {
     opl_sync(m->opl);
     uint32_t n = opl_available(m->opl);
@@ -896,6 +923,7 @@ int main(void) {
     m->verbose = 0;
     m->opl = opl_new_div(AUD_RATE, is_new ? 1 : 2);   /* Old 3DS: half-rate FM synthesis (it was over half of all the work) */
     opl_attach(m->opl, (opl_clock_fn)machine_vtime_ns, m);
+    if (!is_new) { int th = synth_start(m->opl); LOG("synth thread on core 1: %s", th ? "yes" : "no (single core)"); }
     textcap_init(m);
     idle_init(m);
     uint32_t ips = is_new ? 4000000u : 1500000u;
@@ -1087,6 +1115,7 @@ int main(void) {
     }
 done:
     LOG("shutdown");
+    synth_stop();
     if (logfp) fclose(logfp);
     if (audio_ok) { ndspChnReset(0); ndspExit(); linearFree(abuf); }
     gfxExit();
