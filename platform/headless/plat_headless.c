@@ -1,5 +1,6 @@
 #include "ai5.h"
 #include <stdio.h>
+#include <dirent.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -11,6 +12,10 @@ void plat_set_dir(const char *d) { g_dir = d; }
 static FILE *op(const char *name) { char p[512]; snprintf(p, sizeof p, "%s/%s", g_dir, name); return fopen(p, "rb"); }
 bool plat_read_at(const char *name, uint32_t off, void *dst, uint32_t len) {
     FILE *f = op(name); if (!f) return false; fseek(f, off, SEEK_SET); bool ok = fread(dst, 1, len, f) == len; fclose(f); return ok; }
+int plat_list(const char *dir, char names[][24], int max) {   /* file names in a game-folder subdirectory */
+    char p[512]; snprintf(p, sizeof p, "%s/%s", g_dir, dir); DIR *d = opendir(p); if (!d) return 0; int n = 0; struct dirent *e;
+    while ((e = readdir(d)) && n < max) { if (e->d_name[0] == '.' || strlen(e->d_name) > 23) continue; strcpy(names[n++], e->d_name); }
+    closedir(d); return n; }
 uint32_t plat_file_size(const char *name) { FILE *f = op(name); if (!f) return 0; fseek(f, 0, SEEK_END); long n = ftell(f); fclose(f); return n; }
 void *plat_read_file(const char *name, size_t *len) { uint32_t n = plat_file_size(name); if (!n) return NULL; void *b = malloc(n + 1);
     if (!plat_read_at(name, 0, b, n)) { free(b); return NULL; } if (len) *len = n; return b; }

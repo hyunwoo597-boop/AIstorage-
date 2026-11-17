@@ -24,6 +24,7 @@ size_t lzss_decode(const uint8_t *src, size_t n, uint8_t *dst, size_t cap);
 /* platform partial read (so archives are never loaded whole) */
 bool plat_read_at(const char *name, uint32_t off, void *dst, uint32_t len);
 uint32_t plat_file_size(const char *name);
+int plat_list(const char *dir, char names[][24], int max);   /* names of the files in a game-folder subdirectory */
 
 /* ---- VM memory layout (matches original offsets) ---- */
 #define MEM_SIZE     0x200000

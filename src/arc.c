@@ -35,13 +35,14 @@ static arc_entry *arc_find(arc_t *a, const char *name) {
     for (i = 0; i < a->n; i++) if (!strcmp(a->e[i].name, up)) return &a->e[i];
     return NULL;
 }
-/* Port addition: loose replacement files. patch/patch.txt lists file names (one per line); each listed name is read from
-   patch/<name> instead of any archive. Lets small fixes (e.g. the Korean title logo) ship without rebuilding a 100 MB archive. */
-static char ov_names[64][24]; static int ov_n = -1;
+/* Port addition: loose replacement files. Every file in the game folder's patch/ directory replaces the archive entry of
+   the same name (any archive, case-insensitive). Lets small fixes (e.g. the Korean title logo) ship without rebuilding a
+   100 MB archive. patch.txt is no longer needed (ignored if present). */
+static char ov_names[128][24]; static int ov_n = -1;
 static void ov_init(void) {
-    ov_n = 0; size_t n; char *t = plat_read_file("patch/patch.txt", &n); if (!t) return; t[n] = 0;
-    for (char *p = strtok(t, "\r\n"); p && ov_n < 64; p = strtok(NULL, "\r\n")) { while (*p == ' ') p++; if (*p) snprintf(ov_names[ov_n++], 24, "%s", p); }
-    free(t); plat_log("patch overrides: %d", ov_n);
+    ov_n = plat_list("patch", ov_names, 128); int k = 0;
+    for (int i = 0; i < ov_n; i++) if (strcasecmp(ov_names[i], "patch.txt")) memmove(ov_names[k++], ov_names[i], 24);
+    ov_n = k; plat_log("patch overrides: %d", ov_n);
 }
 static void *ov_load(const char *name, size_t *len) {
     if (ov_n < 0) ov_init();

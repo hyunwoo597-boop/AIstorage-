@@ -5,6 +5,7 @@
  * NOTE: written without access to hardware or the toolchain; first build may need fixes. */
 #include <3ds.h>
 #include <stdio.h>
+#include <dirent.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -31,6 +32,10 @@ static FILE *get_file(const char *name) {
 }
 bool plat_read_at(const char *name, uint32_t off, void *dst, uint32_t len) {
     FILE *f = get_file(name); if (!f) return false; if (fseek(f, off, SEEK_SET)) return false; return fread(dst, 1, len, f) == len; }
+int plat_list(const char *dir, char names[][24], int max) {   /* file names in a game-folder subdirectory */
+    char p[96]; snprintf(p, sizeof p, DATA_DIR "%s", dir); DIR *d = opendir(p); if (!d) return 0; int n = 0; struct dirent *e;
+    while ((e = readdir(d)) && n < max) { if (e->d_name[0] == '.' || strlen(e->d_name) > 23) continue; strcpy(names[n++], e->d_name); }
+    closedir(d); return n; }
 uint32_t plat_file_size(const char *name) { FILE *f = get_file(name); if (!f) return 0; fseek(f, 0, SEEK_END); return (uint32_t)ftell(f); }
 void *plat_read_file(const char *name, size_t *len) { uint32_t n = plat_file_size(name); if (!n) return NULL; void *b = malloc(n + 1);
     if (!b || !plat_read_at(name, 0, b, n)) { free(b); return NULL; } if (len) *len = n; return b; }

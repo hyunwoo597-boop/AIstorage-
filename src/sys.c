@@ -37,22 +37,38 @@ static const uint8_t *compose(void);
 /* title menu popup (UTIL 10,1) drawn over the scene; see title_menu() */
 static struct { bool on; int x, y, n, hl, pressed, w; uint8_t *rgb, *a; } pop;
 static uint8_t *pop_scene, *pop_depth;
+static struct { bool on; int x, y, sel; gcc_image im; } dlg;   /* confirmation dialog (SYS 28) */
+static void dlg_draw(uint8_t *out, uint8_t *z) {
+    /* sheet (272x184, BGR bottom-up): panel rows 4..107 with (0,255,0) as transparent; button sprites 94x18,
+       state rows 115 / 139 / 163, x 7 (확인) and 115 (취소); the panel's buttons sit at (29,58) and (149,58), 96x22 */
+    const gcc_image *im = &dlg.im;
+    #define SRC(x, y) (im->bgr + ((size_t)(im->h - 1 - (y)) * im->w + (x)) * 3)
+    for (int y = 4; y < 108; y++) for (int x = 4; x < im->w - 4; x++) { const uint8_t *c = SRC(x, y); if (c[0] == 0 && c[1] == 255 && c[2] == 0) continue;
+        int tx = dlg.x + x, ty = dlg.y + y; if (tx < 0 || ty < 0 || tx >= SW || ty >= SH) continue; uint8_t *d = out + (ty * SW + tx) * 3; d[0] = c[2]; d[1] = c[1]; d[2] = c[0]; if (z) z[ty * SW + tx] = 1; }
+    for (int b = 0; b < 2; b++) if (b == dlg.sel) {          /* focused button: the outlined sprite */
+        int sx = b ? 115 : 7, sy = 163, dx = dlg.x + (b ? 149 : 29) + 1, dy = dlg.y + 58 + 2;
+        for (int y = 0; y < 18; y++) for (int x = 0; x < 94; x++) { const uint8_t *c = SRC(sx + x, sy + y); if (c[0] == 0 && c[1] == 255 && c[2] == 0) continue; if (c[0] == 0 && c[1] == 0 && c[2] == 0 && (x < 2 || x > 91)) continue;
+            int tx = dx + x, ty = dy + y; if (tx < 0 || ty < 0 || tx >= SW || ty >= SH) continue; uint8_t *d = out + (ty * SW + tx) * 3; d[0] = c[2]; d[1] = c[1]; d[2] = c[0]; } }
+    #undef SRC
+}
 static void pop_draw(uint8_t *out, uint8_t *z) {   /* item i, state st (0 normal, 1 highlight, 2 pressed) = rows (i*3+st)*36 of the sheet */
+    if (dlg.on) dlg_draw(out, z);
+    if (!pop.on) return;
     for (int i = 0; i < pop.n; i++) { int st = i == pop.pressed ? 2 : i == pop.hl ? 1 : 0, sy = (i * 3 + st) * 36;
         for (int y = 0; y < 36; y++) for (int x = 0; x < pop.w; x++) { int tx = pop.x + x, ty = pop.y + i * 36 + y; if (tx < 0 || ty < 0 || tx >= SW || ty >= SH) continue;
             int a = pop.a[(sy + y) * pop.w + x]; if (!a) continue; const uint8_t *c = pop.rgb + ((sy + y) * pop.w + x) * 3; uint8_t *d = out + (ty * SW + tx) * 3;
             for (int k = 0; k < 3; k++) d[k] = (d[k] * (255 - a) + c[k] * a) / 255; if (z && a >= 128) z[ty * SW + tx] = 1; } }
 }
 const uint8_t *sys_scene_depth(void) {
-    if (pop.on && pop_depth) { memcpy(pop_depth, dpth[0], SW * SH); pop_draw(pop_scene, pop_depth); return pop_depth; } return (surf[0] && !shake_x && !shake_y) ? dpth[0] : NULL; }
+    if ((pop.on || dlg.on) && pop_depth) { memcpy(pop_depth, dpth[0], SW * SH); pop_draw(pop_scene, pop_depth); return pop_depth; } return (surf[0] && !shake_x && !shake_y) ? dpth[0] : NULL; }
 const uint8_t *sys_scene_rgb(void) {
     if (!surf[0]) return NULL;
-    if (pop.on && pop_scene) { memcpy(pop_scene, surf[0], SW * SH * 3); pop_draw(pop_scene, NULL); return pop_scene; }
+    if ((pop.on || dlg.on) && pop_scene) { memcpy(pop_scene, surf[0], SW * SH * 3); pop_draw(pop_scene, NULL); return pop_scene; }
     if (!shake_x && !shake_y) return surf[0];
     int v0 = win[0].visible, v1 = win[1].visible; win[0].visible = win[1].visible = 0; const uint8_t *r = compose(); win[0].visible = v0; win[1].visible = v1; return r;
 }
 static const uint8_t *compose(void) {
-    if (!(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !shake_x && !shake_y && !fx_left && !pop.on) return surf[0];
+    if (!(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !shake_x && !shake_y && !fx_left && !pop.on && !dlg.on) return surf[0];
     if (fx_left) { int a = fx_left * 255 / 16; fx_left--;      /* [EXE 0x42080a] 16-step fade from the snapshot */
         for (int i = 0; i < SW * SH * 3; i++) { int sx = i / 3 % SW, sy = i / 3 / SW; uint8_t o = INS(11, sx, sy) ? PIX(11, sx, sy)[i % 3] : 0;
             screen_out[i] = (o * a + surf[0][i] * (255 - a)) / 255; } }
@@ -69,7 +85,7 @@ static const uint8_t *compose(void) {
                 int a = MSK(6, ox + x, oy + y);
                 for (int c = 0; c < 3; c++) { int veil = d[c] * 127 / 255; d[c] = (veil * (255 - a) + s[c] * a) / 255; } } } }
     if (getenv("AI5_DEBUG_SURF")) { int n = atoi(getenv("AI5_DEBUG_SURF")); for (int y = 0; y < 120; y++) memcpy(screen_out + y * SW * 3, surf[n] + y * SW * 3, SW * 3); }
-    if (pop.on) pop_draw(screen_out, NULL);
+    if (pop.on || dlg.on) pop_draw(screen_out, NULL);
     return screen_out;
 }
 static uint8_t seen[32][16];
@@ -525,6 +541,7 @@ static void backlog_view(vm_t *vm) {   /* SYS 19,6: modal; B or L closes, up/dow
         bool any = plat_key(9); for (int i = 0; i < 6; i++) any |= plat_key(keys[i]); if (!any) break;
         if (!frame(vm)) vm->quit = true; }
 }
+static void sys28(vm_t *vm, uint32_t sub);
 void sys_call(vm_t *vm, uint32_t fn) {
     sys_init(vm);
     vm_param *p = vm->params; uint32_t sub = p[0].val;
@@ -649,6 +666,7 @@ void sys_call(vm_t *vm, uint32_t fn) {
             if (sub == 3) return;      /* TODO: 0x42cb50 (rect refresh?) */
             if (sub == 5) { SET_V16(vm, 18, win[n].visible); return; } }
         break;
+    case 28: sys28(vm, sub); return;
     case 19: switch (sub) {
         case 0: if (SYS16(vm, 2) & 0x10) { memset(bl, 0, sizeof bl); bl_cur = 0; } return;
         case 1: if ((SYS16(vm, 2) & 0x30) == 0x10) bl_begin(vm); return;
@@ -757,6 +775,36 @@ static int title_menu(vm_t *vm) {
     for (int f = 0; f < 120 && !vm->quit; f++) { bool any = false; for (int i = 0; i < 6; i++) any |= plat_key(i); if (!any) break; if (!frame(vm)) vm->quit = true; }
     pop.on = false; free(pop.rgb); free(pop.a); pop.rgb = pop.a = NULL;
     return result < 0 ? 0 : result;
+}
+/* SYS 28 confirmation: bktitlen.gcc / endn.gcc ("처음 화면으로 돌아갈까요?" / "게임을 종료할까요?"). Left/right (or up/down) move,
+   A confirms, B cancels, touch on a button chooses it. Returns true for 확인. */
+static bool confirm_dialog(vm_t *vm, const char *sheet) {
+    size_t n; uint8_t *raw = arc_load(&vm->arc_bg, sheet, &n); if (!raw) return true;
+    int rc = gcc_decode(raw, n, &dlg.im); free(raw); if (rc || dlg.im.w < 272 || dlg.im.h < 184) { if (!rc) { free(dlg.im.bgr); free(dlg.im.alpha); } return true; }
+    if (!pop_scene) { pop_scene = malloc(SW * SH * 3); pop_depth = malloc(SW * SH); }
+    dlg.x = (SW - 272) / 2; dlg.y = (SH - 112) / 2; dlg.sel = 0; dlg.on = true;
+    int held[6] = {0}, result = -1, cx0 = -1, cy0 = -1; bool armed = false;
+    while (!vm->quit && result < 0) {
+        if (!frame(vm)) { vm->quit = true; break; }
+        bool k[6], any = false; for (int i = 0; i < 6; i++) { k[i] = plat_key(i); any |= k[i]; }
+        if (!armed) { armed = !any; continue; }
+        bool fire[6]; for (int i = 0; i < 6; i++) { held[i] = k[i] ? held[i] + 1 : 0; fire[i] = held[i] == 1; }
+        int cx, cy; plat_cursor(&cx, &cy, false);
+        if ((cx != cx0 || cy != cy0) && cx0 >= 0 && cy >= dlg.y + 58 && cy < dlg.y + 80) { if (cx >= dlg.x + 29 && cx < dlg.x + 125) dlg.sel = 0; if (cx >= dlg.x + 149 && cx < dlg.x + 245) dlg.sel = 1; }
+        cx0 = cx; cy0 = cy;
+        if (fire[2] || fire[3] || fire[4] || fire[5]) dlg.sel ^= 1;
+        if (fire[0]) result = dlg.sel == 0; else if (fire[1]) result = 0;
+    }
+    for (int f = 0; f < 120 && !vm->quit; f++) { bool any = false; for (int i = 0; i < 6; i++) any |= plat_key(i); if (!any) break; if (!frame(vm)) vm->quit = true; }
+    dlg.on = false; free(dlg.im.bgr); free(dlg.im.alpha); dlg.im.bgr = dlg.im.alpha = NULL;
+    return result == 1;
+}
+static void sys28(vm_t *vm, uint32_t sub) {   /* [script-derived] system menu: 0 = back to the title, 1 = quit, 2 = settings (not offered) */
+    if (sub == 0 && confirm_dialog(vm, "bktitlen.gcc")) {
+        for (int i = 0; i < SND_SLOTS; i++) plat_snd_stop(i); anim_reset();
+        SET_SYS16(vm, 2, SYS16(vm, 2) | 8);                   /* leave every running menu loop, like a load */
+        snprintf(vm->goto_name, sizeof vm->goto_name, "MAIN.MES"); vm->want_goto = true;
+    } else if (sub == 1 && confirm_dialog(vm, "endn.gcc")) vm->quit = true;
 }
 /* UTIL [EXE dispatcher 0x411330, 11 functions] */
 void sys_util(vm_t *vm) {
