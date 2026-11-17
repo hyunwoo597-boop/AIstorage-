@@ -28,14 +28,18 @@ static const uint8_t *font; static uint32_t font_cells;
 static struct { int used, visible, x0, y0, x1, y1; } win[8];
 static uint8_t *screen_out;
 static int shake_x, shake_y;          /* [EXE UTIL 0 -> 0x40ffa0/0x41cf70] display offset used for screen shakes */
+static int fx_left;                   /* SYS 10,1: frames left of the fade from the snapshot in surface 11 to the live screen */
 static const uint8_t *compose(void);
 const uint8_t *sys_scene_rgb(void) {
     if (!surf[0]) return NULL; if (!shake_x && !shake_y) return surf[0];
     int v0 = win[0].visible, v1 = win[1].visible; win[0].visible = win[1].visible = 0; const uint8_t *r = compose(); win[0].visible = v0; win[1].visible = v1; return r;
 }
 static const uint8_t *compose(void) {
-    if (!(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !shake_x && !shake_y) return surf[0];
-    if (!shake_x && !shake_y) memcpy(screen_out, surf[0], SW * SH * 3);
+    if (!(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !shake_x && !shake_y && !fx_left) return surf[0];
+    if (fx_left) { int a = fx_left * 255 / 16; fx_left--;      /* [EXE 0x42080a] 16-step fade from the snapshot */
+        for (int i = 0; i < SW * SH * 3; i++) { int sx = i / 3 % SW, sy = i / 3 / SW; uint8_t o = INS(11, sx, sy) ? PIX(11, sx, sy)[i % 3] : 0;
+            screen_out[i] = (o * a + surf[0][i] * (255 - a)) / 255; } }
+    else if (!shake_x && !shake_y) memcpy(screen_out, surf[0], SW * SH * 3);
     else { memset(screen_out, 0, SW * SH * 3);
         for (int y = 0; y < SH; y++) { int sy = y - shake_y; if (sy < 0 || sy >= SH) continue;
             int sx0 = shake_x > 0 ? 0 : -shake_x, dx0 = shake_x > 0 ? shake_x : 0, n = SW - (shake_x > 0 ? shake_x : -shake_x); if (n > 0) memcpy(screen_out + (y * SW + dx0) * 3, surf[0] + (sy * SW + sx0) * 3, n * 3); } }
@@ -64,6 +68,7 @@ static void sys_init(vm_t *vm) {
     anim_reset();
     for (int i = 1; i < 8; i++) SET_SYS32(vm, i, 0x40000 + i * 0x20000);   /* [guess] file areas the scripts address through sys32[n] */
     SET_SYS16(vm, 0, 0x1310);          /* [EXE 0x4057b8] base of the save-list area (45 bytes per slot) */
+    SET_SYS16(vm, 23, 10);             /* [EXE 0x4058b2] working surface: scenes are composed on surface 10, then wiped onto the screen */
     /* [EXE 0x4058c8..0x40594b] start-up flags: 0x402, display effects (ini DispEffect.Play) 0x2000, 0x8000 */
     SET_SYS16(vm, 2, SYS16(vm, 2) | 0x402 | 0x8000 | (*ini_slot("DispEffect", "Play") ? 0x2000 : 0));
     SET_SYS32(vm, 0, 0);               /* [EXE 0x4057ce: real memory base; here offsets] sys32[0] is the memory base: scripts pass sys32[0]+offset as a pointer */
@@ -86,9 +91,21 @@ static void once(vm_t *vm, uint32_t fn, const char *note) {
    ox/oy: -1 = use the file's position; otherwise the colour rect is moved by (ox,oy) and the mask rect is placed AT (ox,oy).
    Only the m variants write the mask plane. The resulting rectangle goes to sys16[17..20] (x, y, w, h). */
 static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
-    size_t n; uint8_t *raw = arc_load(&vm->arc_bg, name, &n); if (!raw) { plat_log("missing image %s", name); return; }
-    gcc_image im; dst %= NSURF;
-    if (!gcc_decode(raw, n, &im)) {
+    /* Port addition: small cache of decoded images. Some screens (CG gallery) reload the same sheet many times
+       per frame; the PC decodes fast enough, the 3DS does not. */
+    enum { NCACHE = 4 };
+    static struct { char name[32]; gcc_image im; unsigned use; } cache[NCACHE]; static unsigned tick;
+    gcc_image im; dst %= NSURF; int hit = -1;
+    for (int i = 0; i < NCACHE; i++) if (cache[i].im.bgr && !strcasecmp(cache[i].name, name)) { hit = i; break; }
+    if (hit < 0) {
+        size_t n; uint8_t *raw = arc_load(&vm->arc_bg, name, &n); if (!raw) { plat_log("missing image %s", name); return; }
+        int rc = gcc_decode(raw, n, &im); free(raw); if (rc) return;
+        hit = 0; for (int i = 1; i < NCACHE; i++) if (!cache[i].im.bgr || (cache[hit].im.bgr && cache[i].use < cache[hit].use)) hit = i;
+        free(cache[hit].im.bgr); free(cache[hit].im.alpha);
+        cache[hit].im = im; snprintf(cache[hit].name, sizeof cache[hit].name, "%s", name);
+    }
+    cache[hit].use = ++tick; im = cache[hit].im;
+    {
         int cx = im.x + (ox != -1 ? ox : 0), cy = im.y + (oy != -1 ? oy : 0);
         int ax = ox != -1 ? ox : im.ax, ay = oy != -1 ? oy : im.ay;
         if (dst != 0) { surf_ensure(dst, cx + im.w, cy + im.h); if (im.has_alpha) surf_ensure(dst, ax + im.aw, ay + im.ah); }
@@ -99,9 +116,7 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
             for (int x = 0; x < im.aw; x++) { int dx = ax + x; if (INS(dst, dx, dy)) MSK(dst, dx, dy) = s[x]; } }
         int w = im.w, h = im.h; if (cx + w > sw[dst]) w = sw[dst] - cx; if (cy + h > sh[dst]) h = sh[dst] - cy;
         SET_SYS16(vm, 17, cx); SET_SYS16(vm, 18, cy); SET_SYS16(vm, 19, w > 0 ? w : 0); SET_SYS16(vm, 20, h > 0 ? h : 0);
-        free(im.bgr); free(im.alpha);
     }
-    free(raw);
 }
 #define EACH(body) for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int sx = x0 + x, sy = y0 + y, tx = dx + x, ty = dy + y; if (!INS(ss, sx, sy) || !INS(ds, tx, ty)) continue; body }
 /* [EXE 0x41ae60] colour copy; with_mask adds [EXE 0x41b130] mask-plane copy */
@@ -211,6 +226,7 @@ static void anim_draw(vm_t *vm, uint32_t n) {
 }
 static void anim_tick_one(vm_t *vm, anim_stream *s) {
     const uint8_t *m = vm->mem;
+    if (s->state == 4) return;        /* paused (SYS 3,8) */
     if (s->stall) { s->stall--; return; }
     if (s->wait) { if (s->state == AN_STOPREQ) s->state = AN_HALT; else if (s->state == 3) s->state = 4; s->wait--; return; }
     uint8_t op = m[(s->base + s->ip++) & (MEM_SIZE - 1)];
@@ -361,6 +377,13 @@ void sys_call(vm_t *vm, uint32_t fn) {
             return; }
         if (sub == 6) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state != AN_HALT) anim[a][b].state = AN_STOPREQ; return; }
         if (sub == 7) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) anim[a][b].state = AN_HALT; return; }
+        if (sub == 8) {                /* [EXE 0x40f6a0] pause all at their next wait: running -> 3, wait until none is left in 3 */
+            for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state == AN_RUN) anim[a][b].state = 3;
+            for (int k = 0; k < 600 && !vm->quit; k++) { int busy = 0;
+                for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) busy |= anim[a][b].state == 3;
+                if (!busy) break; if (!frame(vm)) vm->quit = true; vm->steps = 0; }
+            return; }
+        if (sub == 9) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state == 4) anim[a][b].state = AN_RUN; return; }   /* [EXE 0x40f590] */
         break; }
     case 8:
         if (sub == 0) {                /* [EXE 0x41e2b0 partly read] load a DATA.ARC file (LZSS) to the address in p2 */
@@ -434,6 +457,20 @@ void sys_call(vm_t *vm, uint32_t fn) {
         if ((sub == 0 || sub == 3) && plat_key(7)) { plat_snd_stop(SND_VOICE + (p[2].val & 1)); snd_has_pend[SND_VOICE + (p[2].val & 1)] = 0; SET_V32(vm, 18, 0); return; }
         snd_cmd(vm, SND_VOICE, 2, sub, p[1].str, p[2].val);
         return;
+    case 1: {                          /* [EXE 0x41f650] print a number as full-width digits */
+        char t[24]; int n = 0; uint32_t v = sub; char dg[12]; int k = 0; do { dg[k++] = v % 10; v /= 10; } while (v && k < 10);
+        while (k--) { t[n++] = (char)0x82; t[n++] = (char)(0x4F + dg[k]); } t[n] = 0; sys_text(vm, t, true); return; }
+    case 10:                           /* [EXE 0x4206d0] 1 = snapshot the screen to surface 11 and fade from it over 16 frames (p1: fill surface 10 first) */
+        if (sub == 1) {   /* crossfade the screen to the working surface 10: snapshot 0 -> 11, (p1: fill 10), 16 frames, waits like 0x41db50.
+                             Library use: compose on sys16[23], then SYS 10,1 shows it (LIB 0x2c22 copies directly instead on later passes). */
+            SET_SYS16(vm, 2, SYS16(vm, 2) & ~2);
+            gfx_copy(0, 0, SW, SH, 0, 0, 0, 11, 0); if (p[1].val) gfx_fill(0, 0, SW, SH, 10, p[1].val, 0);
+            gfx_copy(0, 0, SW, SH, 10, 0, 0, 0, 0); fx_left = 16;
+            while (fx_left && !vm->quit) if (!frame(vm)) vm->quit = true;
+            return; }
+        break;
+    case 29: SET_V32(vm, 18, plat_ms()); return;   /* [EXE 0x41f250] timeGetTime -> v32[18] */
+    case 0: return;                    /* [EXE 0x421a50] Windows cursor/window setup: nothing to do here */
     case 27:
         if (sub == 0) { SET_V16(vm, 18, *ini_slot(p[1].str, p[2].str)); return; }
         if (sub == 1) { *ini_slot(p[1].str, p[2].str) = p[3].val; return; }

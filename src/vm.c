@@ -93,8 +93,9 @@ static void run_block_inner(vm_t *vm) {
         case 0x03: i = f16(vm); do { FLAG(vm, i) = vm_expr(vm); i++; } while (f8(vm)); break;
         case 0x04: i = f8(vm);  do { SET_V16(vm, i, vm_expr(vm)); i++; } while (f8(vm)); break;
         case 0x05: i = vm_expr(vm); do { FLAG(vm, i) = vm_expr(vm); i++; } while (f8(vm)); break;
-        case 0x06: i = vm_expr(vm); v = f8(vm);    /* array16[v][i] */
-            do { wr16(m + (((v ? V16(vm, v - 1) : OFF_SYS16) + 2 * i) & (MEM_SIZE - 1)), vm_expr(vm)); i++; } while (f8(vm)); break;
+        case 0x06: i = vm_expr(vm); v = f8(vm);    /* byte array at var16[v] + i (mirror of expression op 0xC0) */
+            do { m[(V16(vm, v) + i) & (MEM_SIZE - 1)] = (uint8_t)vm_expr(vm); i++; } while (f8(vm)); break;
+        /* 0x07: array16[v][i]; v == 0 means the sys16 block */
         case 0x07: i = vm_expr(vm); v = f8(vm);
             do { wr16(m + (((v ? V16(vm, v - 1) : OFF_SYS16) + 2 * i) & (MEM_SIZE - 1)), vm_expr(vm)); i++; } while (f8(vm)); break;
         case 0x08: i = vm_expr(vm); v = f8(vm);

@@ -82,7 +82,8 @@ uint32_t vm_expr(vm_t *vm);
 /* ---- save files (FLAGnn in the original's SAVEDAT folder). Returns false if missing / failed. ---- */
 bool plat_save_read(const char *name, void *buf, size_t len);
 bool plat_save_write(const char *name, const void *buf, size_t len);
-void plat_datetime(int out[6]);   /* year, month, day, hour, minute, second (local) */
+void plat_datetime(int out[6]);
+uint32_t plat_ms(void);          /* millisecond clock (timeGetTime equivalent) */   /* year, month, day, hour, minute, second (local) */
 
 /* ---- sound. slots: 0-1 music, 2-5 effects, 6-7 voice. data (malloc'd) passes to the platform, which frees it.
    data formats: "AI5S" header + Ogg Vorbis (SOUND.ARC), plain Ogg Vorbis (VOICE.ARC), or RIFF/WAVE PCM16 (MUSIC.ARC). ---- */

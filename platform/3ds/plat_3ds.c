@@ -53,6 +53,7 @@ static void pump(void) {
     else g_touch_armed = false;
     g_touching = t;
 }
+uint32_t plat_ms(void) { return (uint32_t)osGetTime(); }
 void plat_datetime(int o[6]) { time_t t = time(NULL); struct tm *m = localtime(&t); o[0] = m->tm_year + 1900; o[1] = m->tm_mon + 1; o[2] = m->tm_mday; o[3] = m->tm_hour; o[4] = m->tm_min; o[5] = m->tm_sec; }
 bool plat_save_read(const char *name, void *buf, size_t len) {
     char p[96]; snprintf(p, sizeof p, DATA_DIR "save/%s", name); FILE *f = fopen(p, "rb"); if (!f) return false;
