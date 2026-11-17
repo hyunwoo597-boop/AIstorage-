@@ -103,6 +103,8 @@ typedef struct {
 } ui_text;
 const uint8_t *sys_scene_rgb(void);
 const uint8_t *sys_scene_depth(void);     /* 640x480 layer map for stereoscopic 3D (0 backdrop, 1 sprite), NULL = draw flat */         /* 640x480 RGB888 scene (surface 0 with shake applied), no text windows */
+const uint8_t *sys_bottom_rgb(void);       /* 320x240 RGB the engine wants on the bottom screen (title menu, confirm dialogs), else NULL */
+const uint8_t *sys_live_rgb(void);         /* the live 640x480 screen (shown on the bottom screen during full-screen menus) */
 const ui_text *sys_ui_text(vm_t *vm);
 const uint8_t *sys_font(uint32_t *cells);
 int sys_font_flags(void);                  /* bit 0: Korean glyph remap font (full-width space drawn half width on the small screen) */   /* font16.bin glyph data: 128 bytes per 16x16 4bpp cell */

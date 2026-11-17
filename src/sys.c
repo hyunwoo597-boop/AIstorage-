@@ -36,39 +36,51 @@ static int fx_left;                   /* SYS 10,1: frames left of the fade from 
 static const uint8_t *compose(void);
 /* title menu popup (UTIL 10,1) drawn over the scene; see title_menu() */
 static struct { bool on; int x, y, n, hl, pressed, w; uint8_t *rgb, *a; } pop;
-static uint8_t *pop_scene, *pop_depth;
 static struct { bool on; int x, y, sel; gcc_image im; } dlg;   /* confirmation dialog (SYS 28) */
-static void dlg_draw(uint8_t *out, uint8_t *z) {
+static void dlg_draw(uint8_t *out, int OW, int OH) {
     /* sheet (272x184, BGR bottom-up): panel rows 4..107 with (0,255,0) as transparent; button sprites 94x18,
        state rows 115 / 139 / 163, x 7 (확인) and 115 (취소); the panel's buttons sit at (29,58) and (149,58), 96x22 */
     const gcc_image *im = &dlg.im;
     #define SRC(x, y) (im->bgr + ((size_t)(im->h - 1 - (y)) * im->w + (x)) * 3)
     for (int y = 4; y < 108; y++) for (int x = 4; x < im->w - 4; x++) { const uint8_t *c = SRC(x, y); if (c[0] == 0 && c[1] == 255 && c[2] == 0) continue;
-        int tx = dlg.x + x, ty = dlg.y + y; if (tx < 0 || ty < 0 || tx >= SW || ty >= SH) continue; uint8_t *d = out + (ty * SW + tx) * 3; d[0] = c[2]; d[1] = c[1]; d[2] = c[0]; if (z) z[ty * SW + tx] = 1; }
+        int tx = dlg.x + x, ty = dlg.y + y; if (tx < 0 || ty < 0 || tx >= OW || ty >= OH) continue; uint8_t *d = out + (ty * OW + tx) * 3; d[0] = c[2]; d[1] = c[1]; d[2] = c[0]; }
     for (int b = 0; b < 2; b++) if (b == dlg.sel) {          /* focused button: the outlined sprite */
         int sx = b ? 115 : 7, sy = 163, dx = dlg.x + (b ? 149 : 29) + 1, dy = dlg.y + 58 + 2;
         for (int y = 0; y < 18; y++) for (int x = 0; x < 94; x++) { const uint8_t *c = SRC(sx + x, sy + y); if (c[0] == 0 && c[1] == 255 && c[2] == 0) continue; if (c[0] == 0 && c[1] == 0 && c[2] == 0 && (x < 2 || x > 91)) continue;
-            int tx = dx + x, ty = dy + y; if (tx < 0 || ty < 0 || tx >= SW || ty >= SH) continue; uint8_t *d = out + (ty * SW + tx) * 3; d[0] = c[2]; d[1] = c[1]; d[2] = c[0]; } }
+            int tx = dx + x, ty = dy + y; if (tx < 0 || ty < 0 || tx >= OW || ty >= OH) continue; uint8_t *d = out + (ty * OW + tx) * 3; d[0] = c[2]; d[1] = c[1]; d[2] = c[0]; } }
     #undef SRC
 }
-static void pop_draw(uint8_t *out, uint8_t *z) {   /* item i, state st (0 normal, 1 highlight, 2 pressed) = rows (i*3+st)*36 of the sheet */
-    if (dlg.on) dlg_draw(out, z);
+static void pop_draw(uint8_t *out, int OW, int OH) {   /* item i, state st (0 normal, 1 highlight, 2 pressed) = rows (i*3+st)*36 of the sheet */
+    if (dlg.on) dlg_draw(out, OW, OH);
     if (!pop.on) return;
     for (int i = 0; i < pop.n; i++) { int st = i == pop.pressed ? 2 : i == pop.hl ? 1 : 0, sy = (i * 3 + st) * 36;
-        for (int y = 0; y < 36; y++) for (int x = 0; x < pop.w; x++) { int tx = pop.x + x, ty = pop.y + i * 36 + y; if (tx < 0 || ty < 0 || tx >= SW || ty >= SH) continue;
-            int a = pop.a[(sy + y) * pop.w + x]; if (!a) continue; const uint8_t *c = pop.rgb + ((sy + y) * pop.w + x) * 3; uint8_t *d = out + (ty * SW + tx) * 3;
-            for (int k = 0; k < 3; k++) d[k] = (d[k] * (255 - a) + c[k] * a) / 255; if (z && a >= 128) z[ty * SW + tx] = 1; } }
+        for (int y = 0; y < 36; y++) for (int x = 0; x < pop.w; x++) { int tx = pop.x + x, ty = pop.y + i * 36 + y; if (tx < 0 || ty < 0 || tx >= OW || ty >= OH) continue;
+            int a = pop.a[(sy + y) * pop.w + x]; if (!a) continue; const uint8_t *c = pop.rgb + ((sy + y) * pop.w + x) * 3; uint8_t *d = out + (ty * OW + tx) * 3;
+            for (int k = 0; k < 3; k++) d[k] = (d[k] * (255 - a) + c[k] * a) / 255; } }
+}
+/* Port: selection UIs live on the 3DS bottom screen. The title menu and the confirmation dialogs are drawn 1:1 onto a
+   320x240 picture of the (dimmed) screen; full-screen menus (MENUS loops other than 100: system menu, save/load) are
+   shown on the bottom screen by the platform while the top screen keeps the picture from before the menu opened. */
+static uint8_t bottom_buf[320 * 240 * 3];
+static uint8_t *snap_rgb, *snap_z; static bool snap_on, snap_pending;
+const uint8_t *sys_live_rgb(void) { return surf[0]; }
+const uint8_t *sys_bottom_rgb(void) {
+    if (!pop.on && !dlg.on) return NULL;
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { const uint8_t *a = surf[0] + ((y * 2) * SW + x * 2) * 3; uint8_t *d = bottom_buf + (y * 320 + x) * 3;
+        for (int k = 0; k < 3; k++) d[k] = a[k] / 5; }
+    pop_draw(bottom_buf, 320, 240); return bottom_buf;
 }
 const uint8_t *sys_scene_depth(void) {
-    if ((pop.on || dlg.on) && pop_depth) { memcpy(pop_depth, dpth[0], SW * SH); pop_draw(pop_scene, pop_depth); return pop_depth; } return (surf[0] && !shake_x && !shake_y) ? dpth[0] : NULL; }
+    if (snap_on && snap_z) return snap_z;
+    return (surf[0] && !shake_x && !shake_y) ? dpth[0] : NULL; }
 const uint8_t *sys_scene_rgb(void) {
     if (!surf[0]) return NULL;
-    if ((pop.on || dlg.on) && pop_scene) { memcpy(pop_scene, surf[0], SW * SH * 3); pop_draw(pop_scene, NULL); return pop_scene; }
+    if (snap_on && snap_rgb) return snap_rgb;
     if (!shake_x && !shake_y) return surf[0];
     int v0 = win[0].visible, v1 = win[1].visible; win[0].visible = win[1].visible = 0; const uint8_t *r = compose(); win[0].visible = v0; win[1].visible = v1; return r;
 }
 static const uint8_t *compose(void) {
-    if (!(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !shake_x && !shake_y && !fx_left && !pop.on && !dlg.on) return surf[0];
+    if (!(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !shake_x && !shake_y && !fx_left) return surf[0];
     if (fx_left) { int a = fx_left * 255 / 16; fx_left--;      /* [EXE 0x42080a] 16-step fade from the snapshot */
         for (int i = 0; i < SW * SH * 3; i++) { int sx = i / 3 % SW, sy = i / 3 / SW; uint8_t o = INS(11, sx, sy) ? PIX(11, sx, sy)[i % 3] : 0;
             screen_out[i] = (o * a + surf[0][i] * (255 - a)) / 255; } }
@@ -85,7 +97,6 @@ static const uint8_t *compose(void) {
                 int a = MSK(6, ox + x, oy + y);
                 for (int c = 0; c < 3; c++) { int veil = d[c] * 127 / 255; d[c] = (veil * (255 - a) + s[c] * a) / 255; } } } }
     if (getenv("AI5_DEBUG_SURF")) { int n = atoi(getenv("AI5_DEBUG_SURF")); for (int y = 0; y < 120; y++) memcpy(screen_out + y * SW * 3, surf[n] + y * SW * 3, SW * 3); }
-    if (pop.on || dlg.on) pop_draw(screen_out, NULL);
     return screen_out;
 }
 static uint8_t seen[32][16];
@@ -399,7 +410,8 @@ static void anim_tick_one(vm_t *vm, anim_stream *s) {
     }
 }
 static void anim_tick(vm_t *vm) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state != AN_HALT) anim_tick_one(vm, &anim[a][b]); }
-static bool frame(vm_t *vm) { anim_tick(vm); return plat_frame(compose(), SW, SH); }
+static bool frame(vm_t *vm) { if (snap_pending && !fx_left && (cur_loop < 0 || cur_loop == 100)) snap_on = snap_pending = false;
+    anim_tick(vm); return plat_frame(compose(), SW, SH); }
 /* ---- sound [EXE: SYS 5 -> 0x4072e0/0x41fdd0, SYS 6 -> 0x4200b0, SYS 7 -> 0x42bce0/0x420270] ---- */
 static char snd_cur[SND_SLOTS][24], snd_pend[SND_SLOTS][24]; static uint8_t snd_has_pend[SND_SLOTS];
 static void *snd_load(vm_t *vm, int kind, const char *name, size_t *n) {
@@ -755,17 +767,16 @@ static void rule_wipe(vm_t *vm, int kind, int x0, int y0, int w, int h, uint32_t
 static int title_menu(vm_t *vm) {
     int src = 4, w = sw[src] < 408 ? sw[src] : 408, n = sh[src] / 108; if (n > 6) n = 6; if (n <= 0) return 1;
     pop.w = w; pop.n = n; pop.rgb = malloc((size_t)w * n * 108 * 3); pop.a = malloc((size_t)w * n * 108);
-    if (!pop_scene) { pop_scene = malloc(SW * SH * 3); pop_depth = malloc(SW * SH); }
     for (int y = 0; y < n * 108; y++) for (int x = 0; x < w; x++) { memcpy(pop.rgb + (y * w + x) * 3, PIX(src, x, y), 3); pop.a[y * w + x] = MSK(src, x, y); }
-    pop.x = (SW - w) / 2; pop.y = 472 - n * 36; pop.hl = 0; pop.pressed = -1; pop.on = true;
+    pop.x = (320 - w) / 2; pop.y = (240 - n * 36) / 2; pop.hl = 0;   /* bottom-screen coordinates */ pop.pressed = -1; pop.on = true;
     int held[6] = {0}, result = -1, cx0 = -1, cy0 = -1; bool armed = false;
     while (!vm->quit && result < 0) {
         if (!frame(vm)) { vm->quit = true; break; }
         bool k[6]; bool any = false; for (int i = 0; i < 6; i++) { k[i] = plat_key(i); any |= k[i]; }
         if (!armed) { armed = !any; continue; }
         bool fire[6]; for (int i = 0; i < 6; i++) { held[i] = k[i] ? held[i] + 1 : 0; fire[i] = held[i] == 1 || (i >= 2 && held[i] > 24 && (held[i] - 24) % 6 == 0); }
-        int cx, cy; plat_cursor(&cx, &cy, false);
-        if ((cx != cx0 || cy != cy0) && cx0 >= 0 && cx >= pop.x && cx < pop.x + w && cy >= pop.y && cy < pop.y + n * 36) pop.hl = (cy - pop.y) / 36;   /* pointer / touch */
+        int cx, cy; plat_cursor(&cx, &cy, false); int bx = cx / 2, by = cy / 2;   /* pointer in 640x480 space = bottom screen x2 */
+        if ((cx != cx0 || cy != cy0) && cx0 >= 0 && bx >= 0 && bx < 320 && by >= pop.y && by < pop.y + n * 36) pop.hl = (by - pop.y) / 36;   /* touch */
         cx0 = cx; cy0 = cy;
         if (fire[2]) pop.hl = (pop.hl + n - 1) % n;
         if (fire[3]) pop.hl = (pop.hl + 1) % n;
@@ -781,8 +792,7 @@ static int title_menu(vm_t *vm) {
 static bool confirm_dialog(vm_t *vm, const char *sheet) {
     size_t n; uint8_t *raw = arc_load(&vm->arc_bg, sheet, &n); if (!raw) return true;
     int rc = gcc_decode(raw, n, &dlg.im); free(raw); if (rc || dlg.im.w < 272 || dlg.im.h < 184) { if (!rc) { free(dlg.im.bgr); free(dlg.im.alpha); } return true; }
-    if (!pop_scene) { pop_scene = malloc(SW * SH * 3); pop_depth = malloc(SW * SH); }
-    dlg.x = (SW - 272) / 2; dlg.y = (SH - 112) / 2; dlg.sel = 0; dlg.on = true;
+    dlg.x = (320 - 272) / 2; dlg.y = (240 - 112) / 2;   /* bottom-screen coordinates */ dlg.sel = 0; dlg.on = true;
     int held[6] = {0}, result = -1, cx0 = -1, cy0 = -1; bool armed = false;
     while (!vm->quit && result < 0) {
         if (!frame(vm)) { vm->quit = true; break; }
@@ -790,7 +800,8 @@ static bool confirm_dialog(vm_t *vm, const char *sheet) {
         if (!armed) { armed = !any; continue; }
         bool fire[6]; for (int i = 0; i < 6; i++) { held[i] = k[i] ? held[i] + 1 : 0; fire[i] = held[i] == 1; }
         int cx, cy; plat_cursor(&cx, &cy, false);
-        if ((cx != cx0 || cy != cy0) && cx0 >= 0 && cy >= dlg.y + 58 && cy < dlg.y + 80) { if (cx >= dlg.x + 29 && cx < dlg.x + 125) dlg.sel = 0; if (cx >= dlg.x + 149 && cx < dlg.x + 245) dlg.sel = 1; }
+        int bx = cx / 2, by = cy / 2;
+        if ((cx != cx0 || cy != cy0) && cx0 >= 0 && by >= dlg.y + 58 && by < dlg.y + 80) { if (bx >= dlg.x + 29 && bx < dlg.x + 125) dlg.sel = 0; if (bx >= dlg.x + 149 && bx < dlg.x + 245) dlg.sel = 1; }
         cx0 = cx; cy0 = cy;
         if (fire[2] || fire[3] || fire[4] || fire[5]) dlg.sel ^= 1;
         if (fire[0]) result = dlg.sel == 0; else if (fire[1]) result = 0;
@@ -837,6 +848,10 @@ void sys_menu_exec(vm_t *vm) {
     SET_SYS16(vm, 21, vm->menu_n[m]);
     /* [EXE 0x4149e0 copies the item addresses into a table]; here it is the array sys32[7] points at, which the library walks with SYS 14 */
     uint32_t prev_run = vm->menu_run; vm->menu_run = m; int prev_loop = cur_loop; cur_loop = (int)m;
+    if (m != 100 && !snap_on && surf[0]) {          /* keep the story picture on the top screen while this menu runs (bottom screen) */
+        if (!snap_rgb) { snap_rgb = malloc(SW * SH * 3); snap_z = malloc(SW * SH); }
+        memcpy(snap_rgb, surf[0], SW * SH * 3); memcpy(snap_z, dpth[0], SW * SH); snap_on = true; }
+    else if (m != 100 && snap_on) snap_pending = false;   /* another menu right after: keep the same picture */
     for (uint32_t i = 0; i < vm->menu_n[m]; i++) wr32(vm->mem + ((SYS32(vm, 7) + 4 * i) & (MEM_SIZE - 1)), 0x80000000u | m << 8 | i);   /* stands in for the item-text pointer */
     vm_call_proc(vm, 8);
     if (getenv("AI5_TRACE")) plat_log("  MENUS %u enter: s106=%u s107=%u f4004=%u f4005=%u f4009=%u v16_18=%u v32_21=%u", m, SYS16(vm,106), SYS16(vm,107), FLAG(vm,4004), FLAG(vm,4005), FLAG(vm,4009), V16(vm,18), V32(vm,21));
@@ -856,4 +871,5 @@ void sys_menu_exec(vm_t *vm) {
         vm->steps = 0;
     }
     vm->menu_run = prev_run; cur_loop = prev_loop;
+    if (m != 100 && snap_on) snap_pending = true;   /* released at the next frame without a running crossfade (the scene is back by then) */
 }

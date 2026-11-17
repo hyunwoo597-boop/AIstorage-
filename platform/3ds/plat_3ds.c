@@ -140,9 +140,18 @@ static void draw_text(void) {
     memset(fb, 0, 320 * 240 * 3);
     for (int i = 0; i < 14; i++) g_row_item[i] = -1;
     const ui_text *u = sys_ui_text(g_vm);
+    const uint8_t *own = sys_bottom_rgb();   /* title menu / confirmation dialog, drawn by the engine for this screen */
+    if (own) { g_menu_mode = true; for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { const uint8_t *c = own + (y * 320 + x) * 3; put(fb, x, y, c[0], c[1], c[2]); } return; }
     g_menu_mode = (u->loop >= 0 && u->loop != 100) || (!u->dialogue_visible && !u->menu_visible);
-    if (g_menu_mode) return;            /* full-screen menus and the title: the picture is on the top screen only (bottom stays dark);
-                                           a touch still clicks the matching spot of the 640x480 screen */
+    if (g_menu_mode) {                  /* full-screen menus (system menu, save/load, galleries): shown here, half size, touchable;
+                                           the top screen keeps the story picture. No menu running (title animation, cut-ins): dark. */
+        if (u->loop < 0 || u->backlog) return;
+        const uint8_t *rgb = sys_live_rgb(); if (!rgb) return;
+        for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3;
+            for (int x = 0; x < 320; x++) { const uint8_t *a = r0 + x * 6, *b = r1 + x * 6;
+                put(fb, x, y, (a[0] + a[3] + b[0] + b[3]) >> 2, (a[1] + a[4] + b[1] + b[4]) >> 2, (a[2] + a[5] + b[2] + b[5]) >> 2); } }
+        return;
+    }
     int row = 0, x = 0;
     for (int l = 0; l < u->nlines && row < 13; l++) {
         const uint8_t *p = (const uint8_t *)u->line[l].sjis; int item = u->line[l].item, hot = item >= 0 && item == u->hover;
