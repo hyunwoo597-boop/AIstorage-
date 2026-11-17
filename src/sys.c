@@ -226,6 +226,9 @@ static const ui_text *bl_ui(void) {
     }
     while (blui.nlines < BL_ROWS) { blui.line[blui.nlines].sjis[0] = 0; blui.line[blui.nlines++].item = -1; }
     /* "Ｂ：戻る　Ａ：音声　↑↓：選択" in Shift-JIS */
+    if (font_flags & 1)   /* Korean font: "Ｂ：닫기　Ａ：음성　↑↓：선택" through the Korean patch's glyph slots (assets/kr/nonokr_map.json) */
+        strcpy(blui.line[blui.nlines].sjis, "\x82\x61\x81\x46\x90\x70\x8b\xa3\x81\x40\x82\x60\x81\x46\x99\x5e\x96\x64\x81\x40\x81\xaa\x81\xab\x81\x46\x96\x48\x9a\xf2");
+    else
     strcpy(blui.line[blui.nlines].sjis, "\x82\x61\x81\x46\x96\xdf\x82\xe9\x81\x40\x82\x60\x81\x46\x89\xb9\x90\xba\x81\x40\x81\xaa\x81\xab\x81\x46\x91\x49\x91\xf0");
     blui.line[blui.nlines++].item = -1;
     return &blui;
