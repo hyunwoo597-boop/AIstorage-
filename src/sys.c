@@ -34,6 +34,7 @@ static uint8_t *screen_out;
 static int shake_x, shake_y;          /* [EXE UTIL 0 -> 0x40ffa0/0x41cf70] display offset used for screen shakes */
 static int fx_left;                   /* SYS 10,1: frames left of the fade from the snapshot in surface 11 to the live screen */
 static const uint8_t *compose(void);
+static int cur_loop = -1;              /* MENUS loop being run (100 = story), -1 none */
 /* title menu popup (UTIL 10,1) drawn over the scene; see title_menu() */
 static struct { bool on; int x, y, n, hl, pressed, w; uint8_t *rgb, *a; } pop;
 static struct { bool on; int x, y, sel; gcc_image im; } dlg;   /* confirmation dialog (SYS 28) */
@@ -64,8 +65,99 @@ static void pop_draw(uint8_t *out, int OW, int OH) {   /* item i, state st (0 no
 static uint8_t bottom_buf[320 * 240 * 3];
 static uint8_t *snap_rgb, *snap_z; static bool snap_on, snap_pending;
 const uint8_t *sys_live_rgb(void) { return surf[0]; }
+/* System menu without "hide window" and "settings" (LIBLARY.LIB, LIBDEF 6): constant patches, applied only where the
+   bytes match the original (Japanese and Korean releases share the layout; tools/patch_sysmenu.py has the same list). */
+void sys_fix_script(const char *name, uint8_t *code, size_t n) {
+    if (strcasecmp(name, "LIBLARY.LIB")) return;
+    static const struct { uint16_t addr; uint8_t off, old, now; } fx[] = {
+        {0x1d7e, 3, 0, 0x63}, {0x1e16, 3, 1, 0x63}, {0x22ad, 3, 0, 0x63}, {0x22cc, 3, 1, 0x63}, {0x23d6, 3, 0, 2}, {0x240b, 3, 0, 2},
+        {0x2580, 2, 0, 2}, {0x20f4, 4, 7, 0x63}, {0x215d, 4, 7, 0x63}, {0x212c, 4, 0, 0x63} };
+    int done = 0;
+    for (size_t i = 0; i < sizeof fx / sizeof fx[0]; i++) { size_t a = 4 + fx[i].addr + fx[i].off; if (a < n && code[a] == fx[i].old) { code[a] = fx[i].now; done++; } }
+    plat_log("system menu patch: %d", done);
+}
+/* ---- bottom-screen layouts for the full-screen menus (picked by the hit table the library loaded last) ---- */
+static char cur_a6[24];
+static int slot_page;
+static char slot_text[10][96];                 /* text the save/load screen printed into each slot row */
+static void slot_capture(vm_t *vm, const char *sj) {
+    if (cur_loop < 0 || cur_loop == 100) return;
+    int x = SYS16(vm, 9), y = SYS16(vm, 10); if (x < 40 || x >= 556 || y < 52 || y >= 444) return;
+    int r = (y - 52) / 40; if (r < 0 || r > 9) return;
+    if (x < 70) slot_text[r][0] = 0;           /* a row is (re)drawn from its left edge */
+    size_t l = strlen(slot_text[r]); if (l && x >= 200) { if (l + 2 < sizeof slot_text[r]) { strcat(slot_text[r], " "); l++; } }
+    snprintf(slot_text[r] + l, sizeof slot_text[r] - l, "%s", sj);
+}
+typedef struct { int sx, sy, w, h, dx, dy; } lay_rect;
+static const lay_rect menu_lay[] = { {436, 16, 192, 36, 64, 4}, {436, 64, 192, 36, 64, 43}, {436, 112, 192, 36, 64, 82},
+                                     {20, 388, 192, 36, 64, 121}, {20, 436, 192, 36, 64, 160}, {436, 436, 192, 36, 64, 200} };
+static int bottom_kind(void) {               /* 1 system menu, 2 save/load list, 3 save/memo dialog, 4 load dialog */
+    if (cur_loop < 0 || cur_loop == 100) return 0;
+    if (!strcasecmp(cur_a6, "menu.a6")) return 1;
+    if (!strcasecmp(cur_a6, "sl.a6")) return 2;
+    if (!strcasecmp(cur_a6, "save_dlg.a6") || !strcasecmp(cur_a6, "memo_dlg.a6")) return 3;
+    if (!strcasecmp(cur_a6, "load_dlg.a6")) return 4;
+    return 0;
+}
+static void dim_bg(void) {
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { const uint8_t *a = surf[0] + ((y * 2) * SW + x * 2) * 3; uint8_t *d = bottom_buf + (y * 320 + x) * 3;
+        for (int k = 0; k < 3; k++) d[k] = a[k] / 5; }
+}
+static void blit_fit(int sx, int sy, int w, int h, int *ox, int *oy, int *ow, int *oh) {   /* crop of the screen, scaled down to fit, centred */
+    int dw = w, dh = h; if (dw > 316) { dh = dh * 316 / dw; dw = 316; } if (dh > 236) { dw = dw * 236 / dh; dh = 236; }
+    *ox = (320 - dw) / 2; *oy = (240 - dh) / 2; *ow = dw; *oh = dh;
+    for (int y = 0; y < dh; y++) for (int x = 0; x < dw; x++) { int fx = sx + x * w / dw, fy = sy + y * h / dh; if (fx >= SW || fy >= SH) continue;
+        memcpy(bottom_buf + ((*oy + y) * 320 + *ox + x) * 3, surf[0] + (fy * SW + fx) * 3, 3); }
+}
+static void bt_text(int x, int y, const char *sj, int r, int g, int b) {   /* font16 text into bottom_buf (Korean font: half-width word spaces) */
+    const uint8_t *p = (const uint8_t *)sj;
+    while (*p && x < 320) { int half; uint32_t idx = sys_glyph_index(&p, &half); int w = half ? 8 : 16;
+        if (idx == 95 && (font_flags & 1)) { x += 8; continue; }
+        if (font && idx < font_cells) { const uint8_t *gl = font + idx * 128;
+            for (int j = 0; j < 16; j++) for (int i = 0; i < w; i++) { int tx = x + i, ty = y + j; if (tx < 0 || tx >= 320 || ty < 0 || ty >= 240) continue;
+                int a = ((gl[(j * 16 + i) >> 1] >> ((i & 1) ? 0 : 4)) & 15) * 17; if (!a) continue; uint8_t *d = bottom_buf + (ty * 320 + tx) * 3;
+                d[0] = (d[0] * (255 - a) + r * a) / 255; d[1] = (d[1] * (255 - a) + g * a) / 255; d[2] = (d[2] * (255 - a) + b * a) / 255; } }
+        x += w; }
+}
+static void fill_b(int x0, int y0, int w, int h, int r, int g, int b) { for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) if (x >= 0 && y >= 0 && x < 320 && y < 240) { uint8_t *d = bottom_buf + (y * 320 + x) * 3; d[0] = r; d[1] = g; d[2] = b; } }
+static int fit_ox, fit_oy, fit_w, fit_h, fit_sx, fit_sy, fit_sw, fit_sh;
+static const uint8_t *menu_bottom(void) {
+    int k = bottom_kind(); if (!k || !surf[0]) return NULL;
+    dim_bg();
+    if (k == 1) for (size_t i = 0; i < sizeof menu_lay / sizeof menu_lay[0]; i++) { const lay_rect *L = &menu_lay[i];
+        for (int y = 0; y < L->h; y++) memcpy(bottom_buf + ((L->dy + y) * 320 + L->dx) * 3, surf[0] + ((L->sy + y) * SW + L->sx) * 3, L->w * 3); }
+    if (k == 2) {                                /* slot list as text rows (22 px) + page tabs */
+        int cx, cy; plat_cursor(&cx, &cy, false); int hot = (cx >= 40 && cx < 556 && cy >= 52 && cy < 444) ? (cy - 52) / 40 : -1;
+        fill_b(0, 0, 320, 240, 24, 16, 10);
+        for (int r = 0; r < 10; r++) { int y = r * 22, sy = 52 + 40 * r + 5;   /* the row's number/date/"unused" are images: crop them 1:1 */
+            for (int yy = 0; yy < 22; yy++) memcpy(bottom_buf + ((y + yy) * 320 + 2) * 3, surf[0] + ((sy + yy) * SW + 44) * 3, 316 * 3);
+            if (r == hot) { fill_b(0, y, 320, 2, 239, 0, 95); fill_b(0, y + 20, 320, 2, 239, 0, 95); fill_b(0, y, 2, 22, 239, 0, 95); fill_b(318, y, 2, 22, 239, 0, 95); } }
+        /* page tabs: "1쪽".."4쪽", "닫기" through the Korean glyph slots; digits / "X" with the Japanese font */
+        static const char *kr[5] = { "1\x99\xf9", "2\x99\xf9", "3\x99\xf9", "4\x99\xf9", "\x90\x70\x8b\xa3" }, *jp[5] = { "1", "2", "3", "4", "X" };
+        for (int t = 0; t < 5; t++) { int x = t * 64; const char *l = (font_flags & 1) ? kr[t] : jp[t]; int w = (int)strlen(l) == 1 ? 8 : (t < 4 ? 24 : 32);
+            bool on = false; fill_b(x + 2, 222, 60, 17, on ? 255 : 230, on ? 200 : 220, on ? 120 : 190);
+            bt_text(x + 32 - w / 2, 223, l, 40, 20, 10); }
+    }
+    if (k == 3) { fit_sx = 128; fit_sy = 188; fit_sw = 384; fit_sh = 104; }
+    if (k == 4) { fit_sx = 184; fit_sy = 184; fit_sw = 272; fit_sh = 112; }
+    if (k >= 3) blit_fit(fit_sx, fit_sy, fit_sw, fit_sh, &fit_ox, &fit_oy, &fit_w, &fit_h);
+    return bottom_buf;
+}
+bool sys_bottom_map(int bx, int by, int *x, int *y) {
+    if (pop.on || dlg.on) { *x = bx * 2; *y = by * 2; return true; }
+    switch (bottom_kind()) {
+    case 1: for (size_t i = 0; i < sizeof menu_lay / sizeof menu_lay[0]; i++) { const lay_rect *L = &menu_lay[i];
+                if (bx >= L->dx && bx < L->dx + L->w && by >= L->dy && by < L->dy + L->h) { *x = L->sx + bx - L->dx; *y = L->sy + by - L->dy; return true; } }
+            *x = 320; *y = 240; return true;            /* empty space: no button */
+    case 2: if (by < 220) { *x = 298; *y = 52 + (by / 22) * 40 + 16; return true; }
+            { int t = bx / 64; *x = 586; *y = t < 4 ? 88 + t * 72 : 396; return true; }
+    case 3: case 4: if (fit_w <= 0) break;
+            *x = fit_sx + (bx - fit_ox) * fit_sw / fit_w; *y = fit_sy + (by - fit_oy) * fit_sh / fit_h; return true;
+    }
+    *x = bx * 2; *y = by * 2; return false;
+}
 const uint8_t *sys_bottom_rgb(void) {
-    if (!pop.on && !dlg.on) return NULL;
+    if (!pop.on && !dlg.on) return menu_bottom();
     for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { const uint8_t *a = surf[0] + ((y * 2) * SW + x * 2) * 3; uint8_t *d = bottom_buf + (y * 320 + x) * 3;
         for (int k = 0; k < 3; k++) d[k] = a[k] / 5; }
     pop_draw(bottom_buf, 320, 240); return bottom_buf;
@@ -210,7 +302,7 @@ uint32_t sys_glyph_index(const uint8_t **pp, int *half) {
 int sys_font_flags(void) { return font_flags; }
 const uint8_t *sys_font(uint32_t *cells) { if (cells) *cells = font_cells; return font; }
 /* text drawn into the dialogue/choice strip (surface 6, rows 0..87) is also kept as strings for platforms that re-render it */
-static ui_text ui; static int ui_last_y = -1; static int cur_loop = -1;
+static ui_text ui; static int ui_last_y = -1;
 /* ---- message log  [EXE SYS 19: 0x405ec0 / 0x41eaf0; viewer 0x42bf40]
    66 entries of 0x800 bytes. While sys16[2] bit 0x10 (logging on) is set, the first character printed opens an entry
    (bit 0x20 = entry open), text is appended, and SYS 19,2 closes it. 0 clear, 3 count -> v32[18], 4 n -> text "pointer",
@@ -341,6 +433,7 @@ void sys_text(vm_t *vm, const char *sj, bool zenkaku) {
         big.y[big.n - 1] = y + 1;                       /* ...but consecutive text without a cursor move continues this one */
         return;
     }
+    if (!(SYS16(vm, 2) & 0x800)) slot_capture(vm, sj);
     const uint8_t *p = (const uint8_t *)sj;
     while (*p) {
         const uint8_t *start = p; int half; uint32_t idx = sys_glyph_index(&p, &half);
@@ -580,9 +673,11 @@ void sys_call(vm_t *vm, uint32_t fn) {
     case 8:
         if (sub == 0) {                /* [EXE 0x41e2b0 partly read] load a DATA.ARC file (LZSS) to the address in p2 */
             size_t n; uint8_t *buf = arc_load_lzss(&vm->arc_data, p[1].str, &n); if (!buf) { plat_log("missing data %s", p[1].str); return; }
+            { size_t l = strlen(p[1].str); if (l > 3 && !strcasecmp(p[1].str + l - 3, ".a6")) snprintf(cur_a6, sizeof cur_a6, "%s", p[1].str); }
             uint32_t addr = p[2].val & (MEM_SIZE - 1); if (addr + n <= MEM_SIZE) memcpy(vm->mem + addr, buf, n); free(buf); return; }
         if (sub == 2) {                /* [guess] load library script and run its top level (defines lib procs) */
             size_t n; uint8_t *buf = arc_load_lzss(&vm->arc_mes, p[1].str, &n); if (!buf) { plat_log("missing %s", p[1].str); return; }
+            sys_fix_script(p[1].str, buf, n);
             const uint8_t *smes = vm->mes; uint32_t sip = vm->ip, sbase = vm->base, snl = vm->nlabels; const uint32_t *sl = vm->labels;
             vm->mes = buf; vm->nlabels = rd32(buf); vm->labels = (const uint32_t *)(buf + 4); vm->base = 4 + 4 * vm->nlabels; vm->ip = 0;
             vm_run_block(vm);
@@ -848,6 +943,7 @@ void sys_menu_exec(vm_t *vm) {
     SET_SYS16(vm, 21, vm->menu_n[m]);
     /* [EXE 0x4149e0 copies the item addresses into a table]; here it is the array sys32[7] points at, which the library walks with SYS 14 */
     uint32_t prev_run = vm->menu_run; vm->menu_run = m; int prev_loop = cur_loop; cur_loop = (int)m;
+    if (m != 100) memset(slot_text, 0, sizeof slot_text);
     if (m != 100 && !snap_on && surf[0]) {          /* keep the story picture on the top screen while this menu runs (bottom screen) */
         if (!snap_rgb) { snap_rgb = malloc(SW * SH * 3); snap_z = malloc(SW * SH); }
         memcpy(snap_rgb, surf[0], SW * SH * 3); memcpy(snap_z, dpth[0], SW * SH); snap_on = true; }

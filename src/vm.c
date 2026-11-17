@@ -110,6 +110,7 @@ static void run_block_inner(vm_t *vm) {
             const uint8_t *smes = vm->mes; uint32_t sip = vm->ip, sbase = vm->base, snl = vm->nlabels; const uint32_t *sl = vm->labels;
             size_t n; uint8_t *buf = arc_load_lzss(&vm->arc_mes, vm->params[0].str, &n);
             if (!buf) { plat_log("CALL: missing %s", vm->params[0].str); break; }
+            sys_fix_script(vm->params[0].str, buf, n);
             set_mes(vm, buf); vm->ip = 0; run_block(vm);
             if (vm->want_goto || vm->quit) return;   /* buffer leaks on purpose: procs may point into it */
             vm->mes = smes; vm->ip = sip; vm->base = sbase; vm->nlabels = snl; vm->labels = sl; break; }

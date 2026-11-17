@@ -51,7 +51,7 @@ static void pump(void) {
     if (t) { hidTouchRead(&g_touch);
         if (!g_touching) {               /* touch began: point at the choice under the finger, confirm from the next frame on */
             g_touch_armed = false;
-            if (g_menu_mode) { g_cx = g_touch.px * 2; g_cy = g_touch.py * 2; }          /* touch = click at that spot of the 640x480 screen */
+            if (g_menu_mode) { int x, y; sys_bottom_map(g_touch.px, g_touch.py, &x, &y); g_cx = x; g_cy = y; }   /* touch -> the matching spot of the 640x480 screen */
             else { int row = (g_touch.py - 8) / 18;
                 if (row >= 0 && row < 14 && g_row_item[row] >= 0) { g_cx = 100; g_cy = 384 + g_row_item[row] * 18 + 9; } }
         } else g_touch_armed = true; }
