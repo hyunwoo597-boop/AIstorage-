@@ -1,17 +1,16 @@
-# Bottom-screen "다음 (터치)" hint with an A-button mark (dialogue screens). Writes platform/3ds/ui_icons.c:
+# Bottom-screen "다음 (터치)" hint with the text 'A버튼' (dialogue screens). Writes platform/3ds/ui_icons.c:
 # RGBA bytes of NEXT_W x NEXT_H, drawn at the bottom-right corner.
 import sys
 from PIL import Image, ImageDraw, ImageFont
 out = sys.argv[1]
-W, H, S = 92, 44, 4
+W, H, S = 104, 44, 4
 im = Image.new('RGBA', (W * S, H * S), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
 kr = '/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc'; krb = '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
 f1 = ImageFont.truetype(kr, 15 * S, index=1); f2 = ImageFont.truetype(kr, 13 * S, index=1)
 def ctext(t, f, cx, y): w = d.textlength(t, font=f); d.text((cx - w / 2, y), t, font=f, fill=(255, 255, 255, 255))
 ctext('다음', f1, 28 * S, 1 * S); ctext('(터치)', f2, 28 * S, 21 * S)
-cx, cy, r = 72 * S, 22 * S, 16 * S                       # pink A button, as on the start screen
-d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(239, 0, 95, 255), outline=(255, 255, 255, 255), width=2 * S)
-d.text((cx, cy + S), 'A', font=ImageFont.truetype(krb, 20 * S, index=1), fill=(255, 255, 255, 255), anchor='mm')
+f3 = ImageFont.truetype(kr, 15 * S, index=1)              # plain text instead of a button mark
+d.text((76 * S, 22 * S), 'A버튼', font=f3, fill=(255, 255, 255, 255), anchor='mm')
 im = im.resize((W, H), Image.LANCZOS); im.save(out + '.png')
 px = im.tobytes()
 with open(out, 'w') as f:
