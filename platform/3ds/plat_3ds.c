@@ -147,6 +147,12 @@ static void draw_text(void) {
         /* a 640-wide line that was wrapped by the engine continues on the same paragraph; anything else starts a new row */
         if (item >= 0 || strlen(u->line[l].sjis) < 72) { x = 0; row++; }
     }
+    if (u->dialogue_visible && !u->menu_visible && !u->backlog) {    /* "다음 (터치)" hint, dialogue only */
+        extern const int next_hint_w, next_hint_h; extern const uint8_t next_hint[];
+        int ox = 320 - next_hint_w - 2, oy = 240 - next_hint_h - 2;
+        for (int y = 0; y < next_hint_h; y++) for (int xx = 0; xx < next_hint_w; xx++) { int a = next_hint[y * next_hint_w + xx]; if (!a) continue;
+            u8 *p = fb + ((ox + xx) * 240 + (239 - (oy + y))) * 3; for (int c = 0; c < 3; c++) p[c] = (p[c] * (255 - a) + 255 * a) / 255; }
+    }
 }
 bool plat_frame(const uint8_t *rgb, int w, int h) {
     (void)rgb; (void)w; (void)h;

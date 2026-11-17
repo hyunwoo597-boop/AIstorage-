@@ -220,3 +220,4 @@
 - 3DS판은 게임 전에 입체 시작 화면을 띄운다: 위 화면 = MPO 좌/우 그림(레터박스 제거 후 400x240), 아래 화면 = "A 버튼 시작 / (화면을 터치해서 시작)".
 - `tools/mksplash.py assets/splash/HNI_9001.MPO <lzss_enc> platform/3ds/splash_data.c` 로 다시 만든다(RGB565 + 엔진 LZSS, 3dsx 안에 들어감).
 - A 또는 터치로 넘어가고, 그 입력은 게임에 전달되지 않는다. START+SELECT = 종료.
+- (19차) 대사 화면(선택지·로그 제외) 하단 오른쪽에 "다음 (터치)" 손가락 아이콘. `tools/mkicons.py platform/3ds/ui_icons.c` 로 생성.

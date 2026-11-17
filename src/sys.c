@@ -218,7 +218,7 @@ static void bl_fix_top(void) {
 }
 static ui_text blui;
 static const ui_text *bl_ui(void) {
-    int n = bl_count(); blui.nlines = 0; blui.dialogue_visible = true; blui.menu_visible = false; blui.loop = 100; blui.hover = blv.sel;
+    int n = bl_count(); blui.nlines = 0; blui.dialogue_visible = true; blui.menu_visible = false; blui.loop = 100; blui.hover = blv.sel; blui.backlog = true;
     static char rows[24][BL_COLS + 2];
     for (int e = blv.top; e < n && blui.nlines < BL_ROWS; e++) {
         int r = bl_wrap(bl[e].t, rows, 24);
@@ -235,6 +235,7 @@ static const ui_text *bl_ui(void) {
 }
 const ui_text *sys_ui_text(vm_t *vm) {
     if (blv.on) return bl_ui();
+    ui.backlog = false;
     ui.dialogue_visible = win[0].used && win[0].visible; ui.menu_visible = win[1].used && win[1].visible; ui.loop = cur_loop;
     ui.hover = (ui.menu_visible && V32(vm, 9) < 16) ? (int)V32(vm, 9) : -1;     /* v32[9] is the library's "highlighted choice" variable */
     for (int i = 0; i < ui.nlines; i++) ui.line[i].item = ui.menu_visible ? i : -1;
