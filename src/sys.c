@@ -683,7 +683,14 @@ void sys_menu_exec(vm_t *vm) {
     while (!(SYS16(vm, 2) & 0xC) && !vm->quit && !vm->want_goto) {
         vm_call_proc(vm, 9);
         if (SYS16(vm, 2) & 0xC) break;
-        for (int k = 0; k < 6; k++) if (plat_key(k)) { if (getenv("AI5_TRACE")) plat_log("  key %d -> PROC %d", k, 2 + k); vm_call_proc(vm, 2 + k); break; }
+        /* [EXE 0x414bb4..0x414c83] after a direction key the original calls a short wait (0x14) with that key; at 60 fps a held
+           D-pad would otherwise step every frame, so directions fire once, then repeat after ~0.4 s every ~0.1 s */
+        static int dir_held[6];
+        for (int k = 0; k < 6; k++) {
+            bool down = plat_key(k);
+            if (k >= 2) { if (!down) { dir_held[k] = 0; continue; } int h = ++dir_held[k]; if (!(h == 1 || (h > 24 && (h - 24) % 6 == 0))) continue; }
+            else if (!down) continue;
+            if (getenv("AI5_TRACE")) plat_log("  key %d -> PROC %d", k, 2 + k); vm_call_proc(vm, 2 + k); break; }
         if (getenv("AI5_TRACE")) plat_log("  tick flags=%04x", SYS16(vm, 2));
         if (!frame(vm)) vm->quit = true;
         vm->steps = 0;
