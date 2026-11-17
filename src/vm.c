@@ -78,9 +78,13 @@ static void call_proc(vm_t *vm, vm_proc *p, const char *what, uint32_t no) {
     vm->mes = smes; vm->ip = sip; vm->base = sbase; vm->nlabels = snl; vm->labels = sl;
 }
 /* executes statements until END (returns) */
-static void run_block(vm_t *vm) {
+static void run_block_inner(vm_t *vm);
+static void run_block(vm_t *vm) { vm->depth++; run_block_inner(vm); vm->depth--; }
+static void run_block_inner(vm_t *vm) {
     uint8_t *m = vm->mem;
     while (!vm->quit && !vm->want_goto) {
+        /* [EXE 0x429590] sys16[2] bit 8 = unwind: nested blocks return, the outermost clears it and restarts its script */
+        if (SYS16(vm, 2) & 8) { if (vm->depth > 1) return; SET_SYS16(vm, 2, SYS16(vm, 2) & ~8); vm->ip = 0; }
         if (++vm->steps > 30000000ull) { plat_log("watchdog: stuck at %s:%x", vm->mes_name, vm->ip); vm->quit = true; return; }
         uint8_t op = f8(vm); uint32_t i, v;
         switch (op) {
@@ -115,14 +119,14 @@ static void run_block(vm_t *vm) {
         case 0x14: v = vm_expr(vm); i = f32(vm); vm->procs[v & 255].code = vm->mes; vm->procs[v & 255].ip = vm->ip; vm->ip = i; break;
         case 0x15: read_params(vm); sys_menu_exec(vm); break;
         case 0x16: i = f8(vm); do { SET_V32(vm, i, vm_expr(vm)); i++; } while (f8(vm)); break;
-        case 0x17: vm->msgid = f32(vm); break;
-        case 0x18: v = vm_expr(vm); if (v < vm->nlabels) vm->ip = rd32((const uint8_t *)vm->labels + 4 * v); else plat_log("JMPLBL %u out of range", v); break;
+        case 0x17: vm->msgid = f32(vm); sys_msgid(vm, vm->msgid); break;   /* [EXE 0x411eb0] save snapshot point */
+        case 0x18: v = vm_expr(vm); if (getenv("AI5_TRACE")) plat_log("  JMPLBL %u (of %u) in %s", v, vm->nlabels, vm->mes_name); if (v < vm->nlabels) vm->ip = rd32((const uint8_t *)vm->labels + 4 * v); else plat_log("JMPLBL %u out of range", v); break;
         case 0x19: if (vm->procsp < 16) memcpy(vm->procstack[vm->procsp++], vm->procs, sizeof vm->procs); break;
         case 0x1A: if (vm->procsp > 0) memcpy(vm->procs, vm->procstack[--vm->procsp], sizeof vm->procs); break;
         case 0x1B: read_params(vm); sys_op1b(vm); break;
         case 0x1C: v = vm_expr(vm); i = f32(vm); vm->lib[v & 255].code = vm->mes; vm->lib[v & 255].ip = vm->ip; vm->ip = i; break;
         case 0x1D: read_params(vm); v = vm->params[0].val; call_proc(vm, &vm->lib[v & 255], "lib", v); break;
-        case 0x1F: vm->ip += 4; break;
+        case 0x1F: vm->ip += 4; break;               /* [EXE 0x412020] LABEL: marker only */
         default: plat_log("bad opcode %02x at %s:%x", op, vm->mes_name, vm->ip - 1); vm->quit = true; return;
         }
     }
@@ -131,7 +135,9 @@ bool vm_load_mes(vm_t *vm, const char *name) {
     size_t n; uint8_t *buf = arc_load_lzss(&vm->arc_mes, name, &n);
     if (!buf) { plat_log("missing script %s", name); return false; }
     set_mes(vm, buf); vm->mes_len = n; vm->ip = 0;
-    strncpy(vm->mes_name, name, sizeof vm->mes_name - 1);
+    if (name != vm->mes_name) { strncpy(vm->mes_name, name, sizeof vm->mes_name - 1); vm->mes_name[sizeof vm->mes_name - 1] = 0; }
+    /* [EXE 0x4296e0] the current script's name lives at the start of VM memory, so it travels with save files */
+    if ((const uint8_t *)name != vm->mem) { memset(vm->mem, 0, OFF_FLAG); strncpy((char *)vm->mem, name, OFF_FLAG - 1); }
     return true;
 }
 bool vm_init(vm_t *vm) {

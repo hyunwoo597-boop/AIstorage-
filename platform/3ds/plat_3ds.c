@@ -5,6 +5,8 @@
  * NOTE: written without access to hardware or the toolchain; first build may need fixes. */
 #include <3ds.h>
 #include <stdio.h>
+#include <time.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -17,6 +19,7 @@ static vm_t *g_vm;
 static u32 g_held, g_down; static touchPosition g_touch; static bool g_touching, g_touch_armed;
 static int g_cx = 320, g_cy = 100;
 static int g_row_item[14];              /* bottom-screen text row -> choice index (-1 none) */
+static bool g_menu_mode;                /* no text window open (save/load/settings screens): bottom screen mirrors the scene */
 
 /* ---- files: keep a few archives open ---- */
 static struct { char name[24]; FILE *f; } g_open[6];
@@ -42,12 +45,23 @@ static void pump(void) {
     bool t = (g_held & KEY_TOUCH) != 0;
     if (t) { hidTouchRead(&g_touch);
         if (!g_touching) {               /* touch began: point at the choice under the finger, confirm from the next frame on */
-            g_touch_armed = false; int row = (g_touch.py - 8) / 18;
-            if (row >= 0 && row < 14 && g_row_item[row] >= 0) { g_cx = 100; g_cy = 384 + g_row_item[row] * 18 + 9; }
+            g_touch_armed = false;
+            if (g_menu_mode) { g_cx = g_touch.px * 2; g_cy = g_touch.py * 2; }          /* touch = click at that spot of the 640x480 screen */
+            else { int row = (g_touch.py - 8) / 18;
+                if (row >= 0 && row < 14 && g_row_item[row] >= 0) { g_cx = 100; g_cy = 384 + g_row_item[row] * 18 + 9; } }
         } else g_touch_armed = true; }
     else g_touch_armed = false;
     g_touching = t;
 }
+void plat_datetime(int o[6]) { time_t t = time(NULL); struct tm *m = localtime(&t); o[0] = m->tm_year + 1900; o[1] = m->tm_mon + 1; o[2] = m->tm_mday; o[3] = m->tm_hour; o[4] = m->tm_min; o[5] = m->tm_sec; }
+bool plat_save_read(const char *name, void *buf, size_t len) {
+    char p[96]; snprintf(p, sizeof p, DATA_DIR "save/%s", name); FILE *f = fopen(p, "rb"); if (!f) return false;
+    bool ok = fread(buf, 1, len, f) == len; fclose(f); return ok; }
+bool plat_save_write(const char *name, const void *buf, size_t len) {
+    mkdir(DATA_DIR "save", 0777);
+    char p[96]; snprintf(p, sizeof p, DATA_DIR "save/%s", name); FILE *f = fopen(p, "wb");
+    if (!f) { plat_log("cannot write %s", p); return false; }
+    bool ok = fwrite(buf, 1, len, f) == len; fclose(f); if (!ok) plat_log("write failed %s", p); return ok; }
 void plat_poll(void) { pump(); }
 const char *plat_goto_override(void) { return NULL; }   /* test hook used by the headless build only */
 void plat_cursor(int *x, int *y, bool set) { if (set) { g_cx = *x; g_cy = *y; } else { *x = g_cx; *y = g_cy; } }
@@ -83,7 +97,15 @@ static void draw_text(void) {
     u8 *fb = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
     memset(fb, 0, 320 * 240 * 3);
     for (int i = 0; i < 14; i++) g_row_item[i] = -1;
-    const ui_text *u = sys_ui_text(g_vm); if (!u->dialogue_visible && !u->menu_visible) return;
+    const ui_text *u = sys_ui_text(g_vm);
+    g_menu_mode = (u->loop >= 0 && u->loop != 100) || (!u->dialogue_visible && !u->menu_visible);
+    if (g_menu_mode) {                  /* full-screen menus: show the whole screen here too so it can be touched */
+        const uint8_t *rgb = sys_scene_rgb(); if (!rgb) return;
+        for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3;
+            for (int x = 0; x < 320; x++) { const uint8_t *a = r0 + x * 6, *b = r1 + x * 6;
+                put(fb, x, y, (a[0] + a[3] + b[0] + b[3]) >> 2, (a[1] + a[4] + b[1] + b[4]) >> 2, (a[2] + a[5] + b[2] + b[5]) >> 2); } }
+        return;
+    }
     int row = 0, x = 0;
     for (int l = 0; l < u->nlines && row < 13; l++) {
         const uint8_t *p = (const uint8_t *)u->line[l].sjis; int item = u->line[l].item, hot = item >= 0 && item == u->hover;

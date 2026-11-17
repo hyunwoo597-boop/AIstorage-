@@ -54,12 +54,19 @@ static uint8_t seen[32][16];
 
 
 static void anim_reset(void);
+static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy);
 static void sys_init(vm_t *vm) {
     if (surf[0]) return;
     for (int i = 0; i < NSURF; i++) { surf[i] = calloc(1, SW * SH * 3); amask[i] = calloc(1, SW * SH); sw[i] = SW; sh[i] = SH; }
     screen_out = calloc(1, SW * SH * 3);
     anim_reset();
-    for (int i = 0; i < 8; i++) SET_SYS32(vm, i, 0x40000 + i * 0x20000);   /* [guess] file areas the scripts address through sys32[n] */
+    for (int i = 1; i < 8; i++) SET_SYS32(vm, i, 0x40000 + i * 0x20000);   /* [guess] file areas the scripts address through sys32[n] */
+    SET_SYS16(vm, 0, 0x1310);          /* [EXE 0x4057b8] base of the save-list area (45 bytes per slot) */
+    SET_SYS32(vm, 0, 0);               /* [EXE 0x4057ce: real memory base; here offsets] sys32[0] is the memory base: scripts pass sys32[0]+offset as a pointer */
+    { /* [EXE 0x4070eb] the engine itself loads the menu/window parts sheet into surface 7 at start-up */
+      uint16_t r[4] = { SYS16(vm, 17), SYS16(vm, 18), SYS16(vm, 19), SYS16(vm, 20) };
+      load_image(vm, "mwaku.gcc", 7, -1, -1);
+      SET_SYS16(vm, 17, r[0]); SET_SYS16(vm, 18, r[1]); SET_SYS16(vm, 19, r[2]); SET_SYS16(vm, 20, r[3]); }
     size_t n; uint8_t *f = plat_read_file("font16.bin", &n);
     if (f && n > 12 && !memcmp(f, "AF16", 4)) { font_cells = rd32(f + 8); font = f + 12; } else plat_log("font16.bin missing");
 }
@@ -136,7 +143,7 @@ uint32_t sys_glyph_index(const uint8_t **pp, int *half) {
 }
 const uint8_t *sys_font(uint32_t *cells) { if (cells) *cells = font_cells; return font; }
 /* text drawn into the dialogue/choice strip (surface 6, rows 0..87) is also kept as strings for platforms that re-render it */
-static ui_text ui; static int ui_last_y = -1;
+static ui_text ui; static int ui_last_y = -1; static int cur_loop = -1;
 static void ui_capture(vm_t *vm, const uint8_t *from, const uint8_t *to) {
     if (SYS16(vm, 1) != 6 || SYS16(vm, 10) >= 88) return;
     int y = SYS16(vm, 10);
@@ -145,7 +152,7 @@ static void ui_capture(vm_t *vm, const uint8_t *from, const uint8_t *to) {
     if (n + add < sizeof ui.line[0].sjis) { memcpy(d + n, from, add); d[n + add] = 0; }
 }
 const ui_text *sys_ui_text(vm_t *vm) {
-    ui.dialogue_visible = win[0].used && win[0].visible; ui.menu_visible = win[1].used && win[1].visible;
+    ui.dialogue_visible = win[0].used && win[0].visible; ui.menu_visible = win[1].used && win[1].visible; ui.loop = cur_loop;
     ui.hover = (ui.menu_visible && V32(vm, 9) < 16) ? (int)V32(vm, 9) : -1;     /* v32[9] is the library's "highlighted choice" variable */
     for (int i = 0; i < ui.nlines; i++) ui.line[i].item = ui.menu_visible ? i : -1;
     return &ui;
@@ -253,6 +260,83 @@ static void snd_cmd(vm_t *vm, int kind, int nslots, uint32_t sub, const char *na
     }
     SET_V32(vm, 18, r);
 }
+/* ---- saves [EXE SYS 4 -> 0x406160 -> 0x41dc30]. A file is VM memory 0x0000..0x1FFF (script name, flags, variables).
+   FLAG00 holds global data (seen flags, save-list info); FLAG01.. are slots. ---- */
+#define SAVE_SIZE 0x2000
+static void save_name(char *b, uint32_t slot) { snprintf(b, 16, "FLAG%02u.dat", slot % 100); }
+static char snap_name[OFF_FLAG];      /* filled at MSGID (see sys_msgid) */
+static void save_cmd(vm_t *vm, uint32_t sub, uint32_t slot, uint32_t start, uint32_t count) {
+    char name[16]; save_name(name, slot); uint8_t *m = vm->mem;
+    static uint8_t tmp[SAVE_SIZE];
+    switch (sub) {
+    case 0:                            /* load everything and restart the saved script (it resumes via its own label variable) */
+        if (!plat_save_read(name, tmp, SAVE_SIZE)) { plat_log("load: %s not found", name); return; }
+        memcpy(m, tmp, SAVE_SIZE); m[OFF_FLAG - 1] = 0;
+        SET_SYS16(vm, 2, SYS16(vm, 2) | 8);                               /* leaves any running menu loop */
+        snprintf(vm->goto_name, sizeof vm->goto_name, "%s", (char *)m); vm->want_goto = true;
+        return;
+    case 1: plat_save_write(name, m, SAVE_SIZE);                         /* save everything */
+        /* port change: the original merges flags into FLAG00 only when returning to the title (SYS 4,2). On a handheld the game is
+           usually closed with HOME/power, so the merge is done on every slot save; otherwise "Load" (flag 4008) stays disabled */
+        if (slot != 0) save_cmd(vm, 2, 0, 0, 0);
+        return;
+    case 2:                            /* merge current flags into the file (keeps the larger value) */
+        if (!plat_save_read(name, tmp, SAVE_SIZE)) memset(tmp, 0, SAVE_SIZE);
+        for (int i = 0; i < 0x1000; i++) if (tmp[OFF_FLAG + i] < m[OFF_FLAG + i]) tmp[OFF_FLAG + i] = m[OFF_FLAG + i];
+        plat_save_write(name, tmp, SAVE_SIZE); return;
+    case 3: if (plat_save_read(name, tmp, SAVE_SIZE)) memcpy(m + OFF_FLAG, tmp + OFF_FLAG, 0x1000); return;   /* load flags only */
+    case 4: memset(m + OFF_FLAG, 0, 0x1000); memset(m + 0x1180, 0, 0x190); memset(m + 0x1310, 0, 0xCF0); return;  /* clear */
+    case 5: case 7: {                  /* load part: 5 = u16 array at 0x1180, 7 = bytes at 0x1310 */
+        uint32_t base = sub == 5 ? 0x1180 : 0x1310, unit = sub == 5 ? 2 : 1;
+        if (!plat_save_read(name, tmp, SAVE_SIZE)) return;
+        for (uint32_t i = start; i < start + count; i++) { uint32_t o = base + i * unit; if (o + unit <= SAVE_SIZE) memcpy(m + o, tmp + o, unit); }
+        return; }
+    case 6: case 8: {                  /* store part into the file */
+        uint32_t base = sub == 6 ? 0x1180 : 0x1310, unit = sub == 6 ? 2 : 1;
+        if (!plat_save_read(name, tmp, SAVE_SIZE)) memset(tmp, 0, SAVE_SIZE);
+        for (uint32_t i = start; i < start + count; i++) { uint32_t o = base + i * unit; if (o + unit <= SAVE_SIZE) memcpy(tmp + o, m + o, unit); }
+        plat_save_write(name, tmp, SAVE_SIZE); return; }
+    case 9:                            /* write the current script name into the file header */
+        if (!plat_save_read(name, tmp, SAVE_SIZE)) memset(tmp, 0, SAVE_SIZE);
+        memset(tmp, 0, OFF_FLAG); strncpy((char *)tmp, snap_name[0] ? snap_name : vm->mes_name, OFF_FLAG - 1);   /* [EXE] name from the MSGID snapshot */
+        plat_save_write(name, tmp, SAVE_SIZE); return;
+    }
+}
+/* ---- scene log [EXE SYS 24 -> 0x4215f0 -> 0x4211a0, object +0x240]: what is on screen/playing, so a loaded game can rebuild it.
+   34-byte records {u16 type, char name[20], u16 v[6]}, kept sorted by type, max 30. Saved per slot as SaveDataNN (u32 count + records). */
+typedef struct { uint16_t type; char name[20]; uint16_t v[6]; } scene_rec;
+static scene_rec scene_log[30]; static int scene_n;
+/* [EXE 0x411eb0] every MSGID takes the save snapshot: script name, message number (sys32[8], used by JMPLBL on load) and a copy of the scene log */
+static scene_rec snap_log[30]; static int snap_n;
+void sys_msgid(vm_t *vm, uint32_t id) {
+    strncpy(snap_name, (const char *)vm->mem, OFF_FLAG - 1); SET_SYS32(vm, 8, id);
+    memcpy(snap_log, scene_log, sizeof scene_log); snap_n = scene_n;
+}
+static void scene_cmd(vm_t *vm, vm_param *p) {
+    uint32_t sub = p[0].val;
+    switch (sub) {
+    case 0: scene_n = 0; return;
+    case 1: { int k = 0; for (int i = 0; i < scene_n; i++) if (scene_log[i].type != (uint16_t)p[1].val) scene_log[k++] = scene_log[i]; scene_n = k; return; }
+    case 2: case 3: {
+        char name[24]; snprintf(name, sizeof name, "SaveData%02u.dat", p[1].val % 100); uint8_t b[0x400];
+        if (sub == 3) { memset(b, 0, sizeof b); wr32(b, snap_n);          /* [EXE 0x42129f] writes the MSGID snapshot */
+            for (int i = 0; i < snap_n; i++) { uint8_t *r = b + 4 + i * 34; wr16(r, snap_log[i].type); memcpy(r + 2, snap_log[i].name, 20);
+                for (int k = 0; k < 6; k++) wr16(r + 22 + 2 * k, snap_log[i].v[k]); }
+            plat_save_write(name, b, sizeof b); return; }
+        if (!plat_save_read(name, b, sizeof b)) { scene_n = 0; return; }
+        scene_n = (int)rd32(b); if (scene_n < 0 || scene_n > 30) scene_n = 0;
+        for (int i = 0; i < scene_n; i++) { const uint8_t *r = b + 4 + i * 34; scene_log[i].type = rd16(r); memcpy(scene_log[i].name, r + 2, 20); scene_log[i].name[19] = 0;
+            for (int k = 0; k < 6; k++) scene_log[i].v[k] = rd16(r + 22 + 2 * k); }
+        return; }
+    case 4: {                          /* add (type, name, v0..v5), then sort by type (insertion keeps equal types in order) */
+        if (scene_n >= 30) return; scene_rec r; memset(&r, 0, sizeof r); r.type = p[1].val; strncpy(r.name, p[2].str, 19);
+        for (int k = 0; k < 6; k++) r.v[k] = p[3 + k].val;
+        int i = scene_n++; while (i > 0 && scene_log[i - 1].type > r.type) { scene_log[i] = scene_log[i - 1]; i--; } scene_log[i] = r; return; }
+    case 5: SET_V16(vm, 18, p[1].val < (uint32_t)scene_n ? scene_log[p[1].val].type : 0xFFFF); return;
+    case 6: if (p[1].val < (uint32_t)scene_n && p[3].val + 20 < MEM_SIZE) strcpy((char *)vm->mem + p[3].val, scene_log[p[1].val].name); return;
+    case 7: if (p[1].val < (uint32_t)scene_n && p[2].val < 6) SET_V16(vm, 18, scene_log[p[1].val].v[p[2].val]); return;   /* (7, index, k) */
+    }
+}
 extern void vm_run_block(vm_t *);
 void sys_call(vm_t *vm, uint32_t fn) {
     sys_init(vm);
@@ -297,17 +381,40 @@ void sys_call(vm_t *vm, uint32_t fn) {
         if (sub == 2) { int x, y; plat_cursor(&x, &y, false); SET_SYS16(vm, 3, x); SET_SYS16(vm, 4, y); return; }
         if (sub == 3) { int x = p[1].val, y = p[2].val; plat_cursor(&x, &y, true); SET_SYS16(vm, 3, x); SET_SYS16(vm, 4, y); return; }
         break;
-    case 14: {                         /* [script-derived] run a menu item body (address taken from the sys32[7] table) until END */
-        uint32_t m = vm->menu_run; if (!vm->menu_mes[m]) return;
+    case 14: {                         /* [EXE 0x41e7e0 -> 0x41e800] run bytecode at a pointer until END: a menu item (tagged value
+                                          from the MENUS table) or code stored in VM memory (e.g. save memos) */
         const uint8_t *smes = vm->mes; uint32_t sip = vm->ip, sbase = vm->base, snl = vm->nlabels; const uint32_t *sl = vm->labels;
-        vm->mes = vm->menu_mes[m]; vm->nlabels = rd32(vm->mes); vm->labels = (const uint32_t *)(vm->mes + 4); vm->base = 4 + 4 * vm->nlabels; vm->ip = sub;
+        if (sub & 0x80000000u) { uint32_t m = (sub >> 8) & 255, i = sub & 255; if (!vm->menu_mes[m] || i >= vm->menu_n[m]) return;
+            vm->mes = vm->menu_mes[m]; vm->nlabels = rd32(vm->mes); vm->labels = (const uint32_t *)(vm->mes + 4); vm->base = 4 + 4 * vm->nlabels; vm->ip = vm->menu_item[m][i]; }
+        else { if (sub >= MEM_SIZE - 1) return; vm->mes = vm->mem; vm->nlabels = 0; vm->labels = NULL; vm->base = 0; vm->ip = sub; }
         vm_run_block(vm);
         vm->mes = smes; vm->ip = sip; vm->base = sbase; vm->nlabels = snl; vm->labels = sl; return; }
+    case 15: {                         /* [EXE 0x41e870 -> 0x40f9d0] hit test: records {u16 id, x0, y0, x1, y1} at p2, 0xFFFF ends -> v16[18] */
+        uint32_t x = p[0].val & 0xFFFF, y = p[1].val & 0xFFFF, a = p[2].val; uint16_t r = 0xFFFF;
+        for (int k = 0; k < 4096 && a + 10 <= MEM_SIZE; k++, a += 10) { const uint8_t *e = vm->mem + a; if (rd16(e) == 0xFFFF) break;
+            if (rd16(e + 2) <= x && x <= rd16(e + 6) && rd16(e + 4) <= y && y <= rd16(e + 8)) { r = rd16(e); break; } }
+        SET_V16(vm, 18, r); return; }
+    case 17: {                         /* [EXE 0x406380] local date/time as 6 x u16: year, month, day, hour, minute, second */
+        int dt[6]; plat_datetime(dt); uint32_t a = sub & (MEM_SIZE - 1);
+        for (int i = 0; i < 6 && a + 2 * i + 2 <= MEM_SIZE; i++) wr16(vm->mem + a + 2 * i, dt[i]);
+        return; }
+    case 26: {                         /* [EXE 0x41f000] read-text bitmap (MesSkip.dat, 0x85E bytes): 0 load 1 save 2 clear 3 set bit 4 test bit -> v16[18] */
+        static uint8_t seen_bits[0x85E]; uint32_t n = p[1].val; uint16_t r = 0;
+        switch (sub) {
+        case 0: if (!plat_save_read("MesSkip.dat", seen_bits, sizeof seen_bits)) memset(seen_bits, 0, sizeof seen_bits); break;
+        case 1: plat_save_write("MesSkip.dat", seen_bits, sizeof seen_bits); break;
+        case 2: memset(seen_bits, 0, sizeof seen_bits); break;
+        case 3: if (n / 8 < sizeof seen_bits) seen_bits[n / 8] |= 0x80 >> (n & 7); break;
+        case 4: r = n / 8 < sizeof seen_bits && (seen_bits[n / 8] & (0x80 >> (n & 7))); break;
+        }
+        SET_V16(vm, 18, r); return; }
     case 16: { uint32_t m = vm->menu_run; if (sub < vm->menu_n[m]) SET_SYS16(vm, 22, vm->menu_id[m][sub]); return; }   /* [script-derived] chosen item -> sys16[22] */
     case 12: { if (getenv("AI5_TRACE")) plat_log("  WAIT %u lit6=%ld", sub, lit(6));                         /* [EXE 0x41e620/0x429260] wait p0 ticks, key 6 skips; tick length is a guess (1/60 s) */
         for (uint32_t t = 0; t < sub && !vm->quit; t++) { if (plat_key(6) || (SYS16(vm, 2) & 8)) break; if (!frame(vm)) vm->quit = true; }
         return; }
     case 18: plat_poll(); SET_V32(vm, 18, plat_key(sub) == (p[1].val != 0)); return;   /* [script-derived] 1 when key state matches p1 (1=pressed, 0=released); result -> v32[18] */
+    case 4: save_cmd(vm, sub, p[1].val, p[2].val, p[3].val); return;
+    case 24: scene_cmd(vm, p); return;
     case 5:                            /* music: (0,name,ch) or (sub,ch) */
         if (sub == 0) snd_cmd(vm, SND_MUSIC, 2, 0, p[1].str, p[2].val); else snd_cmd(vm, SND_MUSIC, 2, sub, "", p[1].val);
         return;
@@ -335,7 +442,9 @@ void sys_call(vm_t *vm, uint32_t fn) {
     case 13: col_bg = p[0].val; col_fg = p[1].val; return;                                 /* [EXE] */
     case 25: if (sub == 0) { load_image(vm, p[1].str, SYS16(vm, 1), -1, -1); return; } break;   /* [EXE 0x421b30 -> 0x41ab80; its image cache (0x41f430) is not reproduced] */
     case 9:                            /* [EXE 0x41e4b0 -> 0x420540] load image into surface sys16[1], optionally at (p1,p2) */
-        if (vm->nparams >= 3) load_image(vm, p[0].str, SYS16(vm, 1), (int)p[1].val, (int)p[2].val);
+        if (vm->nparams >= 4) { char n[64]; uint32_t a = p[3].val; if (a >= MEM_SIZE - 1) return;   /* 4 args: name read from VM memory at p3 */
+            strncpy(n, (const char *)vm->mem + a, sizeof n - 1); n[sizeof n - 1] = 0; load_image(vm, n, SYS16(vm, 1), -1, -1); }
+        else if (vm->nparams >= 3) load_image(vm, p[0].str, SYS16(vm, 1), (int)p[1].val, (int)p[2].val);
         else load_image(vm, p[0].str, SYS16(vm, 1), -1, -1);
         return;
     }
@@ -365,6 +474,13 @@ void sys_util(vm_t *vm) {
     case 0: shake_x = (int32_t)p[1].val; shake_y = (int32_t)p[2].val; if (!frame(vm)) vm->quit = true; return;      /* [EXE] offset + full repaint; the frame pump here is a guess */
     case 1: crossfade(vm, p[1].val, p[2].val, p[3].val, p[4].val, p[5].val); return;                                  /* [EXE 0x4102d0; src = p1 from script use] */
     case 3: case 4: crossfade(vm, p[5].val, p[1].val, p[2].val, p[3].val, p[4].val); return;                          /* [EXE 0x410e00 / 0x410460 not read: both shown as a crossfade] */
+    case 5:                            /* [EXE 0x410010] 0: close the dialogue window if open, open the choice window; else close the choice window */
+        if (p[1].val == 0) { win[0].visible = 0; win[1].visible = 1; } else win[1].visible = 0;
+        return;
+    case 6: {                          /* [EXE 0x4109a0] (x, y, w, h, surface): mask plane = 0x80 (half transparent) */
+        int x0 = p[1].val, y0 = p[2].val, w = p[3].val, h = p[4].val, sn = p[5].val % NSURF;
+        for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) if (INS(sn, x, y)) MSK(sn, x, y) = 0x80;
+        return; }
     }
     static uint8_t s[16]; if (n < 16 && !s[n]) { s[n] = 1; plat_log("TODO UTIL %u", n); }
 }
@@ -377,8 +493,8 @@ void sys_menu_exec(vm_t *vm) {
     uint32_t m = vm->params[0].val & 255;
     SET_SYS16(vm, 21, vm->menu_n[m]);
     /* [EXE 0x4149e0 copies the item addresses into a table]; here it is the array sys32[7] points at, which the library walks with SYS 14 */
-    uint32_t prev_run = vm->menu_run; vm->menu_run = m;
-    for (uint32_t i = 0; i < vm->menu_n[m]; i++) wr32(vm->mem + ((SYS32(vm, 7) + 4 * i) & (MEM_SIZE - 1)), vm->menu_item[m][i]);
+    uint32_t prev_run = vm->menu_run; vm->menu_run = m; int prev_loop = cur_loop; cur_loop = (int)m;
+    for (uint32_t i = 0; i < vm->menu_n[m]; i++) wr32(vm->mem + ((SYS32(vm, 7) + 4 * i) & (MEM_SIZE - 1)), 0x80000000u | m << 8 | i);   /* stands in for the item-text pointer */
     vm_call_proc(vm, 8);
     if (getenv("AI5_TRACE")) plat_log("  MENUS %u enter: s106=%u s107=%u f4004=%u f4005=%u f4009=%u v16_18=%u v32_21=%u", m, SYS16(vm,106), SYS16(vm,107), FLAG(vm,4004), FLAG(vm,4005), FLAG(vm,4009), V16(vm,18), V32(vm,21));
     while (!(SYS16(vm, 2) & 0xC) && !vm->quit && !vm->want_goto) {
@@ -389,5 +505,5 @@ void sys_menu_exec(vm_t *vm) {
         if (!frame(vm)) vm->quit = true;
         vm->steps = 0;
     }
-    vm->menu_run = prev_run;
+    vm->menu_run = prev_run; cur_loop = prev_loop;
 }

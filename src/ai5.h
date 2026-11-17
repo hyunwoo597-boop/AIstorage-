@@ -49,7 +49,7 @@ typedef struct vm {
     vm_param params[MAX_PARAMS]; int nparams;
     uint32_t msgid;
     char mes_name[32], goto_name[32]; bool want_goto;
-    bool quit; uint64_t steps;
+    bool quit; uint64_t steps; int depth;   /* depth = nesting of run_block, like the original's +0x260 counter */
     arc_t arc_mes, arc_data, arc_bg, arc_music, arc_voice, arc_sound;   /* arc_sound = SOUND.ARC (compressed music/effects, optional) */
     uint8_t *libbuf;
     uint32_t menu_cur, menu_n[256];          /* [EXE] 1B selects+clears menu, MENUI appends an item */
@@ -79,6 +79,11 @@ bool vm_load_mes(vm_t *vm, const char *name);
 void vm_run(vm_t *vm);                 /* run current script until END at depth 0 / quit */
 uint32_t vm_expr(vm_t *vm);
 
+/* ---- save files (FLAGnn in the original's SAVEDAT folder). Returns false if missing / failed. ---- */
+bool plat_save_read(const char *name, void *buf, size_t len);
+bool plat_save_write(const char *name, const void *buf, size_t len);
+void plat_datetime(int out[6]);   /* year, month, day, hour, minute, second (local) */
+
 /* ---- sound. slots: 0-1 music, 2-5 effects, 6-7 voice. data (malloc'd) passes to the platform, which frees it.
    data formats: "AI5S" header + Ogg Vorbis (SOUND.ARC), plain Ogg Vorbis (VOICE.ARC), or RIFF/WAVE PCM16 (MUSIC.ARC). ---- */
 enum { SND_MUSIC = 0, SND_SE = 2, SND_VOICE = 6, SND_SLOTS = 8 };
@@ -91,6 +96,7 @@ bool plat_snd_playing(int slot);
 typedef struct {
     int nlines; struct { char sjis[132]; int item; } line[16];   /* item = choice index, or -1 for dialogue */
     bool dialogue_visible, menu_visible; int hover;               /* hover = highlighted choice, -1 if none */
+    int loop;                                                     /* event loop (MENUS) being run: 100 = dialogue/choices, other = full-screen menus, -1 none */
 } ui_text;
 const uint8_t *sys_scene_rgb(void);         /* 640x480 RGB888 scene (surface 0 with shake applied), no text windows */
 const ui_text *sys_ui_text(vm_t *vm);
@@ -105,4 +111,5 @@ void sys_menu_define(vm_t *vm, uint32_t body_ip);
 void sys_menu_exec(vm_t *vm);
 void sys_op1b(vm_t *vm);
 void sys_line(vm_t *vm, int arg);
+void sys_msgid(vm_t *vm, uint32_t id);
 #endif
