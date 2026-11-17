@@ -1,7 +1,7 @@
 /* Nintendo 3DS backend (libctru, software framebuffers).
  * Top screen   : the scene, 640x480 averaged down to 320x240, centred in 400x240.
  * Bottom screen: dialogue / choices re-rendered from strings with the 16px font (20 full-width columns).
- * Data folder  : sdmc:/3ds/nonoxp/  (MES.ARC DATA.ARC BG.ARC MUSIC.ARC VOICE.ARC font16.bin)
+ * Data folder  : sdmc:/3ds/nonoxp/  (MES.ARC DATA.ARC BG.ARC font16.bin; optional SOUND.ARC VOICE.ARC)
  * NOTE: written without access to hardware or the toolchain; first build may need fixes. */
 #include <3ds.h>
 #include <stdio.h>
@@ -113,9 +113,10 @@ static void fatal(const char *msg) {
 int main(void) {
     gfxInitDefault(); gfxSetDoubleBuffering(GFX_TOP, true); gfxSetDoubleBuffering(GFX_BOTTOM, true);
     osSetSpeedupEnable(true);
+    void snd_init(void), snd_exit(void); snd_init();
     static vm_t vm; g_vm = &vm;
     if (!vm_init(&vm)) fatal("Archives not found (MES.ARC DATA.ARC BG.ARC).");
     else if (!vm_load_mes(&vm, "MAIN.MES")) fatal("MAIN.MES missing in MES.ARC.");
     else vm_run(&vm);
-    gfxExit(); return 0;
+    snd_exit(); gfxExit(); return 0;
 }

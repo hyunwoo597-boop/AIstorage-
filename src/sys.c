@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "gccdec.h"
 
 #define SW 640
@@ -214,6 +215,44 @@ static void anim_tick_one(vm_t *vm, anim_stream *s) {
 }
 static void anim_tick(vm_t *vm) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state != AN_HALT) anim_tick_one(vm, &anim[a][b]); }
 static bool frame(vm_t *vm) { anim_tick(vm); return plat_frame(compose(), SW, SH); }
+/* ---- sound [EXE: SYS 5 -> 0x4072e0/0x41fdd0, SYS 6 -> 0x4200b0, SYS 7 -> 0x42bce0/0x420270] ---- */
+static char snd_cur[SND_SLOTS][24], snd_pend[SND_SLOTS][24]; static uint8_t snd_has_pend[SND_SLOTS];
+static void *snd_load(vm_t *vm, int kind, const char *name, size_t *n) {
+    void *d = NULL;
+    if (kind == SND_VOICE) d = arc_load(&vm->arc_voice, name, n);
+    else { d = arc_load(&vm->arc_sound, name, n); if (!d) d = arc_load(&vm->arc_music, name, n); }
+    if (!d) { static int warned; if (warned++ < 20) plat_log("missing sound %s", name); }
+    return d;
+}
+static int snd_volume(int kind) {
+    const char *sec = kind == SND_MUSIC ? "Music" : kind == SND_SE ? "Effect" : "Voice";
+    const char *on = kind == SND_MUSIC ? "IsMusic" : kind == SND_SE ? "IsEffect" : "IsVoice";
+    if (!*ini_slot(sec, on)) return 0;
+    int v = *ini_slot(sec, "Volume"); return v > 255 ? 255 : v;
+}
+static void snd_start(vm_t *vm, int kind, int slot, const char *name) {
+    plat_snd_stop(slot); snd_cur[slot][0] = 0;
+    int vol = snd_volume(kind); if (!vol || !name[0]) return;
+    size_t n; void *d = snd_load(vm, kind, name, &n); if (!d) return;
+    strncpy(snd_cur[slot], name, 23); plat_snd_play(slot, d, n, vol);
+}
+static void snd_cmd(vm_t *vm, int kind, int nslots, uint32_t sub, const char *name, uint32_t ch) {
+    int slot = kind + (int)(ch % (uint32_t)nslots); uint32_t r = 0;
+    switch (sub) {
+    case 0: if (kind == SND_MUSIC && !strcasecmp(snd_cur[slot], name) && plat_snd_playing(slot)) break;   /* [EXE 0x407378] same track keeps playing */
+            snd_start(vm, kind, slot, name); break;
+    case 1: plat_snd_stop(slot); snd_cur[slot][0] = 0; break;
+    case 2: if (kind == SND_VOICE) { strncpy(snd_pend[slot], name, 23); snd_has_pend[slot] = 1; break; }   /* voice: reserve */
+            plat_snd_fade(slot, 1000); snd_cur[slot][0] = 0; break;                                           /* music/effect: fade out [EXE: volume ramp to -10000] */
+    case 3: if (kind == SND_SE) { r = plat_snd_playing(slot); break; }
+            if (kind == SND_VOICE) { if (snd_has_pend[slot]) snd_start(vm, kind, slot, snd_pend[slot]); snd_has_pend[slot] = 0; break; }
+            strncpy(snd_pend[slot], name, 23); snd_has_pend[slot] = 1; break;                                  /* music: reserve */
+    case 4: if (kind == SND_VOICE) { r = plat_snd_playing(slot); break; }
+            if (snd_has_pend[slot]) { snd_start(vm, kind, slot, snd_pend[slot]); snd_has_pend[slot] = 0; } break;
+    case 5: if (kind == SND_MUSIC) r = plat_snd_playing(slot); break;
+    }
+    SET_V32(vm, 18, r);
+}
 extern void vm_run_block(vm_t *);
 void sys_call(vm_t *vm, uint32_t fn) {
     sys_init(vm);
@@ -269,6 +308,17 @@ void sys_call(vm_t *vm, uint32_t fn) {
         for (uint32_t t = 0; t < sub && !vm->quit; t++) { if (plat_key(6) || (SYS16(vm, 2) & 8)) break; if (!frame(vm)) vm->quit = true; }
         return; }
     case 18: plat_poll(); SET_V32(vm, 18, plat_key(sub) == (p[1].val != 0)); return;   /* [script-derived] 1 when key state matches p1 (1=pressed, 0=released); result -> v32[18] */
+    case 5:                            /* music: (0,name,ch) or (sub,ch) */
+        if (sub == 0) snd_cmd(vm, SND_MUSIC, 2, 0, p[1].str, p[2].val); else snd_cmd(vm, SND_MUSIC, 2, sub, "", p[1].val);
+        return;
+    case 6:                            /* effects: same argument shape as music */
+        if (sub == 0) snd_cmd(vm, SND_SE, 4, 0, p[1].str, p[2].val); else snd_cmd(vm, SND_SE, 4, sub, "", p[1].val);
+        return;
+    case 7:                            /* voice: (sub,name,ch). Disabled unless sys16[2] bit 0x100; key 7 (voice skip) cancels 0/3 */
+        if (!(SYS16(vm, 2) & 0x100)) { SET_V32(vm, 18, 0); return; }
+        if ((sub == 0 || sub == 3) && plat_key(7)) { plat_snd_stop(SND_VOICE + (p[2].val & 1)); snd_has_pend[SND_VOICE + (p[2].val & 1)] = 0; SET_V32(vm, 18, 0); return; }
+        snd_cmd(vm, SND_VOICE, 2, sub, p[1].str, p[2].val);
+        return;
     case 27:
         if (sub == 0) { SET_V16(vm, 18, *ini_slot(p[1].str, p[2].str)); return; }
         if (sub == 1) { *ini_slot(p[1].str, p[2].str) = p[3].val; return; }

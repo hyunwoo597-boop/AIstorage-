@@ -138,7 +138,7 @@ bool vm_init(vm_t *vm) {
     memset(vm, 0, sizeof *vm);
     vm->mem = calloc(1, MEM_SIZE);
     if (!(arc_open(&vm->arc_mes, "MES.ARC") && arc_open(&vm->arc_data, "DATA.ARC") && arc_open(&vm->arc_bg, "BG.ARC"))) return false;
-    arc_open(&vm->arc_music, "MUSIC.ARC"); arc_open(&vm->arc_voice, "VOICE.ARC");   /* optional until sound is implemented */
+    arc_open(&vm->arc_sound, "SOUND.ARC"); arc_open(&vm->arc_music, "MUSIC.ARC"); arc_open(&vm->arc_voice, "VOICE.ARC");   /* all optional */
     return true;
 }
 void vm_run(vm_t *vm) {

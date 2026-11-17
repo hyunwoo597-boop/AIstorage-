@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Make sure the 3DS libraries are present
-        run: dkp-pacman -Sy --noconfirm --needed 3ds-dev || true
+        run: dkp-pacman -Sy --noconfirm --needed 3ds-dev 3ds-libvorbisidec 3ds-libogg
       - name: Build
         run: make
       - uses: actions/upload-artifact@v4

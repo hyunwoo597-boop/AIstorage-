@@ -50,7 +50,7 @@ typedef struct vm {
     uint32_t msgid;
     char mes_name[32], goto_name[32]; bool want_goto;
     bool quit; uint64_t steps;
-    arc_t arc_mes, arc_data, arc_bg, arc_music, arc_voice;
+    arc_t arc_mes, arc_data, arc_bg, arc_music, arc_voice, arc_sound;   /* arc_sound = SOUND.ARC (compressed music/effects, optional) */
     uint8_t *libbuf;
     uint32_t menu_cur, menu_n[256];          /* [EXE] 1B selects+clears menu, MENUI appends an item */
     uint32_t menu_item[256][16], menu_id[256][16];
@@ -78,6 +78,14 @@ bool vm_init(vm_t *vm);
 bool vm_load_mes(vm_t *vm, const char *name);
 void vm_run(vm_t *vm);                 /* run current script until END at depth 0 / quit */
 uint32_t vm_expr(vm_t *vm);
+
+/* ---- sound. slots: 0-1 music, 2-5 effects, 6-7 voice. data (malloc'd) passes to the platform, which frees it.
+   data formats: "AI5S" header + Ogg Vorbis (SOUND.ARC), plain Ogg Vorbis (VOICE.ARC), or RIFF/WAVE PCM16 (MUSIC.ARC). ---- */
+enum { SND_MUSIC = 0, SND_SE = 2, SND_VOICE = 6, SND_SLOTS = 8 };
+void plat_snd_play(int slot, void *data, size_t len, int volume /* 0..255 */);
+void plat_snd_stop(int slot);
+void plat_snd_fade(int slot, int ms);          /* fade out, then stop */
+bool plat_snd_playing(int slot);
 
 /* ---- views for small-screen platforms (3DS): scene without the text windows, and the window text as strings ---- */
 typedef struct {
