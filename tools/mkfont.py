@@ -10,13 +10,14 @@ remap = {k: v for k, v in json.load(open(sys.argv[4]))} if len(sys.argv) > 4 els
 font = ImageFont.truetype(ttc, 15, index=face)
 font_jp = font
 font_kr = ImageFont.truetype(ttc, 15, index=int(sys.argv[5])) if len(sys.argv) > 5 else font
+# baseline: drawn 5 px up so the CJK body (Noto at 15 px) fits rows 0..15 without cutting the bottom
 def glyph(ch, half, f=None):
     global font
     font = f or font_jp
     im = Image.new('L', (16, 16), 0); d = ImageDraw.Draw(im)
     bb = d.textbbox((0, 0), ch, font=font); w = bb[2] - bb[0]
     x = ((8 if half else 16) - w) // 2 - bb[0]
-    d.text((x, -3), ch, font=font, fill=255)
+    d.text((x, -5), ch, font=font, fill=255)
     px = im.tobytes(); b = bytearray(128)
     for i in range(256): b[i >> 1] |= (px[i] >> 4) << (0 if i & 1 else 4)
     return bytes(b)
