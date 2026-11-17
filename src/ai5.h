@@ -105,7 +105,10 @@ const uint8_t *sys_scene_rgb(void);
 const uint8_t *sys_scene_depth(void);     /* 640x480 layer map for stereoscopic 3D (0 backdrop, 1 sprite), NULL = draw flat */         /* 640x480 RGB888 scene (surface 0 with shake applied), no text windows */
 const uint8_t *sys_bottom_rgb(void);       /* 320x240 RGB the engine wants on the bottom screen (title menu, confirm dialogs), else NULL */
 const uint8_t *sys_live_rgb(void);
-bool sys_bottom_map(int bx, int by, int *x, int *y);   /* bottom-screen touch -> 640x480 pointer for the current bottom layout */
+bool sys_bottom_map(int bx, int by, int *x, int *y);
+bool sys_bottom_viewport(void);            /* galleries: bottom = 1:1 window over the screen */
+const uint8_t *sys_viewport_rgb(bool follow);
+void sys_bottom_pan(int dx, int dy);   /* bottom-screen touch -> 640x480 pointer for the current bottom layout */
 void sys_fix_script(const char *name, uint8_t *code, size_t n);   /* port patches applied to loaded scripts */         /* the live 640x480 screen (shown on the bottom screen during full-screen menus) */
 const ui_text *sys_ui_text(vm_t *vm);
 const uint8_t *sys_font(uint32_t *cells);

@@ -45,9 +45,20 @@ void plat_log(const char *fmt, ...) {
 }
 
 /* ---- input ---- */
+static bool g_viewport; static int g_click, g_t0x, g_t0y, g_tlx, g_tly; static bool g_dragged;
 static void pump(void) {
     hidScanInput(); g_held = hidKeysHeld(); g_down = hidKeysDown();
     bool t = (g_held & KEY_TOUCH) != 0;
+    if (g_click) g_click--;
+    if (g_viewport) {                    /* galleries: drag pans the 1:1 window, a tap (no drag) clicks where it was released */
+        if (t) { hidTouchRead(&g_touch);
+            if (!g_touching) { g_t0x = g_tlx = g_touch.px; g_t0y = g_tly = g_touch.py; g_dragged = false; }
+            else { int dx = g_touch.px - g_tlx, dy = g_touch.py - g_tly;
+                if (abs(g_touch.px - g_t0x) + abs(g_touch.py - g_t0y) > 6) g_dragged = true;
+                if (g_dragged && (dx || dy)) sys_bottom_pan(-dx, -dy); g_tlx = g_touch.px; g_tly = g_touch.py; } }
+        else if (g_touching && !g_dragged) { int x, y; sys_bottom_map(g_tlx, g_tly, &x, &y); g_cx = x; g_cy = y; g_click = 2; }
+        g_touching = t; g_touch_armed = false; return;
+    }
     if (t) { hidTouchRead(&g_touch);
         if (!g_touching) {               /* touch began: point at the choice under the finger, confirm from the next frame on */
             g_touch_armed = false;
@@ -73,7 +84,7 @@ const char *plat_goto_override(void) { return NULL; }   /* test hook used by the
 void plat_cursor(int *x, int *y, bool set) { if (set) { g_cx = *x; g_cy = *y; } else { *x = g_cx; *y = g_cy; } }
 bool plat_key(int key) {
     switch (key) {
-    case 0: return (g_held & KEY_A) || (g_touching && g_touch_armed);
+    case 0: return (g_held & KEY_A) || (g_touching && g_touch_armed) || g_click == 1;
     case 1: {                                   /* cancel. In the dialogue/choice loop it opens the system menu: START there;
                                                    B keeps working as "back" in menus, save/load screens and the message log */
         const ui_text *u = sys_ui_text(g_vm); bool story = u->loop == 100 && !u->backlog && (u->dialogue_visible || u->menu_visible);
@@ -139,13 +150,17 @@ static void draw_text(void) {
     u8 *fb = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
     memset(fb, 0, 320 * 240 * 3);
     for (int i = 0; i < 14; i++) g_row_item[i] = -1;
+    g_viewport = false;
     const ui_text *u = sys_ui_text(g_vm);
     const uint8_t *own = sys_bottom_rgb();   /* title menu / confirmation dialog, drawn by the engine for this screen */
     if (own) { g_menu_mode = true; for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { const uint8_t *c = own + (y * 320 + x) * 3; put(fb, x, y, c[0], c[1], c[2]); } return; }
     g_menu_mode = (u->loop >= 0 && u->loop != 100) || (!u->dialogue_visible && !u->menu_visible);
     if (g_menu_mode) {                  /* full-screen menus (system menu, save/load, galleries): shown here, half size, touchable;
                                            the top screen keeps the story picture. No menu running (title animation, cut-ins): dark. */
-        if (u->loop < 0 || u->backlog) return;
+        if (u->loop < 0 || u->backlog) { g_viewport = false; return; }
+        g_viewport = sys_bottom_viewport();
+        if (g_viewport) { const uint8_t *v = sys_viewport_rgb(!g_touching); if (!v) return;
+            for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { const uint8_t *c = v + (y * 320 + x) * 3; put(fb, x, y, c[0], c[1], c[2]); } return; }
         const uint8_t *rgb = sys_live_rgb(); if (!rgb) return;
         for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3;
             for (int x = 0; x < 320; x++) { const uint8_t *a = r0 + x * 6, *b = r1 + x * 6;

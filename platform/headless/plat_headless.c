@@ -72,6 +72,7 @@ bool plat_frame(const uint8_t *rgb, int w, int h) {
         extern vm_t *g_vm; char n[64]; const uint8_t *t = sys_scene_rgb(); snprintf(n, sizeof n, "/tmp/tp_%05ld.ppm", g_frame);
         FILE *f = t ? fopen(n, "wb") : NULL; if (f) { fprintf(f, "P6 640 480 255\n"); fwrite(t, 1, 640 * 480 * 3, f); fclose(f); }
         const uint8_t *b = sys_bottom_rgb(); static uint8_t half[320 * 240 * 3]; const ui_text *u = sys_ui_text(g_vm);
+        if (!b && sys_bottom_viewport()) b = sys_viewport_rgb(true);
         if (!b && u->loop >= 0 && ((u->loop != 100) || (!u->dialogue_visible && !u->menu_visible))) { const uint8_t *l = sys_live_rgb();
             for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) memcpy(half + (y * 320 + x) * 3, l + ((y * 2) * 640 + x * 2) * 3, 3); b = half; }
         snprintf(n, sizeof n, "/tmp/bt_%05ld.ppm", g_frame); f = b ? fopen(n, "wb") : NULL; if (f) { fprintf(f, "P6 320 240 255\n"); fwrite(b, 1, 320 * 240 * 3, f); fclose(f); } }

@@ -88,9 +88,9 @@ static void slot_capture(vm_t *vm, const char *sj) {
     size_t l = strlen(slot_text[r]); if (l && x >= 200) { if (l + 2 < sizeof slot_text[r]) { strcat(slot_text[r], " "); l++; } }
     snprintf(slot_text[r] + l, sizeof slot_text[r] - l, "%s", sj);
 }
-typedef struct { int sx, sy, w, h, dx, dy; } lay_rect;
-static const lay_rect menu_lay[] = { {436, 16, 192, 36, 64, 4}, {436, 64, 192, 36, 64, 43}, {436, 112, 192, 36, 64, 82},
-                                     {20, 388, 192, 36, 64, 121}, {20, 436, 192, 36, 64, 160}, {436, 436, 192, 36, 64, 200} };
+typedef struct { int sx, sy, w, h, dx, dy, mx, my; } lay_rect;   /* screen rect -> bottom position; (mx,my) = the button's shape in mwaku.gcc */
+static const lay_rect menu_lay[] = { {436, 16, 192, 36, 64, 2, 0, 208}, {436, 64, 192, 36, 64, 41, 192, 208}, {436, 112, 192, 36, 64, 80, 384, 208},
+                                     {20, 388, 192, 36, 64, 119, 384, 244}, {20, 436, 192, 36, 64, 158, 576, 244}, {436, 436, 192, 36, 64, 197, 576, 208} };
 static int bottom_kind(void) {               /* 1 system menu, 2 save/load list, 3 save/memo dialog, 4 load dialog */
     if (cur_loop < 0 || cur_loop == 100) return 0;
     if (!strcasecmp(cur_a6, "menu.a6")) return 1;
@@ -99,9 +99,8 @@ static int bottom_kind(void) {               /* 1 system menu, 2 save/load list,
     if (!strcasecmp(cur_a6, "load_dlg.a6")) return 4;
     return 0;
 }
-static void dim_bg(void) {
-    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { const uint8_t *a = surf[0] + ((y * 2) * SW + x * 2) * 3; uint8_t *d = bottom_buf + (y * 320 + x) * 3;
-        for (int k = 0; k < 3; k++) d[k] = a[k] / 5; }
+static void dim_bg(void) {                    /* plain dark backdrop for the bottom-screen layouts */
+    for (int y = 0; y < 240; y++) { int c = 10 + y * 22 / 239; for (int x = 0; x < 320; x++) { uint8_t *d = bottom_buf + (y * 320 + x) * 3; d[0] = c / 2; d[1] = c / 2; d[2] = c + 12; } }
 }
 static void blit_fit(int sx, int sy, int w, int h, int *ox, int *oy, int *ow, int *oh) {   /* crop of the screen, scaled down to fit, centred */
     int dw = w, dh = h; if (dw > 316) { dh = dh * 316 / dw; dw = 316; } if (dh > 236) { dw = dw * 236 / dh; dh = 236; }
@@ -124,8 +123,10 @@ static int fit_ox, fit_oy, fit_w, fit_h, fit_sx, fit_sy, fit_sw, fit_sh;
 static const uint8_t *menu_bottom(void) {
     int k = bottom_kind(); if (!k || !surf[0]) return NULL;
     dim_bg();
-    if (k == 1) for (size_t i = 0; i < sizeof menu_lay / sizeof menu_lay[0]; i++) { const lay_rect *L = &menu_lay[i];
-        for (int y = 0; y < L->h; y++) memcpy(bottom_buf + ((L->dy + y) * 320 + L->dx) * 3, surf[0] + ((L->sy + y) * SW + L->sx) * 3, L->w * 3); }
+    if (k == 1) for (size_t i = 0; i < sizeof menu_lay / sizeof menu_lay[0]; i++) { const lay_rect *L = &menu_lay[i];   /* live button pixels, cut out by its shape */
+        for (int y = 0; y < L->h; y++) for (int x = 0; x < L->w; x++) { int a = INS(7, L->mx + x, L->my + y) ? MSK(7, L->mx + x, L->my + y) : 255; if (!a) continue;
+            const uint8_t *c = surf[0] + ((L->sy + y) * SW + L->sx + x) * 3; uint8_t *d = bottom_buf + ((L->dy + y) * 320 + L->dx + x) * 3;
+            for (int q = 0; q < 3; q++) d[q] = (d[q] * (255 - a) + c[q] * a) / 255; } }
     if (k == 2) {                                /* slot list as text rows (22 px) + page tabs */
         int cx, cy; plat_cursor(&cx, &cy, false); int hot = (cx >= 40 && cx < 556 && cy >= 52 && cy < 444) ? (cy - 52) / 40 : -1;
         fill_b(0, 0, 320, 240, 24, 16, 10);
@@ -143,7 +144,23 @@ static const uint8_t *menu_bottom(void) {
     if (k >= 3) blit_fit(fit_sx, fit_sy, fit_sw, fit_sh, &fit_ox, &fit_oy, &fit_w, &fit_h);
     return bottom_buf;
 }
+/* galleries (CG / scenes / music / endings: the story loop with no text window): the bottom screen shows the screen 1:1
+   in a 320x240 window that follows the pointer (D-pad) and can be dragged; the top screen shows the whole page. */
+static int vp_x, vp_y, vp_px = -1, vp_py = -1;
+bool sys_bottom_viewport(void) { return cur_loop == 100 && !(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !pop.on && !dlg.on; }
+static void vp_clamp(void) { if (vp_x < 0) vp_x = 0; if (vp_y < 0) vp_y = 0; if (vp_x > SW - 320) vp_x = SW - 320; if (vp_y > SH - 240) vp_y = SH - 240; }
+void sys_bottom_pan(int dx, int dy) { vp_x += dx; vp_y += dy; vp_clamp(); }
+const uint8_t *sys_viewport_rgb(bool follow) {
+    if (!surf[0]) return NULL;
+    int cx, cy; plat_cursor(&cx, &cy, false);
+    if (follow && (cx != vp_px || cy != vp_py)) {   /* pointer moved by the game (D-pad): keep it inside the window */
+        if (cx < vp_x + 40) vp_x = cx - 40; if (cx > vp_x + 280) vp_x = cx - 280; if (cy < vp_y + 40) vp_y = cy - 40; if (cy > vp_y + 200) vp_y = cy - 200; vp_clamp(); }
+    vp_px = cx; vp_py = cy;
+    for (int y = 0; y < 240; y++) memcpy(bottom_buf + y * 320 * 3, surf[0] + ((vp_y + y) * SW + vp_x) * 3, 320 * 3);
+    return bottom_buf;
+}
 bool sys_bottom_map(int bx, int by, int *x, int *y) {
+    if (sys_bottom_viewport() && !bottom_kind()) { *x = vp_x + bx; *y = vp_y + by; vp_px = *x; vp_py = *y; return true; }
     if (pop.on || dlg.on) { *x = bx * 2; *y = by * 2; return true; }
     switch (bottom_kind()) {
     case 1: for (size_t i = 0; i < sizeof menu_lay / sizeof menu_lay[0]; i++) { const lay_rect *L = &menu_lay[i];
