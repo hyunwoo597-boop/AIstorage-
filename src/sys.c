@@ -241,8 +241,64 @@ const ui_text *sys_ui_text(vm_t *vm) {
     for (int i = 0; i < ui.nlines; i++) ui.line[i].item = ui.menu_visible ? i : -1;
     return &ui;
 }
+/* ---- port addition: large full-screen narration (opening disclaimer, some endings). Those scripts print 16 px text onto
+   surface 3 with the text area set to the whole screen; on the 3DS top screen that ends up 8 px tall. Such text is collected
+   and, when surface 3 is next used as a source, laid out 3x larger (48 px), word-wrapped and centred. ---- */
+enum { BIG = 3, BIG_PARA = 8 };
+static struct { int n; char t[BIG_PARA][512]; int y[BIG_PARA]; } big;
+static bool big_mode(vm_t *vm) { return SYS16(vm, 1) == 3 && SYS16(vm, 5) == 0 && SYS16(vm, 6) == 0 && SYS16(vm, 7) >= 640 && SYS16(vm, 8) >= 480; }
+static void draw_glyph_big(int s, int x, int y, uint32_t idx, int w) {   /* bilinear 3x upscale of a 16x16 4bpp glyph */
+    if (!font || idx >= font_cells) return; const uint8_t *g = font + idx * 128; s %= NSURF;
+    int r = col_fg & 255, gr = col_fg >> 8 & 255, b = col_fg >> 16 & 255;
+    #define COV(i, j) (((i) < 0 || (j) < 0 || (i) >= 16 || (j) >= 16) ? 0 : ((g[((j) * 16 + (i)) >> 1] >> (((i) & 1) ? 0 : 4)) & 15) * 17)
+    for (int j = 0; j < 16 * BIG; j++) for (int i = 0; i < w * BIG; i++) { int tx = x + i, ty = y + j; if (!INS(s, tx, ty)) continue;
+        int fx = (i * 2 + 1) * 128 / BIG - 128, fy = (j * 2 + 1) * 128 / BIG - 128;   /* source position in 1/256 px */
+        int ix = fx >> 8, iy = fy >> 8, ax = fx & 255, ay = fy & 255;
+        int a = (COV(ix, iy) * (256 - ax) * (256 - ay) + COV(ix + 1, iy) * ax * (256 - ay) + COV(ix, iy + 1) * (256 - ax) * ay + COV(ix + 1, iy + 1) * ax * ay) >> 16;
+        if (a < 8) continue; if (a > 255) a = 255;
+        uint8_t *d = PIX(s, tx, ty), *m = &MSK(s, tx, ty); DEP(s, tx, ty) = 1;
+        d[0] = (d[0] * (255 - a) + r * a) / 255; d[1] = (d[1] * (255 - a) + gr * a) / 255; d[2] = (d[2] * (255 - a) + b * a) / 255; if (a > *m) *m = a; }
+    #undef COV
+}
+static int big_w(const uint8_t *c, int *len) {   /* width of one character at 3x; Korean font word spaces (0x8140) are half width */
+    int half; const uint8_t *q = c; uint32_t idx = sys_glyph_index(&q, &half); *len = (int)(q - c);
+    if (idx == 95 && (font_flags & 1)) return 8 * BIG; return (half ? 8 : 16) * BIG;
+}
+static void big_flush(void) {
+    if (!big.n) return;
+    enum { MARGIN = 40, LH = 16 * BIG + 10 }; int maxw = 640 - 2 * MARGIN;
+    static struct { const uint8_t *a, *e; int w, para; } ln[48]; int nl = 0;
+    for (int k = 0; k < big.n; k++) {                   /* word-wrap each paragraph */
+        const uint8_t *p = (const uint8_t *)big.t[k];
+        while (*p && nl < 48) {
+            const uint8_t *q = p, *brk = NULL; int w = 0, wbrk = 0;
+            while (*q) { int l, cw = big_w(q, &l); if (w + cw > maxw && q != p) break;
+                if (q[0] == 0x81 && q[1] == 0x40 && q != p) { brk = q; wbrk = w; } w += cw; q += l; }
+            if (*q && brk) { q = brk; w = wbrk; }
+            ln[nl].a = p; ln[nl].e = q; ln[nl].w = w; ln[nl].para = k; nl++;
+            p = q; if (*q && brk) p += 2;               /* drop the space at the break */
+        }
+    }
+    enum { GAP = 20 };                                  /* extra space between paragraphs */
+    int y = (480 - nl * LH - (big.n - 1) * GAP) / 2; if (y < 0) y = 0;
+    for (int i = 0; i < nl; i++, y += LH) {
+        if (i && ln[i].para != ln[i - 1].para) y += GAP;
+        int x = (640 - ln[i].w) / 2;
+        for (const uint8_t *q = ln[i].a; q < ln[i].e; ) { int l, cw = big_w(q, &l), half; const uint8_t *qq = q; uint32_t idx = sys_glyph_index(&qq, &half);
+            if (!(idx == 95 && (font_flags & 1))) draw_glyph_big(3, x, y, idx, half ? 8 : 16); x += cw; q += l; }
+    }
+    big.n = 0;
+}
 void sys_text(vm_t *vm, const char *sj, bool zenkaku) {
     sys_init(vm); (void)zenkaku;
+    if (big_mode(vm) && !(SYS16(vm, 2) & 0x800)) {      /* collect; a new paragraph whenever the script moved the cursor */
+        int y = SYS16(vm, 10); bl_add(vm, (const uint8_t *)sj, strlen(sj));
+        if (!big.n || big.y[big.n - 1] != y) { if (big.n < BIG_PARA) { big.y[big.n] = y; big.t[big.n][0] = 0; big.n++; } }
+        char *t = big.t[big.n - 1]; size_t l = strlen(t); snprintf(t + l, sizeof big.t[0] - l, "%s", sj);
+        SET_SYS16(vm, 10, y + 1);                       /* mark the cursor as used so a SETA@ 9 to the same row still starts a new paragraph... */
+        big.y[big.n - 1] = y + 1;                       /* ...but consecutive text without a cursor move continues this one */
+        return;
+    }
     const uint8_t *p = (const uint8_t *)sj;
     while (*p) {
         const uint8_t *start = p; int half; uint32_t idx = sys_glyph_index(&p, &half);
@@ -490,6 +546,8 @@ void sys_call(vm_t *vm, uint32_t fn) {
         }
         break;
     case 11: {                         /* [EXE: args = sub, x, y, w=x1-x+1, h=y1-y+1, p5.. ] */
+        if (big.n && ((sub == 0 || sub == 1 || sub == 7 || sub == 8) && p[5].val == 3)) big_flush();
+        if (big.n && (sub == 2 || sub == 10) && SYS16(vm, 1) == 3 && p[1].val == 0 && p[2].val == 0) big.n = 0;   /* surface 3 cleared */
         int x = p[1].val, y = p[2].val, w = (int)p[3].val - x + 1, h = (int)p[4].val - y + 1;
         switch (sub) {     /* [EXE 0x420a70 base table + 0x42b920 game table] */
         case 0: gfx_copy(x, y, w, h, p[5].val, p[6].val, p[7].val, p[8].val, 0); return;

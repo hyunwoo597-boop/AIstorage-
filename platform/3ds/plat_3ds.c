@@ -150,8 +150,9 @@ static void draw_text(void) {
     if (u->dialogue_visible && !u->menu_visible && !u->backlog) {    /* "다음 (터치)" hint, dialogue only */
         extern const int next_hint_w, next_hint_h; extern const uint8_t next_hint[];
         int ox = 320 - next_hint_w - 2, oy = 240 - next_hint_h - 2;
-        for (int y = 0; y < next_hint_h; y++) for (int xx = 0; xx < next_hint_w; xx++) { int a = next_hint[y * next_hint_w + xx]; if (!a) continue;
-            u8 *p = fb + ((ox + xx) * 240 + (239 - (oy + y))) * 3; for (int c = 0; c < 3; c++) p[c] = (p[c] * (255 - a) + 255 * a) / 255; }
+        for (int y = 0; y < next_hint_h; y++) for (int xx = 0; xx < next_hint_w; xx++) { const uint8_t *q = next_hint + (y * next_hint_w + xx) * 4; int a = q[3]; if (!a) continue;
+            u8 *p = fb + ((ox + xx) * 240 + (239 - (oy + y))) * 3;   /* framebuffer is BGR */
+            p[0] = (p[0] * (255 - a) + q[2] * a) / 255; p[1] = (p[1] * (255 - a) + q[1] * a) / 255; p[2] = (p[2] * (255 - a) + q[0] * a) / 255; }
     }
 }
 bool plat_frame(const uint8_t *rgb, int w, int h) {

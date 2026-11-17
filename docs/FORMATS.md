@@ -221,3 +221,5 @@
 - `tools/mksplash.py assets/splash/HNI_9001.MPO <lzss_enc> platform/3ds/splash_data.c` 로 다시 만든다(RGB565 + 엔진 LZSS, 3dsx 안에 들어감).
 - A 또는 터치로 넘어가고, 그 입력은 게임에 전달되지 않는다. START+SELECT = 종료.
 - (19차) 대사 화면(선택지·로그 제외) 하단 오른쪽에 "다음 (터치)" 손가락 아이콘. `tools/mkicons.py platform/3ds/ui_icons.c` 로 생성.
+- (20차) 전체 화면 해설 글(S01 시작 안내문, END09/OVER9 등: 화면 3에 글 영역 0,0,640,480으로 출력)은 모아 두었다가
+  화면 3을 쓰는 순간 3배(48px) 크기로 줄바꿈·가운데 정렬해 그린다. 대사 하단 안내는 손 그림 대신 분홍 A 버튼.
