@@ -163,6 +163,27 @@ uint32_t sys_glyph_index(const uint8_t **pp, int *half) {
 const uint8_t *sys_font(uint32_t *cells) { if (cells) *cells = font_cells; return font; }
 /* text drawn into the dialogue/choice strip (surface 6, rows 0..87) is also kept as strings for platforms that re-render it */
 static ui_text ui; static int ui_last_y = -1; static int cur_loop = -1;
+/* ---- message log  [EXE SYS 19: 0x405ec0 / 0x41eaf0; viewer 0x42bf40]
+   66 entries of 0x800 bytes. While sys16[2] bit 0x10 (logging on) is set, the first character printed opens an entry
+   (bit 0x20 = entry open), text is appended, and SYS 19,2 closes it. 0 clear, 3 count -> v32[18], 4 n -> text "pointer",
+   5 n -> voice, 6 = viewer (here: on the small screen, see sys_ui_text). The voice field is a port addition for replay. ---- */
+enum { BL_N = 66, BL_TAG = 0xB0000000u };
+static struct { char t[0x800]; int len, done; char voice[24]; } bl[BL_N];
+static int bl_cur; static char bl_voice[24];
+static struct { bool on; int sel, top; } blv;
+static void bl_begin(vm_t *vm) {
+    SET_SYS16(vm, 2, SYS16(vm, 2) | 0x20);
+    if (bl_cur == BL_N) { memmove(&bl[0], &bl[1], sizeof bl[0] * (BL_N - 1)); bl_cur = BL_N - 1; }
+    bl[bl_cur].len = 0; bl[bl_cur].t[0] = 0; bl[bl_cur].done = 0;
+    memcpy(bl[bl_cur].voice, bl_voice, sizeof bl_voice); bl_voice[0] = 0;
+}
+static void bl_add(vm_t *vm, const uint8_t *from, size_t n) {
+    uint16_t f = SYS16(vm, 2); if (!(f & 0x10) || (f & 0x800)) return;
+    if (!(f & 0x20)) bl_begin(vm);
+    if (bl_cur >= BL_N) return;
+    int *L = &bl[bl_cur].len; if (*L + (int)n < (int)sizeof bl[0].t) { memcpy(bl[bl_cur].t + *L, from, n); *L += (int)n; bl[bl_cur].t[*L] = 0; }
+}
+static int bl_count(void) { int n = 0; while (n < BL_N && bl[n].done) n++; return n; }
 static void ui_capture(vm_t *vm, const uint8_t *from, const uint8_t *to) {
     if (SYS16(vm, 1) != 6 || SYS16(vm, 10) >= 88) return;
     int y = SYS16(vm, 10);
@@ -170,7 +191,41 @@ static void ui_capture(vm_t *vm, const uint8_t *from, const uint8_t *to) {
     char *d = ui.line[ui.nlines - 1].sjis; size_t n = strlen(d), add = to - from;
     if (n + add < sizeof ui.line[0].sjis) { memcpy(d + n, from, add); d[n + add] = 0; }
 }
+/* log viewer for small screens: entries wrapped to 40 half-width columns, newest at the bottom; the selected entry is the
+   highlighted "item". Last row is a key hint. */
+enum { BL_ROWS = 12, BL_COLS = 40 };
+static int bl_wrap(const char *t, char out[][BL_COLS + 2], int max) {   /* returns row count; out may be NULL */
+    int rows = 0, col = 0; char cur[BL_COLS + 2]; int cl = 0; const uint8_t *q = (const uint8_t *)t;
+    while (*q) {
+        if (*q == '\n') { if (cl) { if (out && rows < max) { cur[cl] = 0; strcpy(out[rows], cur); } rows++; cl = col = 0; } q++; continue; }
+        int w = (((*q >= 0x81 && *q <= 0x9F) || *q >= 0xE0) && q[1]) ? 2 : 1;
+        if (col + w > BL_COLS) { if (out && rows < max) { cur[cl] = 0; strcpy(out[rows], cur); } rows++; cl = col = 0; }
+        memcpy(cur + cl, q, w); cl += w; col += w; q += w;
+    }
+    if (cl) { if (out && rows < max) { cur[cl] = 0; strcpy(out[rows], cur); } rows++; }
+    if (!rows && out && max) out[0][0] = 0;
+    return rows ? rows : 1;
+}
+static void bl_fix_top(void) {
+    if (blv.top > blv.sel) blv.top = blv.sel;
+    for (;;) { int r = 0; for (int e = blv.top; e <= blv.sel; e++) r += bl_wrap(bl[e].t, NULL, 0); if (r <= BL_ROWS || blv.top >= blv.sel) break; blv.top++; }
+}
+static ui_text blui;
+static const ui_text *bl_ui(void) {
+    int n = bl_count(); blui.nlines = 0; blui.dialogue_visible = true; blui.menu_visible = false; blui.loop = 100; blui.hover = blv.sel;
+    static char rows[24][BL_COLS + 2];
+    for (int e = blv.top; e < n && blui.nlines < BL_ROWS; e++) {
+        int r = bl_wrap(bl[e].t, rows, 24);
+        for (int i = 0; i < r && i < 24 && blui.nlines < BL_ROWS; i++) { strcpy(blui.line[blui.nlines].sjis, rows[i]); blui.line[blui.nlines++].item = e; }
+    }
+    while (blui.nlines < BL_ROWS) { blui.line[blui.nlines].sjis[0] = 0; blui.line[blui.nlines++].item = -1; }
+    /* "Ｂ：戻る　Ａ：音声　↑↓：選択" in Shift-JIS */
+    strcpy(blui.line[blui.nlines].sjis, "\x82\x61\x81\x46\x96\xdf\x82\xe9\x81\x40\x82\x60\x81\x46\x89\xb9\x90\xba\x81\x40\x81\xaa\x81\xab\x81\x46\x91\x49\x91\xf0");
+    blui.line[blui.nlines++].item = -1;
+    return &blui;
+}
 const ui_text *sys_ui_text(vm_t *vm) {
+    if (blv.on) return bl_ui();
     ui.dialogue_visible = win[0].used && win[0].visible; ui.menu_visible = win[1].used && win[1].visible; ui.loop = cur_loop;
     ui.hover = (ui.menu_visible && V32(vm, 9) < 16) ? (int)V32(vm, 9) : -1;     /* v32[9] is the library's "highlighted choice" variable */
     for (int i = 0; i < ui.nlines; i++) ui.line[i].item = ui.menu_visible ? i : -1;
@@ -181,7 +236,8 @@ void sys_text(vm_t *vm, const char *sj, bool zenkaku) {
     const uint8_t *p = (const uint8_t *)sj;
     while (*p) {
         const uint8_t *start = p; int half; uint32_t idx = sys_glyph_index(&p, &half);
-        if (SYS16(vm, 2) & 0x800) { SET_V32(vm, 18, V32(vm, 18) + 1); continue; }   /* [EXE] counts into v32[18] (mem+0x1134) */
+        if (SYS16(vm, 2) & 0x800) { SET_V32(vm, 18, V32(vm, 18) + (half ? 1 : 2)); continue; }   /* [EXE] counts bytes into v32[18] (mem+0x1134) */
+        bl_add(vm, start, (size_t)(p - start));
         int cw = SYS16(vm, 15), lh = SYS16(vm, 16), adv = half ? cw / 2 : cw;
         ui_capture(vm, start, p);
         draw_glyph(SYS16(vm, 1), SYS16(vm, 9), SYS16(vm, 10), idx, half ? 8 : 16);
@@ -192,6 +248,7 @@ void sys_text(vm_t *vm, const char *sj, bool zenkaku) {
 }
 void sys_line(vm_t *vm, int arg) {     /* [EXE: 0x411e40] */
     if (arg) return;
+    if (SYS16(vm, 2) & 0x20) bl_add(vm, (const uint8_t *)"\n", 1);
     SET_SYS16(vm, 10, SYS16(vm, 10) + SYS16(vm, 16)); SET_SYS16(vm, 9, SYS16(vm, 5)); SET_SYS16(vm, 2, SYS16(vm, 2) | 0x1000);
 }
 /* settings store (AI5WIN.INI equivalent). [guess] SYS 27: 0=get -> v16[18], 1=set. Defaults copied from the disc's INI. */
@@ -362,6 +419,31 @@ static void scene_cmd(vm_t *vm, vm_param *p) {
     }
 }
 extern void vm_run_block(vm_t *);
+static void backlog_view(vm_t *vm) {   /* SYS 19,6: modal; B or L closes, up/down select, left/right page, A replays the voice */
+    int n = bl_count(); if (!n) return;
+    blv.on = true; blv.sel = n - 1; blv.top = 0; bl_fix_top();   /* newest entry at the bottom of a full page */
+    int keys[6] = {0, 1, 2, 3, 4, 5}, held[6] = {0}; bool armed = false;
+    while (!vm->quit) {
+        if (!frame(vm)) { vm->quit = true; break; }
+        bool any = plat_key(9); for (int i = 0; i < 6; i++) any |= plat_key(keys[i]);
+        if (!armed) { armed = !any; continue; }                 /* wait until the key that opened the viewer is released */
+        if (plat_key(9)) break;
+        bool fire[6];
+        for (int i = 0; i < 6; i++) { if (plat_key(keys[i])) held[i]++; else held[i] = 0; fire[i] = held[i] == 1 || (held[i] > 20 && held[i] % 4 == 0); }
+        if (fire[1]) break;
+        int old = blv.sel;
+        if (fire[2] && blv.sel > 0) blv.sel--;
+        if (fire[3] && blv.sel < n - 1) blv.sel++;
+        if (fire[4]) blv.sel = blv.sel > 5 ? blv.sel - 5 : 0;
+        if (fire[5]) blv.sel = blv.sel + 5 < n ? blv.sel + 5 : n - 1;
+        if (blv.sel != old) bl_fix_top();
+        if (fire[0] && bl[blv.sel].voice[0] && (SYS16(vm, 2) & 0x100)) snd_start(vm, SND_VOICE, SND_VOICE, bl[blv.sel].voice);
+    }
+    blv.on = false; plat_snd_stop(SND_VOICE);
+    for (int k = 0; k < 120 && !vm->quit; k++) {             /* swallow the closing key so the game does not see it too */
+        bool any = plat_key(9); for (int i = 0; i < 6; i++) any |= plat_key(keys[i]); if (!any) break;
+        if (!frame(vm)) vm->quit = true; }
+}
 void sys_call(vm_t *vm, uint32_t fn) {
     sys_init(vm);
     vm_param *p = vm->params; uint32_t sub = p[0].val;
@@ -455,6 +537,7 @@ void sys_call(vm_t *vm, uint32_t fn) {
     case 7:                            /* voice: (sub,name,ch). Disabled unless sys16[2] bit 0x100; key 7 (voice skip) cancels 0/3 */
         if (!(SYS16(vm, 2) & 0x100)) { SET_V32(vm, 18, 0); return; }
         if ((sub == 0 || sub == 3) && plat_key(7)) { plat_snd_stop(SND_VOICE + (p[2].val & 1)); snd_has_pend[SND_VOICE + (p[2].val & 1)] = 0; SET_V32(vm, 18, 0); return; }
+        if ((sub == 0 || sub == 2) && p[1].str[0]) snprintf(bl_voice, sizeof bl_voice, "%s", p[1].str);   /* for the log viewer */
         snd_cmd(vm, SND_VOICE, 2, sub, p[1].str, p[2].val);
         return;
     case 1: {                          /* [EXE 0x41f650] print a number as full-width digits */
@@ -483,7 +566,23 @@ void sys_call(vm_t *vm, uint32_t fn) {
             if (sub == 3) return;      /* TODO: 0x42cb50 (rect refresh?) */
             if (sub == 5) { SET_V16(vm, 18, win[n].visible); return; } }
         break;
-    case 19: if (sub == 3 || sub == 4) SET_V32(vm, 18, 0); return;                         /* backlog: [EXE] 0x405ec0, not implemented yet */
+    case 19: switch (sub) {
+        case 0: if (SYS16(vm, 2) & 0x10) { memset(bl, 0, sizeof bl); bl_cur = 0; } return;
+        case 1: if ((SYS16(vm, 2) & 0x30) == 0x10) bl_begin(vm); return;
+        case 2: if ((SYS16(vm, 2) & 0x30) == 0x30) { SET_SYS16(vm, 2, SYS16(vm, 2) & ~0x20); if (bl_cur < BL_N) bl[bl_cur++].done = 1; } return;
+        case 3: SET_V32(vm, 18, (uint32_t)bl_count()); return;
+        case 4: SET_V32(vm, 18, p[1].val < BL_N && bl[p[1].val].done ? BL_TAG | p[1].val : 0); return;
+        case 5: SET_V32(vm, 18, 0); return;
+        case 6: backlog_view(vm); return;
+        } return;
+    case 20: {                         /* [script-derived] length of a text in half-width units -> v32[18] (memo centring, auto-mode wait) */
+        uint32_t a = sub; if ((a & 0xFF000000u) == BL_TAG) { SET_V32(vm, 18, (uint32_t)bl[a & 0xFF].len); return; }
+        if (!a || a >= MEM_SIZE - 1) { SET_V32(vm, 18, 0); return; }
+        uint16_t f = SYS16(vm, 2); SET_SYS16(vm, 2, f | 0x800); SET_V32(vm, 18, 0);
+        const uint8_t *smes = vm->mes; uint32_t sip = vm->ip, sbase = vm->base, snl = vm->nlabels; const uint32_t *sl = vm->labels;
+        vm->mes = vm->mem; vm->nlabels = 0; vm->labels = NULL; vm->base = 0; vm->ip = a; vm_run_block(vm);
+        vm->mes = smes; vm->ip = sip; vm->base = sbase; vm->nlabels = snl; vm->labels = sl;
+        SET_SYS16(vm, 2, (SYS16(vm, 2) & ~0x800) | (f & 0x800)); return; }
     case 13: col_bg = p[0].val; col_fg = p[1].val; return;                                 /* [EXE] */
     case 25: if (sub == 0) { load_image(vm, p[1].str, SYS16(vm, 1), -1, -1); return; } break;   /* [EXE 0x421b30 -> 0x41ab80; its image cache (0x41f430) is not reproduced] */
     case 9:                            /* [EXE 0x41e4b0 -> 0x420540] load image into surface sys16[1], optionally at (p1,p2) */

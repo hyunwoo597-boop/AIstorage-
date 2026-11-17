@@ -57,6 +57,10 @@ bool plat_key(int key) { if (scripted(key)) return true; if (getenv("AI5_KEYS_ON
 bool plat_frame(const uint8_t *rgb, int w, int h) {
     g_frame++;
     if (getenv("AI5_UI") && g_frame % 400 == 0) { extern vm_t *g_vm; const ui_text *u = sys_ui_text(g_vm); printf("ui@%ld: lines=%d dlg=%d menu=%d hover=%d len0=%zu\n", g_frame, u->nlines, u->dialogue_visible, u->menu_visible, u->hover, u->nlines ? strlen(u->line[0].sjis) : 0); }
+    if (getenv("AI5_UIAT")) { char k[16]; snprintf(k, sizeof k, ",%ld,", g_frame); char e[512]; snprintf(e, sizeof e, ",%s,", getenv("AI5_UIAT"));
+        if (strstr(e, k)) { extern vm_t *g_vm; const ui_text *u = sys_ui_text(g_vm); char n[64]; snprintf(n, sizeof n, "/tmp/ui_%05ld.txt", g_frame);
+            FILE *f = fopen(n, "wb"); if (f) { fprintf(f, "loop=%d dlg=%d menu=%d hover=%d\n", u->loop, u->dialogue_visible, u->menu_visible, u->hover);
+                for (int i = 0; i < u->nlines; i++) fprintf(f, "%3d|%s\n", u->line[i].item, u->line[i].sjis); fclose(f); } } }
     if (g_dump_every && g_frame % g_dump_every == 0) { char n[64]; snprintf(n, sizeof n, "/tmp/fr_%05ld.ppm", g_frame);
         FILE *f = fopen(n, "wb"); if (f) { fprintf(f, "P6 %d %d 255\n", w, h); fwrite(rgb, 1, w * h * 3, f); fclose(f); } }
     return g_frame < g_limit;
