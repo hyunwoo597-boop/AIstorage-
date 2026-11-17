@@ -34,13 +34,25 @@ static uint8_t *screen_out;
 static int shake_x, shake_y;          /* [EXE UTIL 0 -> 0x40ffa0/0x41cf70] display offset used for screen shakes */
 static int fx_left;                   /* SYS 10,1: frames left of the fade from the snapshot in surface 11 to the live screen */
 static const uint8_t *compose(void);
-const uint8_t *sys_scene_depth(void) { return (surf[0] && !shake_x && !shake_y) ? dpth[0] : NULL; }
+/* title menu popup (UTIL 10,1) drawn over the scene; see title_menu() */
+static struct { bool on; int x, y, n, hl, pressed, w; uint8_t *rgb, *a; } pop;
+static uint8_t *pop_scene, *pop_depth;
+static void pop_draw(uint8_t *out, uint8_t *z) {   /* item i, state st (0 normal, 1 highlight, 2 pressed) = rows (i*3+st)*36 of the sheet */
+    for (int i = 0; i < pop.n; i++) { int st = i == pop.pressed ? 2 : i == pop.hl ? 1 : 0, sy = (i * 3 + st) * 36;
+        for (int y = 0; y < 36; y++) for (int x = 0; x < pop.w; x++) { int tx = pop.x + x, ty = pop.y + i * 36 + y; if (tx < 0 || ty < 0 || tx >= SW || ty >= SH) continue;
+            int a = pop.a[(sy + y) * pop.w + x]; if (!a) continue; const uint8_t *c = pop.rgb + ((sy + y) * pop.w + x) * 3; uint8_t *d = out + (ty * SW + tx) * 3;
+            for (int k = 0; k < 3; k++) d[k] = (d[k] * (255 - a) + c[k] * a) / 255; if (z && a >= 128) z[ty * SW + tx] = 1; } }
+}
+const uint8_t *sys_scene_depth(void) {
+    if (pop.on && pop_depth) { memcpy(pop_depth, dpth[0], SW * SH); pop_draw(pop_scene, pop_depth); return pop_depth; } return (surf[0] && !shake_x && !shake_y) ? dpth[0] : NULL; }
 const uint8_t *sys_scene_rgb(void) {
-    if (!surf[0]) return NULL; if (!shake_x && !shake_y) return surf[0];
+    if (!surf[0]) return NULL;
+    if (pop.on && pop_scene) { memcpy(pop_scene, surf[0], SW * SH * 3); pop_draw(pop_scene, NULL); return pop_scene; }
+    if (!shake_x && !shake_y) return surf[0];
     int v0 = win[0].visible, v1 = win[1].visible; win[0].visible = win[1].visible = 0; const uint8_t *r = compose(); win[0].visible = v0; win[1].visible = v1; return r;
 }
 static const uint8_t *compose(void) {
-    if (!(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !shake_x && !shake_y && !fx_left) return surf[0];
+    if (!(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !shake_x && !shake_y && !fx_left && !pop.on) return surf[0];
     if (fx_left) { int a = fx_left * 255 / 16; fx_left--;      /* [EXE 0x42080a] 16-step fade from the snapshot */
         for (int i = 0; i < SW * SH * 3; i++) { int sx = i / 3 % SW, sy = i / 3 / SW; uint8_t o = INS(11, sx, sy) ? PIX(11, sx, sy)[i % 3] : 0;
             screen_out[i] = (o * a + surf[0][i] * (255 - a)) / 255; } }
@@ -57,6 +69,7 @@ static const uint8_t *compose(void) {
                 int a = MSK(6, ox + x, oy + y);
                 for (int c = 0; c < 3; c++) { int veil = d[c] * 127 / 255; d[c] = (veil * (255 - a) + s[c] * a) / 255; } } } }
     if (getenv("AI5_DEBUG_SURF")) { int n = atoi(getenv("AI5_DEBUG_SURF")); for (int y = 0; y < 120; y++) memcpy(screen_out + y * SW * 3, surf[n] + y * SW * 3, SW * 3); }
+    if (pop.on) pop_draw(screen_out, NULL);
     return screen_out;
 }
 static uint8_t seen[32][16];
@@ -74,6 +87,8 @@ static void sys_init(vm_t *vm) {
     for (int i = 1; i < 8; i++) SET_SYS32(vm, i, 0x40000 + i * 0x20000);   /* [guess] file areas the scripts address through sys32[n] */
     SET_SYS16(vm, 0, 0x1310);          /* [EXE 0x4057b8] base of the save-list area (45 bytes per slot) */
     SET_SYS16(vm, 23, 10);             /* [EXE 0x4058b2] working surface: scenes are composed on surface 10, then wiped onto the screen */
+    FLAG(vm, 4016) = 1;                /* port choice: f4016 ("opening already seen", set by S01) makes START.MES show the title menu;
+                                          kept set so the menu appears from the first launch (also after flag loads in SYS 4,3/4,4) */
     /* [EXE 0x4058c8..0x40594b] start-up flags: 0x402, display effects (ini DispEffect.Play) 0x2000, 0x8000 */
     SET_SYS16(vm, 2, SYS16(vm, 2) | 0x402 | 0x8000 | (*ini_slot("DispEffect", "Play") ? 0x2000 : 0));
     SET_SYS32(vm, 0, 0);               /* [EXE 0x4057ce: real memory base; here offsets] sys32[0] is the memory base: scripts pass sys32[0]+offset as a pointer */
@@ -431,8 +446,8 @@ static void save_cmd(vm_t *vm, uint32_t sub, uint32_t slot, uint32_t start, uint
         if (!plat_save_read(name, tmp, SAVE_SIZE)) memset(tmp, 0, SAVE_SIZE);
         for (int i = 0; i < 0x1000; i++) if (tmp[OFF_FLAG + i] < m[OFF_FLAG + i]) tmp[OFF_FLAG + i] = m[OFF_FLAG + i];
         plat_save_write(name, tmp, SAVE_SIZE); return;
-    case 3: if (plat_save_read(name, tmp, SAVE_SIZE)) memcpy(m + OFF_FLAG, tmp + OFF_FLAG, 0x1000); return;   /* load flags only */
-    case 4: memset(m + OFF_FLAG, 0, 0x1000); memset(m + 0x1180, 0, 0x190); memset(m + 0x1310, 0, 0xCF0); return;  /* clear */
+    case 3: if (plat_save_read(name, tmp, SAVE_SIZE)) memcpy(m + OFF_FLAG, tmp + OFF_FLAG, 0x1000); FLAG(vm, 4016) = 1; return;   /* load flags only */
+    case 4: memset(m + OFF_FLAG, 0, 0x1000); memset(m + 0x1180, 0, 0x190); memset(m + 0x1310, 0, 0xCF0); FLAG(vm, 4016) = 1; return;  /* clear */
     case 5: case 7: {                  /* load part: 5 = u16 array at 0x1180, 7 = bytes at 0x1310 */
         uint32_t base = sub == 5 ? 0x1180 : 0x1310, unit = sub == 5 ? 2 : 1;
         if (!plat_save_read(name, tmp, SAVE_SIZE)) return;
@@ -716,6 +731,33 @@ static void rule_wipe(vm_t *vm, int kind, int x0, int y0, int w, int h, uint32_t
     }
     if (w > 0 && h > 0) gfx_copy(x0, y0, w, h, 10, x0, y0, 0, 0);
 }
+/* UTIL 10,1 [EXE 0x411567 -> 0x42bf40, result -> v16[18]]: the title menu, a popup window drawn from the sheet the script
+   has just loaded into surface 4 (titile_pt.gcc: 6 items x 3 states of 408x36). The original's popup class is not
+   reproduced; this is an equivalent: items stacked under the logo, D-pad/A or pointer/touch, returns 1..6 (0 = cancel). */
+static int title_menu(vm_t *vm) {
+    int src = 4, w = sw[src] < 408 ? sw[src] : 408, n = sh[src] / 108; if (n > 6) n = 6; if (n <= 0) return 1;
+    pop.w = w; pop.n = n; pop.rgb = malloc((size_t)w * n * 108 * 3); pop.a = malloc((size_t)w * n * 108);
+    if (!pop_scene) { pop_scene = malloc(SW * SH * 3); pop_depth = malloc(SW * SH); }
+    for (int y = 0; y < n * 108; y++) for (int x = 0; x < w; x++) { memcpy(pop.rgb + (y * w + x) * 3, PIX(src, x, y), 3); pop.a[y * w + x] = MSK(src, x, y); }
+    pop.x = (SW - w) / 2; pop.y = 472 - n * 36; pop.hl = 0; pop.pressed = -1; pop.on = true;
+    int held[6] = {0}, result = -1, cx0 = -1, cy0 = -1; bool armed = false;
+    while (!vm->quit && result < 0) {
+        if (!frame(vm)) { vm->quit = true; break; }
+        bool k[6]; bool any = false; for (int i = 0; i < 6; i++) { k[i] = plat_key(i); any |= k[i]; }
+        if (!armed) { armed = !any; continue; }
+        bool fire[6]; for (int i = 0; i < 6; i++) { held[i] = k[i] ? held[i] + 1 : 0; fire[i] = held[i] == 1 || (i >= 2 && held[i] > 24 && (held[i] - 24) % 6 == 0); }
+        int cx, cy; plat_cursor(&cx, &cy, false);
+        if ((cx != cx0 || cy != cy0) && cx0 >= 0 && cx >= pop.x && cx < pop.x + w && cy >= pop.y && cy < pop.y + n * 36) pop.hl = (cy - pop.y) / 36;   /* pointer / touch */
+        cx0 = cx; cy0 = cy;
+        if (fire[2]) pop.hl = (pop.hl + n - 1) % n;
+        if (fire[3]) pop.hl = (pop.hl + 1) % n;
+        if (fire[0]) result = pop.hl + 1;
+    }
+    if (result > 0) { pop.pressed = pop.hl; for (int f = 0; f < 8 && !vm->quit; f++) if (!frame(vm)) vm->quit = true; }   /* show the pressed state briefly */
+    for (int f = 0; f < 120 && !vm->quit; f++) { bool any = false; for (int i = 0; i < 6; i++) any |= plat_key(i); if (!any) break; if (!frame(vm)) vm->quit = true; }
+    pop.on = false; free(pop.rgb); free(pop.a); pop.rgb = pop.a = NULL;
+    return result < 0 ? 0 : result;
+}
 /* UTIL [EXE dispatcher 0x411330, 11 functions] */
 void sys_util(vm_t *vm) {
     sys_init(vm);
@@ -728,6 +770,8 @@ void sys_util(vm_t *vm) {
     case 5:                            /* [EXE 0x410010] 0: close the dialogue window if open, open the choice window; else close the choice window */
         if (p[1].val == 0) { win[0].visible = 0; win[1].visible = 1; } else win[1].visible = 0;
         return;
+    case 10: if (p[1].val == 1) SET_V16(vm, 18, title_menu(vm)); return;   /* 0 = close the popup [0x42cf20]: nothing to do here */
+    case 9: return;                   /* [EXE 0x411555 -> 0x410150] PC window/menu-bar state around the system menu: not needed */
     case 6: {                          /* [EXE 0x4109a0] (x, y, w, h, surface): mask plane = 0x80 (half transparent) */
         int x0 = p[1].val, y0 = p[2].val, w = p[3].val, h = p[4].val, sn = p[5].val % NSURF;
         for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) if (INS(sn, x, y)) MSK(sn, x, y) = 0x80;
