@@ -54,6 +54,8 @@ static uint8_t seen[32][16];
 
 
 static void anim_reset(void);
+static uint32_t *ini_slot(const char *sec, const char *key);
+static void snd_start(vm_t *vm, int kind, int slot, const char *name);
 static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy);
 static void sys_init(vm_t *vm) {
     if (surf[0]) return;
@@ -62,6 +64,8 @@ static void sys_init(vm_t *vm) {
     anim_reset();
     for (int i = 1; i < 8; i++) SET_SYS32(vm, i, 0x40000 + i * 0x20000);   /* [guess] file areas the scripts address through sys32[n] */
     SET_SYS16(vm, 0, 0x1310);          /* [EXE 0x4057b8] base of the save-list area (45 bytes per slot) */
+    /* [EXE 0x4058c8..0x40594b] start-up flags: 0x402, display effects (ini DispEffect.Play) 0x2000, 0x8000 */
+    SET_SYS16(vm, 2, SYS16(vm, 2) | 0x402 | 0x8000 | (*ini_slot("DispEffect", "Play") ? 0x2000 : 0));
     SET_SYS32(vm, 0, 0);               /* [EXE 0x4057ce: real memory base; here offsets] sys32[0] is the memory base: scripts pass sys32[0]+offset as a pointer */
     { /* [EXE 0x4070eb] the engine itself loads the menu/window parts sheet into surface 7 at start-up */
       uint16_t r[4] = { SYS16(vm, 17), SYS16(vm, 18), SYS16(vm, 19), SYS16(vm, 20) };
@@ -196,10 +200,14 @@ static void anim_reset(void) { for (int a = 0; a < 10; a++) for (int b = 0; b < 
 static void anim_draw(vm_t *vm, uint32_t n) {
     const uint8_t *r = vm->mem + ((anim_calls + n * 28) & (MEM_SIZE - 1)); uint32_t t = rd32(r);
     int sx = rd32(r + 4), sy = rd32(r + 8), w = rd32(r + 12), h = rd32(r + 16), dx = rd32(r + 20), dy = rd32(r + 24);
-    { static int n; if (n++ < 3) plat_log("anim draw #%u type %u src(%d,%d) %dx%d -> (%d,%d)", n, t, sx, sy, w, h, dx, dy); }
-    if (t == 0) gfx_copy(sx, sy, w, h, 1, dx, dy, 0, 0);
-    else if (t == 1) gfx_copy_key(sx, sy, w, h, 1, dx, dy, 0, 0x00FF00);
-    else { static uint8_t warned[8]; if (t < 8 && !warned[t]) { warned[t] = 1; plat_log("TODO anim draw type %u", t); } }
+    /* [EXE 0x40f4e7 / 0x40f940] 0 = copy, 1 = green-key copy, 2 = nothing, 3/4 = sound effect (thunder), 5 = copy, 6 = full refresh */
+    switch (t) {
+    case 0: case 5: gfx_copy(sx, sy, w, h, 1, dx, dy, 0, 0); break;
+    case 1: gfx_copy_key(sx, sy, w, h, 1, dx, dy, 0, 0x00FF00); break;
+    case 3: snd_start(vm, SND_SE, SND_SE, "ns_se59.wav"); break;
+    case 4: snd_start(vm, SND_SE, SND_SE, "ns_se58.wav"); break;
+    default: break;
+    }
 }
 static void anim_tick_one(vm_t *vm, anim_stream *s) {
     const uint8_t *m = vm->mem;
@@ -466,14 +474,53 @@ static void crossfade(vm_t *vm, int src, int x0, int y0, int w, int h) {
     }
     free(bak); gfx_copy(x0, y0, w, h, src, x0, y0, 0, 0);
 }
+/* rule-image transitions from surface 10 (the scene being built) to the screen. Rule = DATA.ARC "%02u.bin", 640x480 bytes.
+   [EXE 0x410e00] UTIL 3: hard wipe, pixels revealed in rule-value order (dir 0: 0->255, else 255->1); rule 3 = column wipe (0x410750).
+   [EXE 0x410460] UTIL 4: soft wipe, alpha = t - rule for t = 32..352 step 32 (15 ms steps); dir != 0 = plain copy.
+   Both end with a full copy. They only animate when sys16[2] bit 0x2000 (display effects) is set and skip (key 6) is not held.
+   Steps per frame for UTIL 3 are a choice (the original redraws as fast as it can). */
+static bool effects_on(vm_t *vm) { return (SYS16(vm, 2) & 0x2000) && !plat_key(6); }
+static void rule_wipe(vm_t *vm, int kind, int x0, int y0, int w, int h, uint32_t rule, uint32_t dir) {
+    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x0 + w > SW) w = SW - x0; if (y0 + h > SH) h = SH - y0;
+    if (w > 0 && h > 0 && effects_on(vm) && !(kind == 4 && dir)) {
+        if (kind == 3 && rule == 3) {                       /* column wipe, left to right */
+            for (int c = 0; c < w && !vm->quit; c += 20) { gfx_copy(x0 + c, y0, 20, h, 10, x0 + c, y0, 0, 0);
+                if (!effects_on(vm)) break; if (!frame(vm)) vm->quit = true; vm->steps = 0; }
+        } else {
+            char nm[16]; snprintf(nm, sizeof nm, "%02u.bin", rule % 100); size_t n; uint8_t *r = arc_load_lzss(&vm->arc_data, nm, &n);
+            if (r && n >= (size_t)SW * SH) {
+                if (kind == 3) {
+                    for (int step = 0; step < 256 && !vm->quit; ) {
+                        for (int k = 0; k < 8 && step < 256; k++, step++) { int v = dir ? 255 - step : step;
+                            for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) if (r[y * SW + x] == v && INS(10, x, y)) memcpy(PIX(0, x, y), PIX(10, x, y), 3); }
+                        if (!effects_on(vm)) break; if (!frame(vm)) vm->quit = true; vm->steps = 0;
+                    }
+                } else {
+                    uint8_t *old = malloc((size_t)SW * SH * 3); memcpy(old, surf[0], (size_t)SW * SH * 3);
+                    for (int t = 32; t < 384 && !vm->quit; t += 32) {
+                        for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) { if (!INS(10, x, y)) continue;
+                            int a = t - r[y * SW + x]; if (a <= 0) continue; if (a > 255) a = 255;
+                            const uint8_t *o = old + (y * SW + x) * 3, *nw = PIX(10, x, y); uint8_t *d = PIX(0, x, y);
+                            for (int c = 0; c < 3; c++) d[c] = (o[c] * (255 - a) + nw[c] * a) / 255; }
+                        if (!effects_on(vm)) break; if (!frame(vm)) vm->quit = true; vm->steps = 0;
+                    }
+                    free(old);
+                }
+            } else plat_log("rule %s missing", nm);
+            free(r);
+        }
+    }
+    if (w > 0 && h > 0) gfx_copy(x0, y0, w, h, 10, x0, y0, 0, 0);
+}
 /* UTIL [EXE dispatcher 0x411330, 11 functions] */
 void sys_util(vm_t *vm) {
     sys_init(vm);
     vm_param *p = vm->params; uint32_t n = p[0].val;
+    if (getenv("AI5_TRACE")) plat_log("  util %u: %u %u %u %u %u %u", n, p[1].val, p[2].val, p[3].val, p[4].val, p[5].val, p[6].val);
     switch (n) {
     case 0: shake_x = (int32_t)p[1].val; shake_y = (int32_t)p[2].val; if (!frame(vm)) vm->quit = true; return;      /* [EXE] offset + full repaint; the frame pump here is a guess */
     case 1: crossfade(vm, p[1].val, p[2].val, p[3].val, p[4].val, p[5].val); return;                                  /* [EXE 0x4102d0; src = p1 from script use] */
-    case 3: case 4: crossfade(vm, p[5].val, p[1].val, p[2].val, p[3].val, p[4].val); return;                          /* [EXE 0x410e00 / 0x410460 not read: both shown as a crossfade] */
+    case 3: case 4: rule_wipe(vm, n, p[1].val, p[2].val, p[3].val, p[4].val, p[5].val, p[6].val); return;
     case 5:                            /* [EXE 0x410010] 0: close the dialogue window if open, open the choice window; else close the choice window */
         if (p[1].val == 0) { win[0].visible = 0; win[1].visible = 1; } else win[1].visible = 0;
         return;
