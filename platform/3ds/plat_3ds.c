@@ -69,7 +69,11 @@ void plat_cursor(int *x, int *y, bool set) { if (set) { g_cx = *x; g_cy = *y; } 
 bool plat_key(int key) {
     switch (key) {
     case 0: return (g_held & KEY_A) || (g_touching && g_touch_armed);
-    case 1: return (g_held & KEY_B) != 0;
+    case 1: {                                   /* cancel. In the dialogue/choice loop it opens the system menu: START there;
+                                                   B keeps working as "back" in menus, save/load screens and the message log */
+        const ui_text *u = sys_ui_text(g_vm); bool story = u->loop == 100 && !u->backlog && (u->dialogue_visible || u->menu_visible);
+        if (story) return (g_held & KEY_START) && !(g_held & KEY_SELECT);
+        return (g_held & (KEY_B | KEY_START)) && !((g_held & KEY_START) && (g_held & KEY_SELECT)); }
     case 2: return (g_held & KEY_DUP) != 0;
     case 3: return (g_held & KEY_DDOWN) != 0;
     case 4: return (g_held & KEY_DLEFT) != 0;
