@@ -161,11 +161,37 @@ static void fatal(const char *msg) {
     consoleInit(GFX_BOTTOM, NULL); printf("\n %s\n\n Put the game files in\n " DATA_DIR "\n\n START: exit\n", msg);
     while (aptMainLoop()) { hidScanInput(); if (hidKeysDown() & KEY_START) break; gfxFlushBuffers(); gfxSwapBuffers(); gspWaitForVBlank(); }
 }
+/* start-up splash: stereo artwork on the top screen (left/right eye from an MPO), prompt on the bottom; A or a touch continues */
+extern const uint8_t splash_lz[]; extern const size_t splash_lz_size, splash_raw_size;
+static void blit565(u8 *fb, const uint16_t *src, int w, int h, int ox) {
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { uint16_t c = src[y * w + x];
+        put(fb, ox + x, y, (c >> 11) * 255 / 31, (c >> 5 & 63) * 255 / 63, (c & 31) * 255 / 31); }
+}
+static bool splash(void) {
+    uint8_t *raw = malloc(splash_raw_size + 64); if (!raw) return true;
+    if (lzss_decode(splash_lz, splash_lz_size, raw, splash_raw_size) < splash_raw_size) { free(raw); return true; }
+    const uint16_t *L = (const uint16_t *)raw, *R = L + 400 * 240, *B = R + 400 * 240;
+    gfxSet3D(true); bool go = true; int armed = 0;
+    while ((go = aptMainLoop())) {
+        hidScanInput(); u32 k = hidKeysDown(), held = hidKeysHeld();
+        if (held & (KEY_A | KEY_TOUCH)) { if (armed) break; } else armed = 1;   /* ignore a key already held at launch */
+        if ((held & KEY_START) && (held & KEY_SELECT)) { go = false; break; }
+        (void)k;
+        blit565(gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL), L, 400, 240, 0);
+        blit565(gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL), R, 400, 240, 0);
+        blit565(gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL), B, 320, 240, 0);
+        gfxFlushBuffers(); gfxSwapBuffers(); gspWaitForVBlank();
+    }
+    /* wait for release so the press does not also act in the game */
+    while (go && aptMainLoop()) { hidScanInput(); if (!(hidKeysHeld() & (KEY_A | KEY_TOUCH))) break; gspWaitForVBlank(); }
+    gfxSet3D(false); free(raw); return go;
+}
 int main(void) {
     gfxInitDefault(); gfxSetDoubleBuffering(GFX_TOP, true); gfxSetDoubleBuffering(GFX_BOTTOM, true);
     osSetSpeedupEnable(true);
     void snd_init(void), snd_exit(void); snd_init();
     static vm_t vm; g_vm = &vm;
+    if (!splash()) { snd_exit(); gfxExit(); return 0; }
     if (!vm_init(&vm)) fatal("Archives not found (MES.ARC DATA.ARC BG.ARC).");
     else if (!vm_load_mes(&vm, "MAIN.MES")) fatal("MAIN.MES missing in MES.ARC.");
     else vm_run(&vm);
