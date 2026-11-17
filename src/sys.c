@@ -22,7 +22,7 @@ static void surf_ensure(int s, int w, int h) {
     free(surf[s]); free(amask[s]); surf[s] = c; amask[s] = m; sw[s] = w; sh[s] = h;
 }
 static uint32_t col_fg = 0xFFFFFF, col_bg = 0;   /* COLORREF 0x00BBGGRR  [EXE: SYS 13 -> bg=p0, fg=p1] */
-static const uint8_t *font; static uint32_t font_cells;
+static const uint8_t *font; static uint32_t font_cells; static int font_flags;   /* font16.bin header u16 at +6: bit 0 = Korean glyph remap */
 /* message windows [EXE 0x421e20: create/show/hide/rect]. How they are blended is a [guess]:
    window 0 shows the top-left of surface 6; a 50% dark veil (ini [Msg] Alpha=128) is laid first, then surface 6 is blended through its mask plane. */
 static struct { int used, visible, x0, y0, x1, y1; } win[8];
@@ -77,7 +77,7 @@ static void sys_init(vm_t *vm) {
       load_image(vm, "mwaku.gcc", 7, -1, -1);
       SET_SYS16(vm, 17, r[0]); SET_SYS16(vm, 18, r[1]); SET_SYS16(vm, 19, r[2]); SET_SYS16(vm, 20, r[3]); }
     size_t n; uint8_t *f = plat_read_file("font16.bin", &n);
-    if (f && n > 12 && !memcmp(f, "AF16", 4)) { font_cells = rd32(f + 8); font = f + 12; } else plat_log("font16.bin missing");
+    if (f && n > 12 && !memcmp(f, "AF16", 4)) { font_cells = rd32(f + 8); font = f + 12; font_flags = rd16(f + 6); } else plat_log("font16.bin missing");
 }
 static void once(vm_t *vm, uint32_t fn, const char *note) {
     uint32_t sub = vm->params[0].val; if (fn < 32 && sub < 16) { if (seen[fn][sub]) return; seen[fn][sub] = 1; }
@@ -160,6 +160,7 @@ uint32_t sys_glyph_index(const uint8_t **pp, int *half) {
     } else { *half = 1; idx = (c >= 0x20 && c < 0x7F) ? c - 0x20 : 0; p++; }
     *pp = p; return idx;
 }
+int sys_font_flags(void) { return font_flags; }
 const uint8_t *sys_font(uint32_t *cells) { if (cells) *cells = font_cells; return font; }
 /* text drawn into the dialogue/choice strip (surface 6, rows 0..87) is also kept as strings for platforms that re-render it */
 static ui_text ui; static int ui_last_y = -1; static int cur_loop = -1;

@@ -101,7 +101,8 @@ typedef struct {
 } ui_text;
 const uint8_t *sys_scene_rgb(void);         /* 640x480 RGB888 scene (surface 0 with shake applied), no text windows */
 const ui_text *sys_ui_text(vm_t *vm);
-const uint8_t *sys_font(uint32_t *cells);   /* font16.bin glyph data: 128 bytes per 16x16 4bpp cell */
+const uint8_t *sys_font(uint32_t *cells);
+int sys_font_flags(void);                  /* bit 0: Korean glyph remap font (full-width space drawn half width on the small screen) */   /* font16.bin glyph data: 128 bytes per 16x16 4bpp cell */
 uint32_t sys_glyph_index(const uint8_t **p, int *half);   /* decode one SJIS char, advance *p */
 
 /* hooks implemented in sys.c */

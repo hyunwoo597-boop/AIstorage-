@@ -114,6 +114,7 @@ static void draw_text(void) {
         if (hot) for (int yy = 6 + row * 18; yy < 6 + row * 18 + 18 && yy < 240; yy++) for (int xx = 0; xx < 320; xx++) put(fb, xx, yy, 0xE2, 0x00, 0x7F);
         if (item >= 0) g_row_item[row] = item;
         while (*p && row < 13) { int half; uint32_t idx = sys_glyph_index(&p, &half); int w = half ? 8 : 16;
+            if (idx == 95 && (sys_font_flags() & 1)) { if (x) x += 8; continue; }   /* Korean text: word spaces are full-width 0x8140 */
             if (x + w > 320) { x = 0; row++; if (row >= 13) break; if (item >= 0) g_row_item[row] = item;
                 if (hot) for (int yy = 6 + row * 18; yy < 6 + row * 18 + 18 && yy < 240; yy++) for (int xx = 0; xx < 320; xx++) put(fb, xx, yy, 0xE2, 0x00, 0x7F); }
             glyph(fb, x, 8 + row * 18, idx, w, 255, 255, 255); x += w; }
