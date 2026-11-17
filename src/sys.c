@@ -11,15 +11,19 @@
 #define NSURF 12
 static uint8_t *surf[NSURF];           /* RGB888, top-down */
 static uint8_t *amask[NSURF];          /* [EXE] every surface carries an 8-bit mask plane (surface+0x14) */
+static uint8_t *dpth[NSURF];           /* port addition for stereoscopic 3D: per-pixel layer, 0 = backdrop (drawn behind the
+                                          screen), 1 = sprite/overlay (character blends, key copies, text) at the screen plane */
 static int sw[NSURF], sh[NSURF];       /* surfaces grow to fit loaded images (animation sheets are taller than the screen) */
 #define PIX(s, x, y) (surf[s] + ((y) * sw[s] + (x)) * 3)
 #define MSK(s, x, y) (amask[s][(y) * sw[s] + (x)])
+#define DEP(s, x, y) (dpth[s][(y) * sw[s] + (x)])
 #define INS(s, x, y) ((x) >= 0 && (y) >= 0 && (x) < sw[s] && (y) < sh[s])
 static void surf_ensure(int s, int w, int h) {
     if (w <= sw[s] && h <= sh[s]) return; if (w < sw[s]) w = sw[s]; if (h < sh[s]) h = sh[s];
-    uint8_t *c = calloc(1, (size_t)w * h * 3), *m = calloc(1, (size_t)w * h);
-    for (int y = 0; y < sh[s]; y++) { memcpy(c + (size_t)y * w * 3, surf[s] + (size_t)y * sw[s] * 3, sw[s] * 3); memcpy(m + (size_t)y * w, amask[s] + (size_t)y * sw[s], sw[s]); }
-    free(surf[s]); free(amask[s]); surf[s] = c; amask[s] = m; sw[s] = w; sh[s] = h;
+    uint8_t *c = calloc(1, (size_t)w * h * 3), *m = calloc(1, (size_t)w * h), *z = calloc(1, (size_t)w * h);
+    for (int y = 0; y < sh[s]; y++) { memcpy(c + (size_t)y * w * 3, surf[s] + (size_t)y * sw[s] * 3, sw[s] * 3); memcpy(m + (size_t)y * w, amask[s] + (size_t)y * sw[s], sw[s]);
+        memcpy(z + (size_t)y * w, dpth[s] + (size_t)y * sw[s], sw[s]); }
+    free(surf[s]); free(amask[s]); free(dpth[s]); surf[s] = c; amask[s] = m; dpth[s] = z; sw[s] = w; sh[s] = h;
 }
 static uint32_t col_fg = 0xFFFFFF, col_bg = 0;   /* COLORREF 0x00BBGGRR  [EXE: SYS 13 -> bg=p0, fg=p1] */
 static const uint8_t *font; static uint32_t font_cells; static int font_flags;   /* font16.bin header u16 at +6: bit 0 = Korean glyph remap */
@@ -30,6 +34,7 @@ static uint8_t *screen_out;
 static int shake_x, shake_y;          /* [EXE UTIL 0 -> 0x40ffa0/0x41cf70] display offset used for screen shakes */
 static int fx_left;                   /* SYS 10,1: frames left of the fade from the snapshot in surface 11 to the live screen */
 static const uint8_t *compose(void);
+const uint8_t *sys_scene_depth(void) { return (surf[0] && !shake_x && !shake_y) ? dpth[0] : NULL; }
 const uint8_t *sys_scene_rgb(void) {
     if (!surf[0]) return NULL; if (!shake_x && !shake_y) return surf[0];
     int v0 = win[0].visible, v1 = win[1].visible; win[0].visible = win[1].visible = 0; const uint8_t *r = compose(); win[0].visible = v0; win[1].visible = v1; return r;
@@ -63,7 +68,7 @@ static void snd_start(vm_t *vm, int kind, int slot, const char *name);
 static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy);
 static void sys_init(vm_t *vm) {
     if (surf[0]) return;
-    for (int i = 0; i < NSURF; i++) { surf[i] = calloc(1, SW * SH * 3); amask[i] = calloc(1, SW * SH); sw[i] = SW; sh[i] = SH; }
+    for (int i = 0; i < NSURF; i++) { surf[i] = calloc(1, SW * SH * 3); amask[i] = calloc(1, SW * SH); dpth[i] = calloc(1, SW * SH); sw[i] = SW; sh[i] = SH; }
     screen_out = calloc(1, SW * SH * 3);
     anim_reset();
     for (int i = 1; i < 8; i++) SET_SYS32(vm, i, 0x40000 + i * 0x20000);   /* [guess] file areas the scripts address through sys32[n] */
@@ -111,7 +116,7 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
         if (dst != 0) { surf_ensure(dst, cx + im.w, cy + im.h); if (im.has_alpha) surf_ensure(dst, ax + im.aw, ay + im.ah); }
         for (int y = 0; y < im.h; y++) { int dy = cy + y; const uint8_t *s = im.bgr + (size_t)(im.h - 1 - y) * im.w * 3;
             for (int x = 0; x < im.w; x++) { int dx = cx + x; if (!INS(dst, dx, dy)) continue;
-                uint8_t *d = PIX(dst, dx, dy); d[0] = s[x * 3 + 2]; d[1] = s[x * 3 + 1]; d[2] = s[x * 3]; } }
+                uint8_t *d = PIX(dst, dx, dy); d[0] = s[x * 3 + 2]; d[1] = s[x * 3 + 1]; d[2] = s[x * 3]; DEP(dst, dx, dy) = 0; } }
         if (im.has_alpha) for (int y = 0; y < im.ah; y++) { int dy = ay + y; const uint8_t *s = im.alpha + (size_t)(im.ah - 1 - y) * im.aw;
             for (int x = 0; x < im.aw; x++) { int dx = ax + x; if (INS(dst, dx, dy)) MSK(dst, dx, dy) = s[x]; } }
         int w = im.w, h = im.h; if (cx + w > sw[dst]) w = sw[dst] - cx; if (cy + h > sh[dst]) h = sh[dst] - cy;
@@ -120,26 +125,26 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
 }
 #define EACH(body) for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int sx = x0 + x, sy = y0 + y, tx = dx + x, ty = dy + y; if (!INS(ss, sx, sy) || !INS(ds, tx, ty)) continue; body }
 /* [EXE 0x41ae60] colour copy; with_mask adds [EXE 0x41b130] mask-plane copy */
-static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, int with_mask) {
+static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, int with_mask) {   /* with_mask 2: keep the destination's 3D layer */
     ss %= NSURF; ds %= NSURF;
-    EACH(memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask) MSK(ds, tx, ty) = MSK(ss, sx, sy);)
+    EACH(memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy); if (with_mask != 2) DEP(ds, tx, ty) = DEP(ss, sx, sy);)
 }
 /* [EXE 0x41af20] copy skipping the key colour (COLORREF); exact compare is assumed */
-static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key) {
+static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer) {
     ss %= NSURF; ds %= NSURF; uint8_t kr = key, kg = key >> 8, kb = key >> 16;
-    EACH(const uint8_t *s = PIX(ss, sx, sy); if (s[0] == kr && s[1] == kg && s[2] == kb) continue; memcpy(PIX(ds, tx, ty), s, 3);)
+    EACH(const uint8_t *s = PIX(ss, sx, sy); if (s[0] == kr && s[1] == kg && s[2] == kb) continue; memcpy(PIX(ds, tx, ty), s, 3); if (!keep_layer) DEP(ds, tx, ty) = 1;)
 }
 /* [EXE 0x41b640/0x41b310] blend src over dst through the source mask plane (0 = skip, 255 = copy) */
 static void gfx_blend(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds) {
     ss %= NSURF; ds %= NSURF;
-    EACH(int a = MSK(ss, sx, sy); if (!a) continue; const uint8_t *s = PIX(ss, sx, sy); uint8_t *d = PIX(ds, tx, ty);
+    EACH(int a = MSK(ss, sx, sy); if (!a) continue; const uint8_t *s = PIX(ss, sx, sy); uint8_t *d = PIX(ds, tx, ty); if (a >= 128) DEP(ds, tx, ty) = 1;
         if (a == 255) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; } else for (int c = 0; c < 3; c++) d[c] = (s[c] * a + d[c] * (255 - a)) / 255;)
 }
 /* [EXE 0x41b390] fill; clear_mask adds [EXE 0x41b040] */
 static void gfx_fill(int x0, int y0, int w, int h, int s, uint32_t c, int clear_mask) {
     s %= NSURF;
     for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) { if (!INS(s, x, y)) continue;
-        uint8_t *d = PIX(s, x, y); d[0] = c; d[1] = c >> 8; d[2] = c >> 16; if (clear_mask) MSK(s, x, y) = 0; }
+        uint8_t *d = PIX(s, x, y); d[0] = c; d[1] = c >> 8; d[2] = c >> 16; DEP(s, x, y) = 0; if (clear_mask) MSK(s, x, y) = 0; }
 }
 /* ---- text  [EXE: 0x412bf0 / 0x412950 cursor logic] ---- */
 static void draw_glyph(int s, int x, int y, uint32_t idx, int w) {    /* writes fg colour and raises the mask plane by glyph coverage */
@@ -147,7 +152,7 @@ static void draw_glyph(int s, int x, int y, uint32_t idx, int w) {    /* writes 
     int r = col_fg & 255, gr = col_fg >> 8 & 255, b = col_fg >> 16 & 255;
     for (int j = 0; j < 16; j++) for (int i = 0; i < w; i++) { int tx = x + i, ty = y + j; if (!INS(s, tx, ty)) continue;
         int a = ((g[(j * 16 + i) >> 1] >> ((i & 1) ? 0 : 4)) & 15) * 17; if (!a) continue;
-        uint8_t *d = PIX(s, tx, ty), *m = &MSK(s, tx, ty);
+        uint8_t *d = PIX(s, tx, ty), *m = &MSK(s, tx, ty); if (a >= 128) DEP(s, tx, ty) = 1;
         if (*m == 0) { d[0] = r; d[1] = gr; d[2] = b; *m = a; }
         else { d[0] = (d[0] * (255 - a) + r * a) / 255; d[1] = (d[1] * (255 - a) + gr * a) / 255; d[2] = (d[2] * (255 - a) + b * a) / 255; if (a > *m) *m = a; } }
 }
@@ -275,8 +280,8 @@ static void anim_draw(vm_t *vm, uint32_t n) {
     int sx = rd32(r + 4), sy = rd32(r + 8), w = rd32(r + 12), h = rd32(r + 16), dx = rd32(r + 20), dy = rd32(r + 24);
     /* [EXE 0x40f4e7 / 0x40f940] 0 = copy, 1 = green-key copy, 2 = nothing, 3/4 = sound effect (thunder), 5 = copy, 6 = full refresh */
     switch (t) {
-    case 0: case 5: gfx_copy(sx, sy, w, h, 1, dx, dy, 0, 0); break;
-    case 1: gfx_copy_key(sx, sy, w, h, 1, dx, dy, 0, 0x00FF00); break;
+    case 0: case 5: gfx_copy(sx, sy, w, h, 1, dx, dy, 0, 2); break;        /* animation frames sit on whatever they cover (3D layer kept) */
+    case 1: gfx_copy_key(sx, sy, w, h, 1, dx, dy, 0, 0x00FF00, 1); break;
     case 3: snd_start(vm, SND_SE, SND_SE, "ns_se59.wav"); break;
     case 4: snd_start(vm, SND_SE, SND_SE, "ns_se58.wav"); break;
     default: break;
@@ -484,7 +489,7 @@ void sys_call(vm_t *vm, uint32_t fn) {
         int x = p[1].val, y = p[2].val, w = (int)p[3].val - x + 1, h = (int)p[4].val - y + 1;
         switch (sub) {     /* [EXE 0x420a70 base table + 0x42b920 game table] */
         case 0: gfx_copy(x, y, w, h, p[5].val, p[6].val, p[7].val, p[8].val, 0); return;
-        case 1: gfx_copy_key(x, y, w, h, p[5].val, p[6].val, p[7].val, p[8].val, SYS32(vm, 9)); return;
+        case 1: gfx_copy_key(x, y, w, h, p[5].val, p[6].val, p[7].val, p[8].val, SYS32(vm, 9), 0); return;
         case 2: gfx_fill(x, y, w, h, SYS16(vm, 1), col_bg, 0); return;
         case 7: gfx_blend(x, y, w, h, p[5].val, p[6].val, p[7].val, p[8].val); return;
         case 8: gfx_copy(x, y, w, h, p[5].val, p[6].val, p[7].val, p[8].val, 1); return;
@@ -629,7 +634,7 @@ static void rule_wipe(vm_t *vm, int kind, int x0, int y0, int w, int h, uint32_t
                 if (kind == 3) {
                     for (int step = 0; step < 256 && !vm->quit; ) {
                         for (int k = 0; k < 8 && step < 256; k++, step++) { int v = dir ? 255 - step : step;
-                            for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) if (r[y * SW + x] == v && INS(10, x, y)) memcpy(PIX(0, x, y), PIX(10, x, y), 3); }
+                            for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) if (r[y * SW + x] == v && INS(10, x, y)) { memcpy(PIX(0, x, y), PIX(10, x, y), 3); DEP(0, x, y) = DEP(10, x, y); } }
                         if (!effects_on(vm)) break; if (!frame(vm)) vm->quit = true; vm->steps = 0;
                     }
                 } else {

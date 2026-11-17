@@ -63,6 +63,8 @@ bool plat_frame(const uint8_t *rgb, int w, int h) {
                 for (int i = 0; i < u->nlines; i++) fprintf(f, "%3d|%s\n", u->line[i].item, u->line[i].sjis); fclose(f); } } }
     if (g_dump_every && g_frame % g_dump_every == 0) { char n[64]; snprintf(n, sizeof n, "/tmp/fr_%05ld.ppm", g_frame);
         FILE *f = fopen(n, "wb"); if (f) { fprintf(f, "P6 %d %d 255\n", w, h); fwrite(rgb, 1, w * h * 3, f); fclose(f); } }
+    if (g_dump_every && g_frame % g_dump_every == 0 && getenv("AI5_DEPTH")) { const uint8_t *z = sys_scene_depth(); char n[64]; snprintf(n, sizeof n, "/tmp/dp_%05ld.pgm", g_frame);
+        FILE *f = z ? fopen(n, "wb") : NULL; if (f) { fprintf(f, "P5 640 480 255\n"); for (int i = 0; i < 640 * 480; i++) fputc(z[i] ? 255 : 0, f); fclose(f); } }
     return g_frame < g_limit;
 }
 static long g_logn;

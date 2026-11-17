@@ -82,12 +82,35 @@ bool plat_key(int key) {
 
 /* ---- drawing (framebuffers are 240 wide x N tall, column-major, bottom-up, BGR) ---- */
 static inline void put(u8 *fb, int x, int y, int r, int g, int b) { u8 *p = fb + (x * 240 + (239 - y)) * 3; p[0] = b; p[1] = g; p[2] = r; }
+/* stereoscopic 3D: the engine tags every screen pixel as backdrop or sprite (sys_scene_depth). With the 3D slider up, the
+   backdrop is drawn behind the screen (shifted left for the left eye, right for the right eye, up to 4 px each) while
+   characters and overlays stay on the screen plane. Backdrop pixels hidden behind a sprite are filled from the backdrop next to it. */
+static void draw_eye(u8 *fb, const uint8_t *rgb, const uint8_t *z, int shift) {
+    for (int y = 0; y < 240; y++) {
+        const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; const uint8_t *z0 = z ? z + (y * 2) * 640 : NULL, *z1 = z0 ? z0 + 640 : NULL;
+        for (int x = 0; x < 320; x++) {
+            int sx = x;
+            if (shift && !(z0[x * 2] | z0[x * 2 + 1] | z1[x * 2] | z1[x * 2 + 1])) {          /* backdrop pixel: take it from x+shift */
+                int k = x + shift, back = shift > 0 ? -1 : 1;
+                if (k < 0 || k >= 320) { sx = -1; }
+                else { while (k != x && (z0[k * 2] | z1[k * 2])) k += back;   /* behind a sprite: stretch the nearest backdrop on this side */
+                       sx = k; }
+            }
+            if (sx < 0) { put(fb, 40 + x, y, 0, 0, 0); continue; }
+            const uint8_t *a = r0 + sx * 6, *b = r1 + sx * 6;
+            put(fb, 40 + x, y, (a[0] + a[3] + b[0] + b[3]) >> 2, (a[1] + a[4] + b[1] + b[4]) >> 2, (a[2] + a[5] + b[2] + b[5]) >> 2); } }
+}
 static void draw_scene(const uint8_t *rgb) {
+    static bool stereo_on;
+    float sl = osGet3DSliderState(); int s = (int)(sl * 4.0f + 0.5f);
+    const uint8_t *z = sys_scene_depth(); bool st = rgb && s > 0;
+    if (st != stereo_on) { gfxSet3D(st); stereo_on = st; }
     u8 *fb = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
     memset(fb, 0, 400 * 240 * 3); if (!rgb) return;
-    for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3;
-        for (int x = 0; x < 320; x++) { const uint8_t *a = r0 + x * 6, *b = r1 + x * 6;
-            put(fb, 40 + x, y, (a[0] + a[3] + b[0] + b[3]) >> 2, (a[1] + a[4] + b[1] + b[4]) >> 2, (a[2] + a[5] + b[2] + b[5]) >> 2); } }
+    if (!st) { draw_eye(fb, rgb, NULL, 0); return; }
+    draw_eye(fb, rgb, z, z ? s : 0);
+    u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
+    draw_eye(fr, rgb, z, z ? -s : 0);
 }
 static void glyph(u8 *fb, int x, int y, uint32_t idx, int w, int r, int g, int b) {
     uint32_t cells; const uint8_t *font = sys_font(&cells); if (!font || idx >= cells) return; const uint8_t *gl = font + idx * 128;

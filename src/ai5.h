@@ -99,7 +99,8 @@ typedef struct {
     bool dialogue_visible, menu_visible; int hover;               /* hover = highlighted choice, -1 if none */
     int loop;                                                     /* event loop (MENUS) being run: 100 = dialogue/choices, other = full-screen menus, -1 none */
 } ui_text;
-const uint8_t *sys_scene_rgb(void);         /* 640x480 RGB888 scene (surface 0 with shake applied), no text windows */
+const uint8_t *sys_scene_rgb(void);
+const uint8_t *sys_scene_depth(void);     /* 640x480 layer map for stereoscopic 3D (0 backdrop, 1 sprite), NULL = draw flat */         /* 640x480 RGB888 scene (surface 0 with shake applied), no text windows */
 const ui_text *sys_ui_text(vm_t *vm);
 const uint8_t *sys_font(uint32_t *cells);
 int sys_font_flags(void);                  /* bit 0: Korean glyph remap font (full-width space drawn half width on the small screen) */   /* font16.bin glyph data: 128 bytes per 16x16 4bpp cell */
