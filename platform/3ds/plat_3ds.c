@@ -217,6 +217,9 @@ static void build_room(const uint8_t *rgb) {
 /* normal scenes: characters (sprite layer) are given volume. Depth inside a sprite grows with the distance from its
    outline (rounded: sqrt), so the middle of a body - chest, hips, faces - comes forward and the silhouette edges stay
    near the screen; the backdrop sits behind with a little of the guessed depth for variation. */
+/* background contrast curve (S-shaped): mid-distance steps about 1.6x larger, the far and near ends pressed together.
+   Only for the backdrop behind standing characters; characters and event CGs keep the plain AI depth. */
+static const uint8_t bg_curve[126] = { 0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,2,2,2,3,3,4,4,5,5,6,6,7,8,9,9,10,11,12,13,14,15,17,18,19,21,22,24,25,27,29,30,32,34,36,38,40,42,44,46,48,50,52,55,57,59,61,64,66,68,70,73,75,77,79,81,83,85,87,89,91,93,95,96,98,100,101,103,104,106,107,108,110,111,112,113,114,115,116,116,117,118,119,119,120,120,121,121,122,122,123,123,123,124,124,124,124,124,125,125,125,125,125,125,125,125,125,125,125,125 };
 static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
     static float dist[19200], tmp[19200]; static uint8_t spr[19200], zc[19200];
     /* layer per cell: 0/1 = backdrop/sprite without AI map, 2..127 / 128..253 = with AI depth (DEPTH.PAK) */
@@ -249,7 +252,7 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
     for (int i = 0; i < 19200; i++) { float v; int c = zc[i];
         if (text && plate[i] && c < 128) v = win ? 0.9f : 0.8f;                                 /* flat plate for lettering */
         else if (c >= 128) v = 0.6f + 0.35f * (c - 128) / 125.0f;   /* gentler relief inside the body keeps hair and outlines clean */                                   /* AI depth of the character */
-        else if (c >= 2) v = (chars ? 0.5f : 0.85f) * (c - 2) / 125.0f;                         /* AI depth of the background / CG */
+        else if (c >= 2) v = chars ? 0.5f * bg_curve[c - 2] / 125.0f : 0.85f * (c - 2) / 125.0f;                         /* AI depth of the background / CG */
         else if (spr[i]) { float t = dist[i] / 16.0f; if (t > 1) t = 1; v = 0.5f + 0.3f * sqrtf(t) + 0.45f * (g_shade[i] - 0.5f) * (0.4f + 0.6f * t);   /* volume + lit roundness */
                       if (v < 0.45f) v = 0.45f; if (v > 1) v = 1; }
         else v = 0.5f * g_room[i];                                                               /* backdrop 0..0.5: room + objects */
