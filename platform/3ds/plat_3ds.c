@@ -160,6 +160,16 @@ static void norm595(float *a) {   /* stretch so the 5th..95th percentile spans 0
     float L = mn + lo / sc, H = mn + (hi + 1) / sc; if (H <= L) H = L + 1e-3f;
     for (int i = 0; i < 19200; i++) { float v = (a[i] - L) / (H - L); a[i] = v < 0 ? 0 : v > 1 ? 1 : v; }
 }
+/* shape from shading: on painted characters the light catches the round forms (chest, hips, cheeks, thighs) - a pixel
+   brighter than its surroundings is taken as nearer. g_shade = small-scale minus large-scale brightness, 0..1 (0.5 = flat). */
+static float g_shade[19200];
+static void build_shade(const uint8_t *rgb) {
+    static float a[19200], b[19200], t[19200];
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { const uint8_t *p = rgb + ((y * 4 + 1) * 640 + x * 4 + 1) * 3; a[y * 160 + x] = b[y * 160 + x] = (p[0] * 3 + p[1] * 6 + p[2]) / 2550.0f; }
+    blur_rows(a, t, 2); blur_rows(b, t, 10); blur_rows(b, t, 10);
+    for (int i = 0; i < 19200; i++) g_shade[i] = a[i] - b[i];
+    norm595(g_shade);
+}
 static void build_dm(const uint8_t *rgb) {
     static float sat[19200], edg[19200], lum[19200], tmp[19200];
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { const uint8_t *p = rgb + ((y * 4) * 640 + x * 4) * 3;
@@ -171,6 +181,8 @@ static void build_dm(const uint8_t *rgb) {
     blur_rows(edg, tmp, 5); blur_rows(edg, tmp, 5); norm595(edg);
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int i = y * 160 + x; lum[i] = 0.55f * sat[i] + 0.25f * edg[i] + 0.20f * y / 119.0f; }
     blur_rows(lum, tmp, 3); norm595(lum);
+    build_shade(rgb);                                 /* lit round forms of the characters come further forward */
+    for (int i = 0; i < 19200; i++) { float v = lum[i] + 0.5f * (g_shade[i] - 0.5f) * (0.3f + 0.7f * sat[i]); lum[i] = v < 0 ? 0 : v > 1 ? 1 : v; }
     for (int i = 0; i < 19200; i++) g_dm[i / 160][i % 160] = (uint8_t)(lum[i] * 255);
 }
 /* background objects: the picture (160x120, lightly blurred) is split into regions of similar colour (flood fill, neighbour
@@ -203,7 +215,7 @@ static void build_room(const uint8_t *rgb) {
    near the screen; the backdrop sits behind with a little of the guessed depth for variation. */
 static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
     static float dist[19200], tmp[19200]; static uint8_t spr[19200];
-    build_room(rgb);                                 /* backdrop: room perspective and objects */
+    build_room(rgb); build_shade(rgb);               /* backdrop: room perspective and objects; characters: shading */
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int n = 0; for (int j = 0; j < 4; j += 2) for (int i = 0; i < 4; i += 2) n += z[(y * 4 + j) * 640 + x * 4 + i] != 0; spr[y * 160 + x] = n >= 2; }
     /* chamfer distance to the nearest backdrop cell (3-4 metric), two passes */
     const float BIG = 1e6f;
@@ -214,7 +226,8 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
     for (int y = 119; y >= 0; y--) for (int x = 159; x >= 0; x--) { int i = y * 160 + x; if (!spr[i]) continue; float d = dist[i];
         if (x < 159) d = fminf(d, dist[i + 1] + 1); if (y < 119) { d = fminf(d, dist[i + 160] + 1); if (x < 159) d = fminf(d, dist[i + 161] + 1.414f); if (x > 0) d = fminf(d, dist[i + 159] + 1.414f); } dist[i] = d; }
     for (int i = 0; i < 19200; i++) { float v;
-        if (spr[i]) { float t = dist[i] / 22.0f; if (t > 1) t = 1; v = 0.55f + 0.45f * sqrtf(t); }   /* outline ~0.55, core up to 1.0 */
+        if (spr[i]) { float t = dist[i] / 16.0f; if (t > 1) t = 1; v = 0.5f + 0.3f * sqrtf(t) + 0.45f * (g_shade[i] - 0.5f) * (0.4f + 0.6f * t);   /* volume + lit roundness */
+                      if (v < 0.45f) v = 0.45f; if (v > 1) v = 1; }
         else v = 0.5f * g_room[i];                                                               /* backdrop 0..0.5: room + objects */
         tmp[i] = v; }
     blur_rows(tmp, dist, 2);                         /* soften the step at the outline so the warp stretches instead of tearing */
@@ -244,7 +257,7 @@ static void draw_scene(const uint8_t *rgb) {
         uint32_t sig = pic_sig(rgb); for (int y = 2; y < 480; y += 8) for (int x = 2; x < 640; x += 8) sig = (sig ^ z[y * 640 + x]) * 16777619u; if (sig != g_dm_sig) { if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
           else build_dm_layers(rgb, z); g_dm_sig = sig; }
-        int fb2 = (int)(sl * 3.0f + 0.5f), bk = (int)(sl * 4.0f + 0.5f);   /* full slider: 4 px behind .. 3 px in front per eye */
+        int fb2 = (int)(sl * 4.0f + 0.5f), bk = (int)(sl * 4.0f + 0.5f);   /* full slider: 4 px behind .. 4 px in front per eye */
         draw_eye_dm(fb, rgb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
         draw_eye_dm(fr, rgb, bk, fb2, -1); return;
