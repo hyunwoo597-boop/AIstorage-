@@ -315,10 +315,10 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
         int mw = 0, mh = 0; const uint8_t *dm = depth_map(name, &mw, &mh);
         bool part = im.w * im.h < SW * SH * 9 / 10;   /* unmapped variant patch over a mapped picture keeps the picture's depth */
         for (int y = 0; y < im.h; y++) { int dy = cy + y; const uint8_t *s = im.bgr + (size_t)(im.h - 1 - y) * im.w * 3;
-            const uint8_t *dr = dm ? dm + (size_t)((y >> 2) < mh ? (y >> 2) : mh - 1) * mw : NULL;
+            const uint8_t *dr = dm ? dm + (size_t)(y * mh / im.h) * mw : NULL;   /* maps are 1/4 (sprites) or 1/2 (full pictures) size */
             for (int x = 0; x < im.w; x++) { int dx = cx + x; if (!INS(dst, dx, dy)) continue;
                 uint8_t *d = PIX(dst, dx, dy); d[0] = s[x * 3 + 2]; d[1] = s[x * 3 + 1]; d[2] = s[x * 3];
-                if (dr) DEP(dst, dx, dy) = (uint8_t)(2 + dr[(x >> 2) < mw ? (x >> 2) : mw - 1] * 125 / 255); else if (!part || DEP(dst, dx, dy) < 2) DEP(dst, dx, dy) = 0; } }
+                if (dr) DEP(dst, dx, dy) = (uint8_t)(2 + dr[x * mw / im.w] * 125 / 255); else if (!part || DEP(dst, dx, dy) < 2) DEP(dst, dx, dy) = 0; } }
         if (im.has_alpha) for (int y = 0; y < im.ah; y++) { int dy = ay + y; const uint8_t *s = im.alpha + (size_t)(im.ah - 1 - y) * im.aw;
             for (int x = 0; x < im.aw; x++) { int dx = ax + x; if (INS(dst, dx, dy)) MSK(dst, dx, dy) = s[x]; } }
         int w = im.w, h = im.h; if (cx + w > sw[dst]) w = sw[dst] - cx; if (cy + h > sh[dst]) h = sh[dst] - cy;

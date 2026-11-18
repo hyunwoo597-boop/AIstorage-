@@ -1,25 +1,36 @@
 name: nonoxp depth maps
 on: { push: { branches: [nonoxp-depth] }, workflow_dispatch: {} }
-permissions: { contents: write }
+permissions: { contents: write, actions: read }
 jobs:
   depth:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy: { matrix: { shard: [4] } }
     steps:
       - uses: actions/checkout@v4
       - run: pip install onnxruntime numpy pillow huggingface_hub
       - name: model
+        timeout-minutes: 15
         run: |
-          python - <<'PY'
-          from huggingface_hub import hf_hub_download
-          import shutil
-          for repo in ('onnx-community/depth-anything-v2-base', 'onnx-community/depth-anything-v2-small'):
-              try:
-                  p = hf_hub_download(repo, 'onnx/model.onnx'); shutil.copy(p, 'model.onnx'); print('model', repo); break
-              except Exception as e: print(repo, e)
-          PY
-      - run: python gen.py model.onnx
+          mkdir -p m
+          for i in 1 2 3; do curl -fL --retry 3 --max-time 400 -o m/model.onnx https://huggingface.co/onnx-community/depth-anything-v2-large/resolve/main/onnx/model.onnx && break; done
+          ls -l m
+      - run: python gen2.py m/model.onnx
+        env: { SHARD: "${{ matrix.shard }}", NSHARD: "12" }
+      - uses: actions/upload-artifact@v4
+        with: { name: "part${{ matrix.shard }}", path: out/ }
+  merge:
+    needs: depth
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: parts }
+      - uses: actions/download-artifact@v4
+        with: { path: parts, run-id: 44281290809, github-token: "${{ github.token }}" }
+      - run: mkdir -p out && python merge.py && cp parts/part0/preview_cg_0.png out/ || true
       - name: publish
         run: |
           cd out && git init -q && git checkout -q -b nonoxp-depth-out && git add -A
-          git -c user.name=ci -c user.email=ci@x commit -qm "depth ${GITHUB_SHA::7}"
+          git -c user.name=ci -c user.email=ci@x commit -qm "cg depth ${GITHUB_SHA::7}"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" nonoxp-depth-out
