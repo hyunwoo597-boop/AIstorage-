@@ -140,6 +140,49 @@ static void draw_eye(u8 *fb, const uint8_t *rgb, const uint8_t *z, int back, int
         #undef NEAR
     }
 }
+/* ---- pseudo depth for full-screen pictures (event CGs, title): they carry no sprite layer, so a depth map is guessed
+   from the picture at 160x120: colourful areas (characters: hair, skin, clothes) and detailed areas (line art) come
+   forward, muted flat areas (walls, sky, floors) go back, plus a slight "lower is nearer" ramp. Recomputed only when
+   the picture changes. ---- */
+static uint8_t g_dm[120][160]; static uint32_t g_dm_sig = 1;
+static void blur_rows(float *a, float *t, int r) {   /* separable box blur (edge-clamped), result back in a */
+    float ps[161];
+    for (int y = 0; y < 120; y++) { ps[0] = 0; for (int x = 0; x < 160; x++) ps[x + 1] = ps[x] + a[y * 160 + x];
+        for (int x = 0; x < 160; x++) { int l = x - r < 0 ? 0 : x - r, h = x + r > 159 ? 159 : x + r; t[y * 160 + x] = (ps[h + 1] - ps[l]) / (h - l + 1); } }
+    float pc[121];
+    for (int x = 0; x < 160; x++) { pc[0] = 0; for (int y = 0; y < 120; y++) pc[y + 1] = pc[y] + t[y * 160 + x];
+        for (int y = 0; y < 120; y++) { int l = y - r < 0 ? 0 : y - r, h = y + r > 119 ? 119 : y + r; a[y * 160 + x] = (pc[h + 1] - pc[l]) / (h - l + 1); } }
+}
+static void norm595(float *a) {   /* stretch so the 5th..95th percentile spans 0..1 */
+    int h[256] = {0}; float mn = 1e9f, mx = -1e9f; for (int i = 0; i < 19200; i++) { if (a[i] < mn) mn = a[i]; if (a[i] > mx) mx = a[i]; }
+    float sc = mx > mn ? 255.0f / (mx - mn) : 0; for (int i = 0; i < 19200; i++) h[(int)((a[i] - mn) * sc)]++;
+    int c = 0, lo = 0, hi = 255; for (int k = 0; k < 256; k++) { c += h[k]; if (c < 960) lo = k; if (c < 18240) hi = k; }
+    float L = mn + lo / sc, H = mn + (hi + 1) / sc; if (H <= L) H = L + 1e-3f;
+    for (int i = 0; i < 19200; i++) { float v = (a[i] - L) / (H - L); a[i] = v < 0 ? 0 : v > 1 ? 1 : v; }
+}
+static void build_dm(const uint8_t *rgb) {
+    static float sat[19200], edg[19200], lum[19200], tmp[19200];
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { const uint8_t *p = rgb + ((y * 4) * 640 + x * 4) * 3;
+        int mx = p[0] > p[1] ? (p[0] > p[2] ? p[0] : p[2]) : (p[1] > p[2] ? p[1] : p[2]), mn = p[0] < p[1] ? (p[0] < p[2] ? p[0] : p[2]) : (p[1] < p[2] ? p[1] : p[2]);
+        float v = mx / 255.0f; sat[y * 160 + x] = mx ? (float)(mx - mn) / mx * (v * 1.5f > 1 ? 1 : v * 1.5f) : 0; lum[y * 160 + x] = (p[0] + p[1] + p[2]) / 765.0f; }
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int i = y * 160 + x; float a = lum[i];
+        edg[i] = fabsf((x < 159 ? lum[i + 1] : a) - a) + fabsf((y < 119 ? lum[i + 160] : a) - a); }
+    blur_rows(sat, tmp, 4); blur_rows(sat, tmp, 4); norm595(sat);
+    blur_rows(edg, tmp, 5); blur_rows(edg, tmp, 5); norm595(edg);
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int i = y * 160 + x; lum[i] = 0.55f * sat[i] + 0.25f * edg[i] + 0.20f * y / 119.0f; }
+    blur_rows(lum, tmp, 3); norm595(lum);
+    for (int i = 0; i < 19200; i++) g_dm[i / 160][i % 160] = (uint8_t)(lum[i] * 255);
+}
+static bool full_picture(const uint8_t *z) {   /* no sprite pixels anywhere (sampled) */
+    if (!z) return false; for (int y = 4; y < 480; y += 8) for (int x = 4; x < 640; x += 8) if (z[y * 640 + x]) return false; return true;
+}
+static uint32_t pic_sig(const uint8_t *rgb) { uint32_t h = 2166136261u; for (int y = 3; y < 480; y += 12) for (int x = 5; x < 640; x += 12) { const uint8_t *p = rgb + (y * 640 + x) * 3; h = (h ^ (p[0] | p[1] << 8 | p[2] << 16)) * 16777619u; } return h; }
+static void draw_eye_dm(u8 *fb, const uint8_t *rgb, int back, int front, int eye) {   /* backward warp with the guessed depth */
+    for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; const uint8_t *dm = g_dm[y >> 1];
+        for (int x = 0; x < 320; x++) { int d = dm[x >> 1]; int sh = eye * (back * (255 - d) - front * d) / 255; int k = x + sh;
+            if (k < 0 || k >= 320) { put(fb, 40 + x, y, 0, 0, 0); continue; }
+            int r, g, b; avg2(r0, r1, k, &r, &g, &b); put(fb, 40 + x, y, r, g, b); } }
+}
 static void draw_scene(const uint8_t *rgb) {
     static bool stereo_on;
     g_fade = sys_fade(&g_fade_a);
@@ -149,6 +192,13 @@ static void draw_scene(const uint8_t *rgb) {
     u8 *fb = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
     memset(fb, 0, 400 * 240 * 3); if (!rgb) return;
     if (!st) { draw_eye(fb, rgb, NULL, 0, 0, 1); return; }
+    if (full_picture(z) && !g_fade) {                 /* event CG / title picture: guessed depth */
+        uint32_t sig = pic_sig(rgb); if (sig != g_dm_sig) { build_dm(rgb); g_dm_sig = sig; }
+        int fb2 = (int)(sl * 5.0f + 0.5f);
+        draw_eye_dm(fb, rgb, back, fb2, 1);
+        u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
+        draw_eye_dm(fr, rgb, back, fb2, -1); return;
+    }
     draw_eye(fb, rgb, z, back, front, 1);
     u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
     draw_eye(fr, rgb, z, back, front, -1);
