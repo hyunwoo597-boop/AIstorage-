@@ -300,18 +300,26 @@ static void build_dm_hi_layers(const uint8_t *z) {
         #undef LR
         g_dmh[y][x] = (uint8_t)(v < 0 ? 0 : v > 1 ? 255 : v * 255); }
 }
-static void draw_eye_dm(u8 *fb, const uint8_t *rgb, int back, int front, int eye) {   /* backward warp with the depth map */
-    int fa = g_fade_a, win = back > front ? back : front, sh1 = g_hi ? 0 : 1;
-    for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; const uint8_t *dm = g_hi ? g_dmh[y] : g_dm[y >> 1];
+/* the 320x240 picture (2x2 average, crossfade mixed in) is made once per frame and shared by both eyes; the warp is
+   table lookups only (no divisions per pixel) */
+static uint8_t g_half[240 * 320 * 3];
+static void make_half(const uint8_t *rgb) {
+    int fa = g_fade_a, na = 256 - fa;
+    for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; uint8_t *o = g_half + y * 320 * 3;
         const uint8_t *f0 = g_fade ? g_fade + (y * 2) * 640 * 3 : NULL;
-        for (int x = 0; x < 320; x++) { int d = dm[x >> sh1]; int sh = eye * (back * (255 - d) - front * d) / 255; int k = x + sh;
-            if (k >= 0 && k < 320) { d = dm[k >> sh1]; sh = eye * (back * (255 - d) - front * d) / 255; k = x + sh; }   /* second step: depth where the pixel comes from */
-            /* no side bars: the picture is drawn win px narrower on each side and spread back over the full width, so the
-               shifted samples always land inside it - the frame keeps its size at any slider position */
-            int sx = win + k * (320 - 2 * win) / 320; if (sx < 0) sx = 0; if (sx > 319) sx = 319;
-            int r, g, b; avg2(r0, r1, sx, &r, &g, &b);
-            if (f0) { int R, G, B, na = 256 - fa; avg2(f0, f0 + 640 * 3, sx, &R, &G, &B); r = (r * na + R * fa) >> 8; g = (g * na + G * fa) >> 8; b = (b * na + B * fa) >> 8; }   /* crossfade stays 3D */
-            put(fb, 40 + x, y, r, g, b); } }
+        for (int x = 0; x < 320; x++, o += 3) { int r, g, b; avg2(r0, r1, x, &r, &g, &b);
+            if (f0) { int R, G, B; avg2(f0, f0 + 640 * 3, x, &R, &G, &B); r = (r * na + R * fa) >> 8; g = (g * na + G * fa) >> 8; b = (b * na + B * fa) >> 8; }   /* crossfade stays 3D */
+            o[0] = r; o[1] = g; o[2] = b; } }
+}
+static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
+    int sh1 = g_hi ? 0 : 1; int8_t tab[256];
+    for (int d = 0; d < 256; d++) tab[d] = (int8_t)(eye * (back * (255 - d) - front * d) / 255);
+    for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3; const uint8_t *dm = g_hi ? g_dmh[y] : g_dm[y >> 1];
+        u8 *p = fb + (40 * 240 + (239 - y)) * 3;
+        for (int x = 0; x < 320; x++, p += 240 * 3) { int k = x + tab[dm[x >> sh1]];
+            if ((unsigned)k < 320) k = x + tab[dm[k >> sh1]];   /* second step: depth where the pixel comes from */
+            if (k < 0) k = 0; else if (k > 319) k = 319;        /* screen edge: repeat the edge column */
+            const uint8_t *q = row + k * 3; p[0] = q[2]; p[1] = q[1]; p[2] = q[0]; } }
 }
 static void draw_scene(const uint8_t *rgb) {
     static bool stereo_on;
@@ -333,9 +341,9 @@ static void draw_scene(const uint8_t *rgb) {
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
           else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); g_hi = true; } } g_dm_sig = sig; }
         int fb2 = (int)(sl * 6.0f + 0.5f), bk = (int)(sl * 8.0f + 0.5f);   /* full slider: 8 px behind .. 6 px in front per eye */
-        draw_eye_dm(fb, rgb, bk, fb2, 1);
+        make_half(rgb); draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
-        draw_eye_dm(fr, rgb, bk, fb2, -1); return;
+        draw_eye_dm(fr, bk, fb2, -1); return;
     }
     draw_eye(fb, rgb, z, back, front, 1);
     u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
