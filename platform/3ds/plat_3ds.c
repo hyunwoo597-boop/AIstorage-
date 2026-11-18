@@ -303,18 +303,51 @@ static void build_dm_hi_layers(const uint8_t *z) {
 /* the 320x240 picture (2x2 average, crossfade mixed in) is made once per frame and shared by both eyes; the warp is
    table lookups only (no divisions per pixel) */
 static uint8_t g_half[240 * 320 * 3];
-static void make_half(const uint8_t *rgb) {
+static int g_lo = 0, g_hi_d = 255, g_zp = 128, g_sub = 128;
+/* depth cues on top of the stereo (only with the slider up): far background slightly out of focus, a soft shadow on the
+   backdrop behind characters, a little air (haze) in the distance. Made once per picture/depth change. */
+static void box_u8(uint8_t *a, int w, int h, int st, int r) {   /* running-sum box blur (edge-clamped) of one channel */
+    static uint8_t t[320];
+    for (int y = 0; y < h; y++) { uint8_t *p = a + y * w * st; for (int x = 0; x < w; x++) t[x] = p[x * st];
+        int s = 0; for (int k = -r; k <= r; k++) s += t[k < 0 ? 0 : k >= w ? w - 1 : k];
+        for (int x = 0; x < w; x++) { p[x * st] = (uint8_t)(s / (2 * r + 1)); int a0 = x - r, a1 = x + r + 1; s += t[a1 >= w ? w - 1 : a1] - t[a0 < 0 ? 0 : a0]; } }
+    for (int x = 0; x < w; x++) { for (int y = 0; y < h; y++) t[y] = a[(y * w + x) * st];
+        int s = 0; for (int k = -r; k <= r; k++) s += t[k < 0 ? 0 : k >= h ? h - 1 : k];
+        for (int y = 0; y < h; y++) { a[(y * w + x) * st] = (uint8_t)(s / (2 * r + 1)); int a0 = y - r, a1 = y + r + 1; s += t[a1 >= h ? h - 1 : a1] - t[a0 < 0 ? 0 : a0]; } }
+}
+static void depth_fx(const uint8_t *z) {
+    int range = g_hi_d - g_lo; if (range <= 40) return;                     /* flat screens (notices, menus): untouched */
+    static uint8_t B[240 * 320 * 3], M[120 * 160], S[120 * 160];
+    memcpy(B, g_half, sizeof B); for (int c = 0; c < 3; c++) box_u8(B + c, 320, 240, 3, 2);   /* 5x5 blur of the picture */
+    /* character mask (quarter size) and its soft shadow, cast a little right and down */
+    int nm = 0; for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int v = z[(y * 4 + 1) * 640 + x * 4 + 1]; M[y * 160 + x] = (v == 1 || v >= 128) ? 255 : 0; nm += M[y * 160 + x] != 0; }
+    bool shadow = nm > 160 * 120 / 50 && nm < 160 * 120 * 9 / 10;
+    if (shadow) { for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int sx = x - 3, sy = y - 2; S[y * 160 + x] = (sx >= 0 && sy >= 0) ? M[sy * 160 + sx] : 0; }
+        box_u8(S, 160, 120, 1, 3); box_u8(S, 160, 120, 1, 3); }
+    int sn = (g_sub - g_lo) * 256 / range;
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int i = y * 320 + x; int d = g_hi ? g_dmh[y][x] : g_dm[y >> 1][x >> 1];
+        int nd = (d - g_lo) * 256 / range; if (nd < 0) nd = 0; if (nd > 256) nd = 256;
+        int wb = (sn - nd - 26) * 205 / 102; if (wb < 0) wb = 0; if (wb > 205) wb = 205;            /* out of focus behind the subject (max 80 %) */
+        int hz = 36 * (256 - nd) * (256 - nd) >> 16;                                               /* haze in the distance (max 14 %) */
+        int qi = (y >> 1) * 160 + (x >> 1); int dk = (shadow && !M[qi]) ? 256 - (S[qi] * 90 >> 8) : 256;   /* shadow behind characters (max 35 %) */
+        uint8_t *o = g_half + i * 3; const uint8_t *b = B + i * 3; static const int hc[3] = { 170, 180, 200 };
+        for (int c = 0; c < 3; c++) { int v = o[c] + ((b[c] - o[c]) * wb >> 8); v += (hc[c] - v) * hz >> 8; v = v * dk >> 8; o[c] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); } }
+}
+static void make_half(const uint8_t *rgb, const uint8_t *z, bool fx) {
+    static uint32_t last; uint32_t sig = pic_sig(rgb) ^ (g_dm_sig * 2654435761u) ^ (uint32_t)fx;
+    if (!g_fade && sig == last) return; last = g_fade ? 0 : sig;             /* unchanged picture: reuse */
     int fa = g_fade_a, na = 256 - fa;
     for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; uint8_t *o = g_half + y * 320 * 3;
         const uint8_t *f0 = g_fade ? g_fade + (y * 2) * 640 * 3 : NULL;
         for (int x = 0; x < 320; x++, o += 3) { int r, g, b; avg2(r0, r1, x, &r, &g, &b);
             if (f0) { int R, G, B; avg2(f0, f0 + 640 * 3, x, &R, &G, &B); r = (r * na + R * fa) >> 8; g = (g * na + G * fa) >> 8; b = (b * na + B * fa) >> 8; }   /* crossfade stays 3D */
             o[0] = r; o[1] = g; o[2] = b; } }
+    if (fx && z && !g_fade) depth_fx(z);
 }
 /* per-scene depth budget: the scene's own depth range (3rd..98th percentile) is spread over the whole budget, and the
-   screen plane sits halfway between the far end and the subject (centre of the picture), so flat scenes still get full
+   screen plane sits between the far end and the subject (centre of the picture), so flat scenes still get full
    depth, the subject comes a little forward and only the nearest parts reach the front limit */
-static int g_lo = 0, g_hi_d = 255, g_zp = 128, g_sub = 128;
+static bool g_tilt_on; static float g_tilt; static int g_toast;   /* Y: tilt parallax (gyroscope) on/off */
 static void depth_stats(void) {
     int h[256] = { 0 }, hc[256] = { 0 }, n = 0, nc = 0;
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int d = g_hi ? g_dmh[y * 2][x * 2] : g_dm[y][x]; h[d]++; n++;
@@ -332,7 +365,8 @@ static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward wa
     for (int d = 0; d < 256; d++) { int v;   /* g_zp: screen plane, set by the slider in draw_scene */
         if (d <= g_zp) { int r = g_zp - g_lo; v = r > 0 ? back * (g_zp - (d < g_lo ? g_lo : d)) / r : 0; }        /* behind the screen */
         else { int r = g_hi_d - g_zp; v = r > 0 ? -front * ((d > g_hi_d ? g_hi_d : d) - g_zp) / r : 0; }         /* in front */
-        tab[d] = (int8_t)(eye * v); }
+        int t = 0; if (g_tilt_on) { int r = g_hi_d - g_lo; if (r > 40) t = (int)lroundf(g_tilt * 6.0f * ((d < g_lo ? g_lo : d > g_hi_d ? g_hi_d : d) - g_zp) / r); }   /* motion parallax: near and far slide apart */
+        tab[d] = (int8_t)(eye * v + t); }
     for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3; const uint8_t *dm = g_hi ? g_dmh[y] : g_dm[y >> 1];
         u8 *p = fb + (40 * 240 + (239 - y)) * 3;
         for (int x = 0; x < 320; x++, p += 240 * 3) { int k = x + tab[dm[x >> sh1]];
@@ -341,7 +375,10 @@ static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward wa
             const uint8_t *q = row + k * 3; p[0] = q[2]; p[1] = q[1]; p[2] = q[0]; } }
 }
 static void draw_scene(const uint8_t *rgb) {
-    static bool stereo_on;
+    static bool stereo_on, ypr;
+    { bool yk = (hidKeysHeld() & KEY_Y) != 0; if (yk && !ypr) { g_tilt_on = !g_tilt_on; g_tilt = 0; g_toast = 90; if (g_tilt_on) HIDUSER_EnableGyroscope(); else HIDUSER_DisableGyroscope(); } ypr = yk; }
+    if (g_tilt_on) { angularRate r; hidGyroRead(&r); float v = r.y; if (fabsf(v) < 25) v = 0;   /* dead zone against drift */
+        g_tilt = g_tilt * 0.93f + v * 0.0003f; if (g_tilt > 1) g_tilt = 1; if (g_tilt < -1) g_tilt = -1; }
     g_fade = sys_fade(&g_fade_a);
     float sl = osGet3DSliderState(); int back = (int)(sl * BACK_MAX + 0.5f), front = (int)(sl * FRONT_MAX + 0.5f);
     const uint8_t *z = sys_scene_depth(); bool st = rgb && sl > 0.01f;
@@ -365,7 +402,7 @@ static void draw_scene(const uint8_t *rgb) {
         float q = (int)(sl * 32.0f + 0.5f) / 32.0f, e = powf(q, 0.7f);
         int bk = (int)(e * 10.0f + 0.5f), fb2 = (int)(e * (2.0f + 4.0f * q) + 0.5f);
         g_zp = g_lo + (int)((g_sub - g_lo) * (0.55f - 0.25f * q));
-        make_half(rgb); draw_eye_dm(fb, bk, fb2, 1);
+        make_half(rgb, z, true); draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
         draw_eye_dm(fr, bk, fb2, -1); return;
     }
@@ -432,6 +469,10 @@ bool plat_frame(const uint8_t *rgb, int w, int h) {
     pump();
     if ((g_held & KEY_START) && (g_held & KEY_SELECT)) return false;
     draw_scene(sys_scene_rgb()); draw_text();
+    if (g_toast > 0) { g_toast--; extern const int toast_w, toast_h; extern const uint8_t toast_on[], toast_off[]; const uint8_t *t = g_tilt_on ? toast_on : toast_off;
+        u8 *bf = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL); int ox = (320 - toast_w) / 2, oy = 8, mul = g_toast < 20 ? g_toast * 255 / 20 : 255;
+        for (int y = 0; y < toast_h; y++) for (int x = 0; x < toast_w; x++) { const uint8_t *q = t + (y * toast_w + x) * 4; int a = q[3] * mul / 255; if (!a) continue;
+            u8 *p = bf + ((ox + x) * 240 + (239 - (oy + y))) * 3; p[0] = (p[0] * (255 - a) + q[2] * a) / 255; p[1] = (p[1] * (255 - a) + q[1] * a) / 255; p[2] = (p[2] * (255 - a) + q[0] * a) / 255; } }
     gfxFlushBuffers(); gfxSwapBuffers(); gspWaitForVBlank();
     return true;
 }
