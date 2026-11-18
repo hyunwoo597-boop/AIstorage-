@@ -247,6 +247,8 @@ static void sys_init(vm_t *vm) {
                                           kept set so the menu appears from the first launch (also after flag loads in SYS 4,3/4,4) */
     /* [EXE 0x4058c8..0x40594b] start-up flags: 0x402, display effects (ini DispEffect.Play) 0x2000, 0x8000 */
     SET_SYS16(vm, 2, SYS16(vm, 2) | 0x402 | 0x8000 | (*ini_slot("DispEffect", "Play") ? 0x2000 : 0));
+    SET_SYS32(vm, 1, 0x100000);        /* [EXE 0x40589f] scratch buffer = memory base + 1 MB (names copied there by SYS 24,6 and read
+                                          back by SYS 5/6/9 after a load; with 0 they overwrote the script name at the start of memory) */
     SET_SYS32(vm, 0, 0);               /* [EXE 0x4057ce: real memory base; here offsets] sys32[0] is the memory base: scripts pass sys32[0]+offset as a pointer */
     { /* [EXE 0x4070eb] the engine itself loads the menu/window parts sheet into surface 7 at start-up */
       uint16_t r[4] = { SYS16(vm, 17), SYS16(vm, 18), SYS16(vm, 19), SYS16(vm, 20) };
@@ -570,6 +572,12 @@ static void snd_start(vm_t *vm, int kind, int slot, const char *name) {
     size_t n; void *d = snd_load(vm, kind, name, &n); if (!d) return;
     strncpy(snd_cur[slot], name, 23); plat_snd_play(slot, d, n, vol);
 }
+/* (0, '', ch, ptr): the name is a string in memory. After a load the library replays the logged music/effect this way:
+   SYS 24,6 copies the logged name to sys32[1], then SYS 5,0,'',0,sys32[1]. */
+static const char *snd_name(vm_t *vm, vm_param *p) {
+    if (p[1].str[0] || p[3].val == 0 || p[3].val >= MEM_SIZE - 24) return p[1].str;
+    static char nm[24]; memcpy(nm, vm->mem + p[3].val, 23); nm[23] = 0; return nm;
+}
 static void snd_cmd(vm_t *vm, int kind, int nslots, uint32_t sub, const char *name, uint32_t ch) {
     int slot = kind + (int)(ch % (uint32_t)nslots); uint32_t r = 0;
     switch (sub) {
@@ -599,6 +607,7 @@ static void save_cmd(vm_t *vm, uint32_t sub, uint32_t slot, uint32_t start, uint
     case 0:                            /* load everything and restart the saved script (it resumes via its own label variable) */
         if (!plat_save_read(name, tmp, SAVE_SIZE)) { plat_log("load: %s not found", name); return; }
         memcpy(m, tmp, SAVE_SIZE); m[OFF_FLAG - 1] = 0;
+        SET_SYS32(vm, 0, 0); SET_SYS32(vm, 1, 0x100000);               /* engine pointers, not game state (older saves hold 0) */
         SET_SYS16(vm, 2, SYS16(vm, 2) | 8);                               /* leaves any running menu loop */
         snprintf(vm->goto_name, sizeof vm->goto_name, "%s", (char *)m); vm->want_goto = true;
         return;
@@ -780,10 +789,10 @@ void sys_call(vm_t *vm, uint32_t fn) {
     case 4: save_cmd(vm, sub, p[1].val, p[2].val, p[3].val); return;
     case 24: scene_cmd(vm, p); return;
     case 5:                            /* music: (0,name,ch) or (sub,ch) */
-        if (sub == 0) snd_cmd(vm, SND_MUSIC, 2, 0, p[1].str, p[2].val); else snd_cmd(vm, SND_MUSIC, 2, sub, "", p[1].val);
+        if (sub == 0) snd_cmd(vm, SND_MUSIC, 2, 0, snd_name(vm, p), p[2].val); else snd_cmd(vm, SND_MUSIC, 2, sub, "", p[1].val);
         return;
     case 6:                            /* effects: same argument shape as music */
-        if (sub == 0) snd_cmd(vm, SND_SE, 4, 0, p[1].str, p[2].val); else snd_cmd(vm, SND_SE, 4, sub, "", p[1].val);
+        if (sub == 0) snd_cmd(vm, SND_SE, 4, 0, snd_name(vm, p), p[2].val); else snd_cmd(vm, SND_SE, 4, sub, "", p[1].val);
         return;
     case 7:                            /* voice: (sub,name,ch). Disabled unless sys16[2] bit 0x100; key 7 (voice skip) cancels 0/3 */
         if (!(SYS16(vm, 2) & 0x100)) { SET_V32(vm, 18, 0); return; }
