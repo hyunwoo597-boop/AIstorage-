@@ -173,6 +173,28 @@ static void build_dm(const uint8_t *rgb) {
     blur_rows(lum, tmp, 3); norm595(lum);
     for (int i = 0; i < 19200; i++) g_dm[i / 160][i % 160] = (uint8_t)(lum[i] * 255);
 }
+/* normal scenes: characters (sprite layer) are given volume. Depth inside a sprite grows with the distance from its
+   outline (rounded: sqrt), so the middle of a body - chest, hips, faces - comes forward and the silhouette edges stay
+   near the screen; the backdrop sits behind with a little of the guessed depth for variation. */
+static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
+    static float dist[19200], tmp[19200]; static uint8_t spr[19200];
+    build_dm(rgb);                                   /* guessed depth, used faintly on the backdrop */
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int n = 0; for (int j = 0; j < 4; j += 2) for (int i = 0; i < 4; i += 2) n += z[(y * 4 + j) * 640 + x * 4 + i] != 0; spr[y * 160 + x] = n >= 2; }
+    /* chamfer distance to the nearest backdrop cell (3-4 metric), two passes */
+    const float BIG = 1e6f;
+    for (int i = 0; i < 19200; i++) dist[i] = spr[i] ? BIG : 0;
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int i = y * 160 + x; if (!spr[i]) continue; float d = dist[i];
+        if (x > 0) d = fminf(d, dist[i - 1] + 1); if (y > 0) { d = fminf(d, dist[i - 160] + 1); if (x > 0) d = fminf(d, dist[i - 161] + 1.414f); if (x < 159) d = fminf(d, dist[i - 159] + 1.414f); }
+        if (x == 0 || y == 0 || x == 159) d = fminf(d, 1 + (float)(x < y ? x : y)); dist[i] = d; }
+    for (int y = 119; y >= 0; y--) for (int x = 159; x >= 0; x--) { int i = y * 160 + x; if (!spr[i]) continue; float d = dist[i];
+        if (x < 159) d = fminf(d, dist[i + 1] + 1); if (y < 119) { d = fminf(d, dist[i + 160] + 1); if (x < 159) d = fminf(d, dist[i + 161] + 1.414f); if (x > 0) d = fminf(d, dist[i + 159] + 1.414f); } dist[i] = d; }
+    for (int i = 0; i < 19200; i++) { float v;
+        if (spr[i]) { float t = dist[i] / 22.0f; if (t > 1) t = 1; v = 0.55f + 0.45f * sqrtf(t); }   /* outline ~0.55, core up to 1.0 */
+        else v = 0.25f * g_dm[i / 160][i % 160] / 255.0f;                                        /* backdrop 0..0.25 */
+        tmp[i] = v; }
+    blur_rows(tmp, dist, 1);                         /* soften the step at the outline so the warp stretches instead of tearing */
+    for (int i = 0; i < 19200; i++) g_dm[i / 160][i % 160] = (uint8_t)(tmp[i] * 255);
+}
 static bool full_picture(const uint8_t *z) {   /* no sprite pixels anywhere (sampled) */
     if (!z) return false; for (int y = 4; y < 480; y += 8) for (int x = 4; x < 640; x += 8) if (z[y * 640 + x]) return false; return true;
 }
@@ -192,8 +214,8 @@ static void draw_scene(const uint8_t *rgb) {
     u8 *fb = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
     memset(fb, 0, 400 * 240 * 3); if (!rgb) return;
     if (!st) { draw_eye(fb, rgb, NULL, 0, 0, 1); return; }
-    if (full_picture(z) && !g_fade) {                 /* event CG / title picture: guessed depth */
-        uint32_t sig = pic_sig(rgb); if (sig != g_dm_sig) { build_dm(rgb); g_dm_sig = sig; }
+    if (z && !g_fade) {                               /* depth map: guessed for full pictures, sprite volume for scenes */
+        uint32_t sig = pic_sig(rgb); for (int y = 2; y < 480; y += 8) for (int x = 2; x < 640; x += 8) sig = (sig ^ z[y * 640 + x]) * 16777619u; if (sig != g_dm_sig) { if (full_picture(z)) build_dm(rgb); else build_dm_layers(rgb, z); g_dm_sig = sig; }
         int fb2 = (int)(sl * 5.0f + 0.5f);
         draw_eye_dm(fb, rgb, back, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
