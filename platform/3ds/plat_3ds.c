@@ -248,7 +248,7 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
     }
     for (int i = 0; i < 19200; i++) { float v; int c = zc[i];
         if (text && plate[i] && c < 128) v = win ? 0.9f : 0.8f;                                 /* flat plate for lettering */
-        else if (c >= 128) v = 0.55f + 0.45f * (c - 128) / 125.0f;                                   /* AI depth of the character */
+        else if (c >= 128) v = 0.6f + 0.35f * (c - 128) / 125.0f;   /* gentler relief inside the body keeps hair and outlines clean */                                   /* AI depth of the character */
         else if (c >= 2) v = (chars ? 0.5f : 0.85f) * (c - 2) / 125.0f;                         /* AI depth of the background / CG */
         else if (spr[i]) { float t = dist[i] / 16.0f; if (t > 1) t = 1; v = 0.5f + 0.3f * sqrtf(t) + 0.45f * (g_shade[i] - 0.5f) * (0.4f + 0.6f * t);   /* volume + lit roundness */
                       if (v < 0.45f) v = 0.45f; if (v > 1) v = 1; }
@@ -265,13 +265,12 @@ static bool ai_picture(const uint8_t *z) {   /* full picture whose depth came wi
 }
 static uint32_t pic_sig(const uint8_t *rgb) { uint32_t h = 2166136261u; for (int y = 3; y < 480; y += 12) for (int x = 5; x < 640; x += 12) { const uint8_t *p = rgb + (y * 640 + x) * 3; h = (h ^ (p[0] | p[1] << 8 | p[2] << 16)) * 16777619u; } return h; }
 static void draw_eye_dm(u8 *fb, const uint8_t *rgb, int back, int front, int eye) {   /* backward warp with the guessed depth */
-    int fa = g_fade_a;
+    int fa = g_fade_a, win = back > front ? back : front;
     for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; const uint8_t *dm = g_dm[y >> 1];
         const uint8_t *f0 = g_fade ? g_fade + (y * 2) * 640 * 3 : NULL;
         for (int x = 0; x < 320; x++) { int d = dm[x >> 1]; int sh = eye * (back * (255 - d) - front * d) / 255; int k = x + sh;
             if (k >= 0 && k < 320) { d = dm[k >> 1]; sh = eye * (back * (255 - d) - front * d) / 255; k = x + sh; }   /* second step: depth where the pixel comes from */
-            if (k >= 0 && k < 320) { int d2 = dm[k >> 1]; d = (d + d2) >> 1; sh = eye * (back * (255 - d) - front * d) / 255; k = x + sh; }   /* third, averaged: steadier at character outlines */
-            if (k < 0 || k >= 320) { put(fb, 40 + x, y, 0, 0, 0); continue; }
+            if (x < win || x >= 320 - win || k < 0 || k >= 320) { put(fb, 40 + x, y, 0, 0, 0); continue; }   /* straight black window edges, same in both eyes */
             int r, g, b; avg2(r0, r1, k, &r, &g, &b);
             if (f0) { int R, G, B, na = 256 - fa; avg2(f0, f0 + 640 * 3, k, &R, &G, &B); r = (r * na + R * fa) >> 8; g = (g * na + G * fa) >> 8; b = (b * na + B * fa) >> 8; }   /* crossfade stays 3D */
             put(fb, 40 + x, y, r, g, b); } }
@@ -295,7 +294,7 @@ static void draw_scene(const uint8_t *rgb) {
           else if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
           else build_dm_layers(rgb, z); g_dm_sig = sig; }
-        int fb2 = (int)(sl * 7.0f + 0.5f), bk = (int)(sl * 9.0f + 0.5f);   /* full slider: 9 px behind .. 7 px in front per eye */
+        int fb2 = (int)(sl * 6.0f + 0.5f), bk = (int)(sl * 8.0f + 0.5f);   /* full slider: 8 px behind .. 6 px in front per eye */
         draw_eye_dm(fb, rgb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
         draw_eye_dm(fr, rgb, bk, fb2, -1); return;
