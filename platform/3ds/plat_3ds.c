@@ -217,7 +217,7 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
         if (spr[i]) { float t = dist[i] / 22.0f; if (t > 1) t = 1; v = 0.55f + 0.45f * sqrtf(t); }   /* outline ~0.55, core up to 1.0 */
         else v = 0.5f * g_room[i];                                                               /* backdrop 0..0.5: room + objects */
         tmp[i] = v; }
-    blur_rows(tmp, dist, 1);                         /* soften the step at the outline so the warp stretches instead of tearing */
+    blur_rows(tmp, dist, 2);                         /* soften the step at the outline so the warp stretches instead of tearing */
     for (int i = 0; i < 19200; i++) g_dm[i / 160][i % 160] = (uint8_t)(tmp[i] * 255);
 }
 static bool full_picture(const uint8_t *z) {   /* no sprite pixels anywhere (sampled) */
@@ -227,6 +227,7 @@ static uint32_t pic_sig(const uint8_t *rgb) { uint32_t h = 2166136261u; for (int
 static void draw_eye_dm(u8 *fb, const uint8_t *rgb, int back, int front, int eye) {   /* backward warp with the guessed depth */
     for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; const uint8_t *dm = g_dm[y >> 1];
         for (int x = 0; x < 320; x++) { int d = dm[x >> 1]; int sh = eye * (back * (255 - d) - front * d) / 255; int k = x + sh;
+            if (k >= 0 && k < 320) { d = dm[k >> 1]; sh = eye * (back * (255 - d) - front * d) / 255; k = x + sh; }   /* second step: depth where the pixel comes from */
             if (k < 0 || k >= 320) { put(fb, 40 + x, y, 0, 0, 0); continue; }
             int r, g, b; avg2(r0, r1, k, &r, &g, &b); put(fb, 40 + x, y, r, g, b); } }
 }
@@ -243,10 +244,10 @@ static void draw_scene(const uint8_t *rgb) {
         uint32_t sig = pic_sig(rgb); for (int y = 2; y < 480; y += 8) for (int x = 2; x < 640; x += 8) sig = (sig ^ z[y * 640 + x]) * 16777619u; if (sig != g_dm_sig) { if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
           else build_dm_layers(rgb, z); g_dm_sig = sig; }
-        int fb2 = (int)(sl * 5.0f + 0.5f);
-        draw_eye_dm(fb, rgb, back, fb2, 1);
+        int fb2 = (int)(sl * 3.0f + 0.5f), bk = (int)(sl * 4.0f + 0.5f);   /* full slider: 4 px behind .. 3 px in front per eye */
+        draw_eye_dm(fb, rgb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
-        draw_eye_dm(fr, rgb, back, fb2, -1); return;
+        draw_eye_dm(fr, rgb, bk, fb2, -1); return;
     }
     draw_eye(fb, rgb, z, back, front, 1);
     u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
