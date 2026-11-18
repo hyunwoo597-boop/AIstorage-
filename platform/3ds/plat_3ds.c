@@ -5,6 +5,7 @@
  * NOTE: written without access to hardware or the toolchain; first build may need fixes. */
 #include <3ds.h>
 #include <stdio.h>
+#include <math.h>
 #include <dirent.h>
 #include <time.h>
 #include <sys/stat.h>
@@ -187,8 +188,12 @@ static void draw_text(void) {
     }
     if (u->dialogue_visible && !u->menu_visible && !u->backlog) {    /* "다음 (터치)" hint, dialogue only */
         extern const int next_hint_w, next_hint_h; extern const uint8_t next_hint[];
-        int ox = 320 - next_hint_w - 2, oy = 240 - next_hint_h - 2;
-        for (int y = 0; y < next_hint_h; y++) for (int xx = 0; xx < next_hint_w; xx++) { const uint8_t *q = next_hint + (y * next_hint_w + xx) * 4; int a = q[3]; if (!a) continue;
+        /* "press me" effect: the hint breathes (fades between 35% and 100%) and bobs 3 px, one cycle per 1.2 s */
+        float ph = (float)(osGetTime() % 1200) / 1200.0f * 6.2831853f, w = 0.5f + 0.5f * sinf(ph);
+        int mul = (int)(90 + 165 * w), bob = (int)(3.0f * (0.5f - 0.5f * cosf(ph)));
+        int ox = 320 - next_hint_w - 2, oy = 240 - next_hint_h - 4 + bob;
+        for (int y = 0; y < next_hint_h; y++) for (int xx = 0; xx < next_hint_w; xx++) { const uint8_t *q = next_hint + (y * next_hint_w + xx) * 4; int a = q[3] * mul / 255; if (!a) continue;
+            if (oy + y < 0 || oy + y >= 240) continue;
             u8 *p = fb + ((ox + xx) * 240 + (239 - (oy + y))) * 3;   /* framebuffer is BGR */
             p[0] = (p[0] * (255 - a) + q[2] * a) / 255; p[1] = (p[1] * (255 - a) + q[1] * a) / 255; p[2] = (p[2] * (255 - a) + q[0] * a) / 255; }
     }
