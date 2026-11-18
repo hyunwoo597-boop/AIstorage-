@@ -20,8 +20,7 @@ for y in range(240):                                    # soft navy gradient
 big = ImageFont.truetype(KR, 30, index=1); small = ImageFont.truetype(KR, 17, index=1)
 def centre(text, font, y, fill):
     w = d.textlength(text, font=font); d.text(((320 - w) / 2, y), text, font=font, fill=fill)
-d.ellipse((60, 92, 96, 128), fill=(239, 0, 95)); d.text((78, 109), 'A', font=ImageFont.truetype(KR, 26, index=1), fill=(255, 255, 255), anchor='mm')
-d.text((106, 93), '버튼 시작', font=big, fill=(255, 255, 255))
+centre('A 버튼 시작', big, 93, (255, 255, 255))
 centre('(화면을 터치해서 시작)', small, 146, (200, 205, 230))
 d.line([(40, 80), (280, 80)], fill=(239, 0, 95), width=1); d.line([(40, 180), (280, 180)], fill=(239, 0, 95), width=1)
 def rgb565(img):
