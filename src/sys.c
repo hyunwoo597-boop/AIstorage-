@@ -156,7 +156,10 @@ static const uint8_t *menu_bottom(void) {
 /* galleries (CG / scenes / music / endings: the story loop with no text window): the bottom screen shows the screen 1:1
    in a 320x240 window that follows the pointer (D-pad) and can be dragged; the top screen shows the whole page. */
 static int vp_x, vp_y, vp_px = -1, vp_py = -1;
-bool sys_bottom_viewport(void) { return cur_loop == 100 && !(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !pop.on && !dlg.on; }
+void sys_on_goto(void) { cur_a6[0] = 0; }
+static bool gallery_a6(void) { return !strncasecmp(cur_a6, "cgmode", 6) || !strcasecmp(cur_a6, "scene.a6") || !strcasecmp(cur_a6, "music.a6") || !strcasecmp(cur_a6, "ending.a6"); }
+bool sys_bottom_viewport(void) {   /* only the gallery screens; the story with its text window hidden keeps the bottom screen dark */
+    return cur_loop == 100 && gallery_a6() && !(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !pop.on && !dlg.on && !snap_on; }
 static void vp_clamp(void) { if (vp_x < 0) vp_x = 0; if (vp_y < 0) vp_y = 0; if (vp_x > SW - 320) vp_x = SW - 320; if (vp_y > SH - 240) vp_y = SH - 240; }
 void sys_bottom_pan(int dx, int dy) { vp_x += dx; vp_y += dy; vp_clamp(); }
 const uint8_t *sys_viewport_rgb(bool follow) {

@@ -172,6 +172,7 @@ static void draw_text(void) {
                                            the top screen keeps the story picture. No menu running (title animation, cut-ins): dark. */
         if (u->loop < 0 || u->backlog) { g_viewport = false; return; }
         g_viewport = sys_bottom_viewport();
+        if (!g_viewport && u->loop == 100) return;   /* story with the window hidden (scene changes, events): dark */
         if (g_viewport) { const uint8_t *v = sys_viewport_rgb(!g_touching); if (!v) return;
             for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { const uint8_t *c = v + (y * 320 + x) * 3; put(fb, x, y, c[0], c[1], c[2]); } return; }
         const uint8_t *rgb = sys_live_rgb(); if (!rgb) return;

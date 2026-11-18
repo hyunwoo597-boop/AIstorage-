@@ -153,7 +153,7 @@ void vm_run(vm_t *vm) {
     while (!vm->quit) {
         run_block(vm);
         if (vm->want_goto) { vm->want_goto = false; { extern const char *plat_goto_override(void); const char *o = plat_goto_override(); if (o) strncpy(vm->goto_name, o, sizeof vm->goto_name - 1); } memset(vm->procs, 0, sizeof vm->procs); vm->procsp = 0;
-            if (!vm_load_mes(vm, vm->goto_name)) return; continue; }
+            sys_on_goto(); if (!vm_load_mes(vm, vm->goto_name)) return; continue; }
         return;
     }
 }

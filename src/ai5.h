@@ -111,6 +111,7 @@ bool sys_bottom_map(int bx, int by, int *x, int *y);
 bool sys_bottom_viewport(void);            /* galleries: bottom = 1:1 window over the screen */
 const uint8_t *sys_viewport_rgb(bool follow);
 void sys_bottom_pan(int dx, int dy);   /* bottom-screen touch -> 640x480 pointer for the current bottom layout */
+void sys_on_goto(void);                    /* a new script replaces the current one */
 void sys_fix_script(const char *name, uint8_t *code, size_t n);   /* port patches applied to loaded scripts */         /* the live 640x480 screen (shown on the bottom screen during full-screen menus) */
 const ui_text *sys_ui_text(vm_t *vm);
 const uint8_t *sys_font(uint32_t *cells);
