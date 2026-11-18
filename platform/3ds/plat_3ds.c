@@ -244,7 +244,7 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
                       if (v < 0.45f) v = 0.45f; if (v > 1) v = 1; }
         else v = 0.5f * g_room[i];                                                               /* backdrop 0..0.5: room + objects */
         tmp[i] = v; }
-    blur_rows(tmp, dist, chars || n_raw_spr ? 2 : 1);   /* soften the step at the outline so the warp stretches instead of tearing */
+    blur_rows(tmp, dist, 2);   /* soften the step at the outline so the warp stretches instead of tearing */
     for (int i = 0; i < 19200; i++) g_dm[i / 160][i % 160] = (uint8_t)(tmp[i] * 255);
 }
 static bool full_picture(const uint8_t *z) {   /* no sprite pixels anywhere (sampled) */
@@ -275,7 +275,7 @@ static void draw_scene(const uint8_t *rgb) {
           else if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
           else build_dm_layers(rgb, z); g_dm_sig = sig; }
-        int fb2 = (int)(sl * 4.0f + 0.5f), bk = (int)(sl * 4.0f + 0.5f);   /* full slider: 4 px behind .. 4 px in front per eye */
+        int fb2 = (int)(sl * 5.5f + 0.5f), bk = (int)(sl * 6.5f + 0.5f);   /* full slider: 6.5 px behind .. 5.5 px in front per eye (smooth AI maps take more) */
         draw_eye_dm(fb, rgb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
         draw_eye_dm(fr, rgb, bk, fb2, -1); return;
