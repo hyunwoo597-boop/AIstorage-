@@ -30,7 +30,7 @@ export LD       := $(CC)
 export OFILES   := $(CFILES:.c=.o)
 export INCLUDE  := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) $(foreach dir,$(LIBDIRS),-I$(dir)/include) -I$(CURDIR)/$(BUILD)
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
-export APP_ICON := $(CTRULIB)/default_icon.png
+export APP_ICON := $(TOPDIR)/assets/icon.png
 export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 
 .PHONY: all clean

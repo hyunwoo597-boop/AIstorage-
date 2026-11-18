@@ -348,7 +348,7 @@ static void make_half(const uint8_t *rgb, const uint8_t *z, bool fx) {
         for (int x = 0; x < 320; x++, o += 3) { int r, g, b; avg2(r0, r1, x, &r, &g, &b);
             if (f0) { int R, G, B; avg2(f0, f0 + 640 * 3, x, &R, &G, &B); r = (r * na + R * fa) >> 8; g = (g * na + G * fa) >> 8; b = (b * na + B * fa) >> 8; }   /* crossfade stays 3D */
             o[0] = r; o[1] = g; o[2] = b; } }
-    if (fx && z && !g_fade) depth_fx(z);
+    (void)fx; (void)z;                                 /* depth effects (focus blur, shadow, haze) all removed at the user's request */
 }
 /* per-scene depth budget: the scene's own depth range (3rd..98th percentile) is spread over the whole budget, and the
    screen plane sits between the far end and the subject (centre of the picture), so flat scenes still get full
