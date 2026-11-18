@@ -230,12 +230,14 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
     if (n_raw_spr && !win) build_shade(rgb);         /* sprites without a map: shading */
     /* chamfer distance to the nearest backdrop cell (3-4 metric), two passes */
     const float BIG = 1e6f;
+    if (n_raw_spr && !win) {                          /* volume from the outline: only for sprites without a map */
     for (int i = 0; i < 19200; i++) dist[i] = spr[i] ? BIG : 0;
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int i = y * 160 + x; if (!spr[i]) continue; float d = dist[i];
         if (x > 0) d = fminf(d, dist[i - 1] + 1); if (y > 0) { d = fminf(d, dist[i - 160] + 1); if (x > 0) d = fminf(d, dist[i - 161] + 1.414f); if (x < 159) d = fminf(d, dist[i - 159] + 1.414f); }
         if (x == 0 || y == 0 || x == 159) d = fminf(d, 1 + (float)(x < y ? x : y)); dist[i] = d; }
     for (int y = 119; y >= 0; y--) for (int x = 159; x >= 0; x--) { int i = y * 160 + x; if (!spr[i]) continue; float d = dist[i];
         if (x < 159) d = fminf(d, dist[i + 1] + 1); if (y < 119) { d = fminf(d, dist[i + 160] + 1); if (x < 159) d = fminf(d, dist[i + 161] + 1.414f); if (x > 0) d = fminf(d, dist[i + 159] + 1.414f); } dist[i] = d; }
+    }
     for (int i = 0; i < 19200; i++) { float v; int c = zc[i];
         if (c >= 128) v = 0.55f + 0.45f * (c - 128) / 125.0f;                                   /* AI depth of the character */
         else if (c >= 2) v = (chars ? 0.5f : 0.85f) * (c - 2) / 125.0f;                         /* AI depth of the background / CG */
@@ -255,11 +257,15 @@ static bool ai_picture(const uint8_t *z) {   /* full picture whose depth came wi
 }
 static uint32_t pic_sig(const uint8_t *rgb) { uint32_t h = 2166136261u; for (int y = 3; y < 480; y += 12) for (int x = 5; x < 640; x += 12) { const uint8_t *p = rgb + (y * 640 + x) * 3; h = (h ^ (p[0] | p[1] << 8 | p[2] << 16)) * 16777619u; } return h; }
 static void draw_eye_dm(u8 *fb, const uint8_t *rgb, int back, int front, int eye) {   /* backward warp with the guessed depth */
+    int fa = g_fade_a;
     for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; const uint8_t *dm = g_dm[y >> 1];
+        const uint8_t *f0 = g_fade ? g_fade + (y * 2) * 640 * 3 : NULL;
         for (int x = 0; x < 320; x++) { int d = dm[x >> 1]; int sh = eye * (back * (255 - d) - front * d) / 255; int k = x + sh;
             if (k >= 0 && k < 320) { d = dm[k >> 1]; sh = eye * (back * (255 - d) - front * d) / 255; k = x + sh; }   /* second step: depth where the pixel comes from */
             if (k < 0 || k >= 320) { put(fb, 40 + x, y, 0, 0, 0); continue; }
-            int r, g, b; avg2(r0, r1, k, &r, &g, &b); put(fb, 40 + x, y, r, g, b); } }
+            int r, g, b; avg2(r0, r1, k, &r, &g, &b);
+            if (f0) { int R, G, B, na = 256 - fa; avg2(f0, f0 + 640 * 3, k, &R, &G, &B); r = (r * na + R * fa) >> 8; g = (g * na + G * fa) >> 8; b = (b * na + B * fa) >> 8; }   /* crossfade stays 3D */
+            put(fb, 40 + x, y, r, g, b); } }
 }
 static void draw_scene(const uint8_t *rgb) {
     static bool stereo_on;
@@ -270,8 +276,12 @@ static void draw_scene(const uint8_t *rgb) {
     u8 *fb = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
     memset(fb, 0, 400 * 240 * 3); if (!rgb) return;
     if (!st) { draw_eye(fb, rgb, NULL, 0, 0, 1); return; }
-    if (z && !g_fade) {                               /* depth map: guessed for full pictures, sprite volume for scenes */
-        uint32_t sig = pic_sig(rgb); for (int y = 2; y < 480; y += 8) for (int x = 2; x < 640; x += 8) sig = (sig ^ z[y * 640 + x]) * 16777619u; if (sig != g_dm_sig) { if (full_picture(z) && ai_picture(z)) build_dm_layers(rgb, z);
+    if (z) {                                          /* depth map: AI (DEPTH.PAK), else guessed for full pictures / sprite volume for scenes */
+        static int since; since++;
+        uint32_t sig = 2166136261u; int ai = 0; for (int y = 2; y < 480; y += 8) for (int x = 2; x < 640; x += 8) { int v = z[y * 640 + x]; ai += v >= 2; sig = (sig ^ v) * 16777619u; }
+        if (ai < 80 * 60 / 2) sig ^= pic_sig(rgb);    /* AI depth does not depend on the colours; guessed depth does */
+        /* while the picture keeps changing (wipes, animation) rebuild at most every 4th frame, so transitions stay smooth */
+        if (sig != g_dm_sig && (since >= 4 || g_dm_sig == 0)) { since = 0; if (full_picture(z) && ai_picture(z)) build_dm_layers(rgb, z);
           else if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
           else build_dm_layers(rgb, z); g_dm_sig = sig; }
