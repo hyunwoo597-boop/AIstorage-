@@ -1,0 +1,25 @@
+name: nonoxp depth maps
+on: { push: { branches: [nonoxp-depth] }, workflow_dispatch: {} }
+permissions: { contents: write }
+jobs:
+  depth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install onnxruntime numpy pillow huggingface_hub
+      - name: model
+        run: |
+          python - <<'PY'
+          from huggingface_hub import hf_hub_download
+          import shutil
+          for repo in ('onnx-community/depth-anything-v2-base', 'onnx-community/depth-anything-v2-small'):
+              try:
+                  p = hf_hub_download(repo, 'onnx/model.onnx'); shutil.copy(p, 'model.onnx'); print('model', repo); break
+              except Exception as e: print(repo, e)
+          PY
+      - run: python gen.py model.onnx
+      - name: publish
+        run: |
+          cd out && git init -q && git checkout -q -b nonoxp-depth-out && git add -A
+          git -c user.name=ci -c user.email=ci@x commit -qm "depth ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" nonoxp-depth-out

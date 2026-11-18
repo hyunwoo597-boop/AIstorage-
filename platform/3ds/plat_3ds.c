@@ -218,9 +218,16 @@ static void build_room(const uint8_t *rgb) {
    outline (rounded: sqrt), so the middle of a body - chest, hips, faces - comes forward and the silhouette edges stay
    near the screen; the backdrop sits behind with a little of the guessed depth for variation. */
 static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
-    static float dist[19200], tmp[19200]; static uint8_t spr[19200];
-    build_room(rgb); build_shade(rgb);               /* backdrop: room perspective and objects; characters: shading */
-    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int n = 0; for (int j = 0; j < 4; j += 2) for (int i = 0; i < 4; i += 2) n += z[(y * 4 + j) * 640 + x * 4 + i] != 0; spr[y * 160 + x] = n >= 2; }
+    static float dist[19200], tmp[19200]; static uint8_t spr[19200], zc[19200];
+    /* layer per cell: 0/1 = backdrop/sprite without AI map, 2..127 / 128..253 = with AI depth (DEPTH.PAK) */
+    int n_ai_spr = 0, n_ai_bg = 0, n_raw_bg = 0, n_raw_spr = 0;
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int n = 0, i = y * 160 + x; for (int j = 0; j < 4; j += 2) for (int k = 0; k < 4; k += 2) { int v = z[(y * 4 + j) * 640 + x * 4 + k]; n += v == 1 || v >= 128; }
+        spr[i] = n >= 2; int c = z[(y * 4 + 1) * 640 + x * 4 + 1]; if (spr[i] && c < 128 && c != 1) c = 1; if (!spr[i] && (c == 1 || c >= 128)) c = 0; zc[i] = (uint8_t)c;
+        if (c >= 128) n_ai_spr++; else if (c == 1) n_raw_spr++; else if (c == 0) n_raw_bg++; else n_ai_bg++; }
+    if (n_raw_bg) build_room(rgb);                   /* backdrop without a map: room perspective and objects */
+    bool chars = n_ai_spr > 384;                     /* mapped characters on screen */
+    bool win = !chars && n_ai_bg > n_raw_bg;         /* mapped CG with only the text window as sprite */
+    if (n_raw_spr && !win) build_shade(rgb);         /* sprites without a map: shading */
     /* chamfer distance to the nearest backdrop cell (3-4 metric), two passes */
     const float BIG = 1e6f;
     for (int i = 0; i < 19200; i++) dist[i] = spr[i] ? BIG : 0;
@@ -229,16 +236,22 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
         if (x == 0 || y == 0 || x == 159) d = fminf(d, 1 + (float)(x < y ? x : y)); dist[i] = d; }
     for (int y = 119; y >= 0; y--) for (int x = 159; x >= 0; x--) { int i = y * 160 + x; if (!spr[i]) continue; float d = dist[i];
         if (x < 159) d = fminf(d, dist[i + 1] + 1); if (y < 119) { d = fminf(d, dist[i + 160] + 1); if (x < 159) d = fminf(d, dist[i + 161] + 1.414f); if (x > 0) d = fminf(d, dist[i + 159] + 1.414f); } dist[i] = d; }
-    for (int i = 0; i < 19200; i++) { float v;
-        if (spr[i]) { float t = dist[i] / 16.0f; if (t > 1) t = 1; v = 0.5f + 0.3f * sqrtf(t) + 0.45f * (g_shade[i] - 0.5f) * (0.4f + 0.6f * t);   /* volume + lit roundness */
+    for (int i = 0; i < 19200; i++) { float v; int c = zc[i];
+        if (c >= 128) v = 0.55f + 0.45f * (c - 128) / 125.0f;                                   /* AI depth of the character */
+        else if (c >= 2) v = (chars ? 0.5f : 0.85f) * (c - 2) / 125.0f;                         /* AI depth of the background / CG */
+        else if (spr[i] && win) v = 0.9f;                                                  /* text window in front of a CG */
+        else if (spr[i]) { float t = dist[i] / 16.0f; if (t > 1) t = 1; v = 0.5f + 0.3f * sqrtf(t) + 0.45f * (g_shade[i] - 0.5f) * (0.4f + 0.6f * t);   /* volume + lit roundness */
                       if (v < 0.45f) v = 0.45f; if (v > 1) v = 1; }
         else v = 0.5f * g_room[i];                                                               /* backdrop 0..0.5: room + objects */
         tmp[i] = v; }
-    blur_rows(tmp, dist, 2);                         /* soften the step at the outline so the warp stretches instead of tearing */
+    blur_rows(tmp, dist, chars || n_raw_spr ? 2 : 1);   /* soften the step at the outline so the warp stretches instead of tearing */
     for (int i = 0; i < 19200; i++) g_dm[i / 160][i % 160] = (uint8_t)(tmp[i] * 255);
 }
 static bool full_picture(const uint8_t *z) {   /* no sprite pixels anywhere (sampled) */
-    if (!z) return false; for (int y = 4; y < 480; y += 8) for (int x = 4; x < 640; x += 8) if (z[y * 640 + x]) return false; return true;
+    if (!z) return false; for (int y = 4; y < 480; y += 8) for (int x = 4; x < 640; x += 8) { int v = z[y * 640 + x]; if (v == 1 || v >= 128) return false; } return true;
+}
+static bool ai_picture(const uint8_t *z) {   /* full picture whose depth came with DEPTH.PAK */
+    int n = 0; for (int y = 4; y < 480; y += 8) for (int x = 4; x < 640; x += 8) n += z[y * 640 + x] >= 2; return n > 80 * 60 * 6 / 10;
 }
 static uint32_t pic_sig(const uint8_t *rgb) { uint32_t h = 2166136261u; for (int y = 3; y < 480; y += 12) for (int x = 5; x < 640; x += 12) { const uint8_t *p = rgb + (y * 640 + x) * 3; h = (h ^ (p[0] | p[1] << 8 | p[2] << 16)) * 16777619u; } return h; }
 static void draw_eye_dm(u8 *fb, const uint8_t *rgb, int back, int front, int eye) {   /* backward warp with the guessed depth */
@@ -258,7 +271,8 @@ static void draw_scene(const uint8_t *rgb) {
     memset(fb, 0, 400 * 240 * 3); if (!rgb) return;
     if (!st) { draw_eye(fb, rgb, NULL, 0, 0, 1); return; }
     if (z && !g_fade) {                               /* depth map: guessed for full pictures, sprite volume for scenes */
-        uint32_t sig = pic_sig(rgb); for (int y = 2; y < 480; y += 8) for (int x = 2; x < 640; x += 8) sig = (sig ^ z[y * 640 + x]) * 16777619u; if (sig != g_dm_sig) { if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
+        uint32_t sig = pic_sig(rgb); for (int y = 2; y < 480; y += 8) for (int x = 2; x < 640; x += 8) sig = (sig ^ z[y * 640 + x]) * 16777619u; if (sig != g_dm_sig) { if (full_picture(z) && ai_picture(z)) build_dm_layers(rgb, z);
+          else if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
           else build_dm_layers(rgb, z); g_dm_sig = sig; }
         int fb2 = (int)(sl * 4.0f + 0.5f), bk = (int)(sl * 4.0f + 0.5f);   /* full slider: 4 px behind .. 4 px in front per eye */

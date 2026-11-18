@@ -268,6 +268,22 @@ static void once(vm_t *vm, uint32_t fn, const char *note) {
     plat_log("%s", b);
 }
 /* ---- graphics ---- */
+/* Port addition for stereoscopic 3D: DEPTH.PAK (optional, in the data folder) holds AI-estimated depth maps (Depth Anything V2,
+   made offline) for the event CGs, backgrounds and character sprites, at 1/4 resolution, 255 = nearest.
+   3D layer values: 0 = backdrop, 1 = sprite (no map), 2..127 = backdrop with map, 128..253 = sprite with map. */
+static const uint8_t *dpk; static uint32_t dpk_n;
+static const uint8_t *depth_map(const char *name, int *mw, int *mh) {
+    static bool tried; if (!tried) { tried = true; size_t n; uint8_t *f = plat_read_file("DEPTH.PAK", &n);
+        if (f && n > 8 && !memcmp(f, "DPK1", 4)) { dpk = f; dpk_n = rd32(f + 4); } }
+    const char *b = strrchr(name, '\\'); if (b) name = b + 1;
+    for (uint32_t i = 0; i < dpk_n; i++) { const uint8_t *e = dpk + 8 + i * 24; char nm[17]; memcpy(nm, e, 16); nm[16] = 0;
+        if (!strcasecmp(nm, name)) { *mw = rd16(e + 16); *mh = rd16(e + 18); return dpk + rd32(e + 20); } }
+    return NULL;
+}
+static inline uint8_t dep_sprite(uint8_t src, uint8_t dst) {   /* layer value when a sprite pixel is drawn */
+    if (src >= 128) return src; if (src >= 2) return (uint8_t)(src + 126);
+    return dst >= 128 ? dst : 1;                    /* unmapped patch (face, eyes, mouth) over a mapped sprite keeps its depth */
+}
 /* load a GCC image into surface dst.  [EXE 0x41ab80, used by SYS 9 (0x420540) and SYS 25 (0x421b30)]
    ox/oy: -1 = use the file's position; otherwise the colour rect is moved by (ox,oy) and the mask rect is placed AT (ox,oy).
    Only the m variants write the mask plane. The resulting rectangle goes to sys16[17..20] (x, y, w, h). */
@@ -295,9 +311,13 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
         int cx = im.x + (ox != -1 ? ox : 0), cy = im.y + (oy != -1 ? oy : 0);
         int ax = ox != -1 ? ox : im.ax, ay = oy != -1 ? oy : im.ay;
         if (dst != 0) { surf_ensure(dst, cx + im.w, cy + im.h); if (im.has_alpha) surf_ensure(dst, ax + im.aw, ay + im.ah); }
+        int mw = 0, mh = 0; const uint8_t *dm = depth_map(name, &mw, &mh);
+        bool part = im.w * im.h < SW * SH * 9 / 10;   /* unmapped variant patch over a mapped picture keeps the picture's depth */
         for (int y = 0; y < im.h; y++) { int dy = cy + y; const uint8_t *s = im.bgr + (size_t)(im.h - 1 - y) * im.w * 3;
+            const uint8_t *dr = dm ? dm + (size_t)((y >> 2) < mh ? (y >> 2) : mh - 1) * mw : NULL;
             for (int x = 0; x < im.w; x++) { int dx = cx + x; if (!INS(dst, dx, dy)) continue;
-                uint8_t *d = PIX(dst, dx, dy); d[0] = s[x * 3 + 2]; d[1] = s[x * 3 + 1]; d[2] = s[x * 3]; DEP(dst, dx, dy) = 0; } }
+                uint8_t *d = PIX(dst, dx, dy); d[0] = s[x * 3 + 2]; d[1] = s[x * 3 + 1]; d[2] = s[x * 3];
+                if (dr) DEP(dst, dx, dy) = (uint8_t)(2 + dr[(x >> 2) < mw ? (x >> 2) : mw - 1] * 125 / 255); else if (!part || DEP(dst, dx, dy) < 2) DEP(dst, dx, dy) = 0; } }
         if (im.has_alpha) for (int y = 0; y < im.ah; y++) { int dy = ay + y; const uint8_t *s = im.alpha + (size_t)(im.ah - 1 - y) * im.aw;
             for (int x = 0; x < im.aw; x++) { int dx = ax + x; if (INS(dst, dx, dy)) MSK(dst, dx, dy) = s[x]; } }
         int w = im.w, h = im.h; if (cx + w > sw[dst]) w = sw[dst] - cx; if (cy + h > sh[dst]) h = sh[dst] - cy;
@@ -308,17 +328,19 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
 /* [EXE 0x41ae60] colour copy; with_mask adds [EXE 0x41b130] mask-plane copy */
 static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, int with_mask) {   /* with_mask 2: keep the destination's 3D layer */
     ss %= NSURF; ds %= NSURF;
-    EACH(memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy); if (with_mask != 2) DEP(ds, tx, ty) = DEP(ss, sx, sy);)
+    bool patch = w * h < SW * SH * 9 / 10;          /* unmapped patch (animation frame) over a mapped picture keeps its depth */
+    EACH(memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy);
+         if (with_mask != 2) { uint8_t z = DEP(ss, sx, sy); if (!(patch && z < 2 && DEP(ds, tx, ty) >= 2)) DEP(ds, tx, ty) = z; })
 }
 /* [EXE 0x41af20] copy skipping the key colour (COLORREF); exact compare is assumed */
 static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer) {
     ss %= NSURF; ds %= NSURF; uint8_t kr = key, kg = key >> 8, kb = key >> 16;
-    EACH(const uint8_t *s = PIX(ss, sx, sy); if (s[0] == kr && s[1] == kg && s[2] == kb) continue; memcpy(PIX(ds, tx, ty), s, 3); if (!keep_layer) DEP(ds, tx, ty) = 1;)
+    EACH(const uint8_t *s = PIX(ss, sx, sy); if (s[0] == kr && s[1] == kg && s[2] == kb) continue; memcpy(PIX(ds, tx, ty), s, 3); if (!keep_layer) DEP(ds, tx, ty) = dep_sprite(DEP(ss, sx, sy), DEP(ds, tx, ty));)
 }
 /* [EXE 0x41b640/0x41b310] blend src over dst through the source mask plane (0 = skip, 255 = copy) */
 static void gfx_blend(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds) {
     ss %= NSURF; ds %= NSURF;
-    EACH(int a = MSK(ss, sx, sy); if (!a) continue; const uint8_t *s = PIX(ss, sx, sy); uint8_t *d = PIX(ds, tx, ty); if (a >= 128) DEP(ds, tx, ty) = 1;
+    EACH(int a = MSK(ss, sx, sy); if (!a) continue; const uint8_t *s = PIX(ss, sx, sy); uint8_t *d = PIX(ds, tx, ty); if (a >= 128) DEP(ds, tx, ty) = dep_sprite(DEP(ss, sx, sy), DEP(ds, tx, ty));
         if (a == 255) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; } else for (int c = 0; c < 3; c++) d[c] = (s[c] * a + d[c] * (255 - a)) / 255;)
 }
 /* [EXE 0x41b390] fill; clear_mask adds [EXE 0x41b040] */
