@@ -314,7 +314,7 @@ static void make_half(const uint8_t *rgb) {
 /* per-scene depth budget: the scene's own depth range (3rd..98th percentile) is spread over the whole budget, and the
    screen plane sits halfway between the far end and the subject (centre of the picture), so flat scenes still get full
    depth, the subject comes a little forward and only the nearest parts reach the front limit */
-static int g_lo = 0, g_hi_d = 255, g_zp = 128;
+static int g_lo = 0, g_hi_d = 255, g_zp = 128, g_sub = 128;
 static void depth_stats(void) {
     int h[256] = { 0 }, hc[256] = { 0 }, n = 0, nc = 0;
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int d = g_hi ? g_dmh[y * 2][x * 2] : g_dm[y][x]; h[d]++; n++;
@@ -325,11 +325,11 @@ static void depth_stats(void) {
     c = 0; for (int d = 0; d < 256; d++) { c += hc[d]; if (c * 100 >= nc * 70) { sub = d; break; } }
     if (hi - lo < 40) { int m = (lo + hi) / 2; lo = m - 20; hi = m + 20; }   /* nearly flat picture: keep it nearly flat */
     if (sub < lo) sub = lo; if (sub > hi) sub = hi;
-    g_lo = lo; g_hi_d = hi; g_zp = (lo + sub) / 2;
+    g_lo = lo; g_hi_d = hi; g_sub = sub;
 }
 static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
     int sh1 = g_hi ? 0 : 1; int8_t tab[256];
-    for (int d = 0; d < 256; d++) { int v;
+    for (int d = 0; d < 256; d++) { int v;   /* g_zp: screen plane, set by the slider in draw_scene */
         if (d <= g_zp) { int r = g_zp - g_lo; v = r > 0 ? back * (g_zp - (d < g_lo ? g_lo : d)) / r : 0; }        /* behind the screen */
         else { int r = g_hi_d - g_zp; v = r > 0 ? -front * ((d > g_hi_d ? g_hi_d : d) - g_zp) / r : 0; }         /* in front */
         tab[d] = (int8_t)(eye * v); }
@@ -359,7 +359,12 @@ static void draw_scene(const uint8_t *rgb) {
           else if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
           else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); g_hi = true; } } g_dm_sig = sig; depth_stats(); }
-        int fb2 = (int)(sl * 4.0f + 0.5f), bk = (int)(sl * 7.0f + 0.5f);   /* full slider: 7 px behind .. 4 px in front per eye, around the screen plane */
+        /* slider curve: 32 steps (no jitter); the effect rises quickly at the bottom (s^0.7), the depth behind the screen
+           grows to 10 px and the pop-out grows faster in the upper half (2..6 px); as the slider goes up the screen plane
+           moves from halfway (subject slightly forward) towards the far end (subject clearly in front of the screen) */
+        float q = (int)(sl * 32.0f + 0.5f) / 32.0f, e = powf(q, 0.7f);
+        int bk = (int)(e * 10.0f + 0.5f), fb2 = (int)(e * (2.0f + 4.0f * q) + 0.5f);
+        g_zp = g_lo + (int)((g_sub - g_lo) * (0.55f - 0.25f * q));
         make_half(rgb); draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
         draw_eye_dm(fr, bk, fb2, -1); return;
