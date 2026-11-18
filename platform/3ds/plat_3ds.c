@@ -321,7 +321,7 @@ static void depth_fx(const uint8_t *z) {
     memcpy(B, g_half, sizeof B); for (int c = 0; c < 3; c++) box_u8(B + c, 320, 240, 3, 2);   /* 5x5 blur of the picture */
     /* character mask (quarter size) and its soft shadow, cast a little right and down */
     int nm = 0; for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int v = z[(y * 4 + 1) * 640 + x * 4 + 1]; M[y * 160 + x] = (v == 1 || v >= 128) ? 255 : 0; nm += M[y * 160 + x] != 0; }
-    bool shadow = nm > 160 * 120 / 50 && nm < 160 * 120 * 9 / 10;
+    bool shadow = false; (void)nm;                  /* character shadow removed (user request); mask kept for the other effects */
     if (shadow) { for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int sx = x - 3, sy = y - 2; S[y * 160 + x] = (sx >= 0 && sy >= 0) ? M[sy * 160 + sx] : 0; }
         box_u8(S, 160, 120, 1, 3); box_u8(S, 160, 120, 1, 3); }
     /* depth for the effects: the farthest value within 4 px. The depth map runs a little past a character's outline;
