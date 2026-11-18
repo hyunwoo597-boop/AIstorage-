@@ -281,6 +281,11 @@ static const uint8_t *depth_map(const char *name, int *mw, int *mh) {
     return NULL;
 }
 bool sys_has_depth(void) { int a, b; depth_map("", &a, &b); return dpk_n > 0; }
+/* colour-key copies paste picture variants (a rectangle of people/objects over the base picture). Those stay part of the
+   picture: a mapped patch keeps its (picture-matched) depth, an unmapped one over a mapped picture keeps the picture's */
+static inline uint8_t dep_key(uint8_t src, uint8_t dst) {
+    if (src >= 2) return src; if (dst >= 2 && dst < 128) return dst; return dst >= 128 ? dst : 1;
+}
 static inline uint8_t dep_sprite(uint8_t src, uint8_t dst) {   /* layer value when a sprite pixel is drawn */
     if (src >= 128) return src; if (src >= 2) return (uint8_t)(src + 126);
     return dst >= 128 ? dst : 1;                    /* unmapped patch (face, eyes, mouth) over a mapped sprite keeps its depth */
@@ -336,7 +341,7 @@ static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int d
 /* [EXE 0x41af20] copy skipping the key colour (COLORREF); exact compare is assumed */
 static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer) {
     ss %= NSURF; ds %= NSURF; uint8_t kr = key, kg = key >> 8, kb = key >> 16;
-    EACH(const uint8_t *s = PIX(ss, sx, sy); if (s[0] == kr && s[1] == kg && s[2] == kb) continue; memcpy(PIX(ds, tx, ty), s, 3); if (!keep_layer) DEP(ds, tx, ty) = dep_sprite(DEP(ss, sx, sy), DEP(ds, tx, ty));)
+    EACH(const uint8_t *s = PIX(ss, sx, sy); if (s[0] == kr && s[1] == kg && s[2] == kb) continue; memcpy(PIX(ds, tx, ty), s, 3); if (!keep_layer) DEP(ds, tx, ty) = dep_key(DEP(ss, sx, sy), DEP(ds, tx, ty));)
 }
 /* [EXE 0x41b640/0x41b310] blend src over dst through the source mask plane (0 = skip, 255 = copy) */
 static void gfx_blend(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds) {
