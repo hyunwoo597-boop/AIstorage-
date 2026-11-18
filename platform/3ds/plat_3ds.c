@@ -311,9 +311,28 @@ static void make_half(const uint8_t *rgb) {
             if (f0) { int R, G, B; avg2(f0, f0 + 640 * 3, x, &R, &G, &B); r = (r * na + R * fa) >> 8; g = (g * na + G * fa) >> 8; b = (b * na + B * fa) >> 8; }   /* crossfade stays 3D */
             o[0] = r; o[1] = g; o[2] = b; } }
 }
+/* per-scene depth budget: the scene's own depth range (3rd..98th percentile) is spread over the whole budget, and the
+   screen plane sits halfway between the far end and the subject (centre of the picture), so flat scenes still get full
+   depth, the subject comes a little forward and only the nearest parts reach the front limit */
+static int g_lo = 0, g_hi_d = 255, g_zp = 128;
+static void depth_stats(void) {
+    int h[256] = { 0 }, hc[256] = { 0 }, n = 0, nc = 0;
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int d = g_hi ? g_dmh[y * 2][x * 2] : g_dm[y][x]; h[d]++; n++;
+        if (x >= 40 && x < 120 && y >= 18 && y < 102) { hc[d]++; nc++; } }
+    int c = 0, lo = 0, hi = 255, sub = 128;
+    for (int d = 0; d < 256; d++) { c += h[d]; if (c * 100 < n * 3) lo = d + 1; }
+    c = 0; for (int d = 255; d >= 0; d--) { c += h[d]; if (c * 100 < n * 2) hi = d - 1; }
+    c = 0; for (int d = 0; d < 256; d++) { c += hc[d]; if (c * 100 >= nc * 70) { sub = d; break; } }
+    if (hi - lo < 40) { int m = (lo + hi) / 2; lo = m - 20; hi = m + 20; }   /* nearly flat picture: keep it nearly flat */
+    if (sub < lo) sub = lo; if (sub > hi) sub = hi;
+    g_lo = lo; g_hi_d = hi; g_zp = (lo + sub) / 2;
+}
 static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
     int sh1 = g_hi ? 0 : 1; int8_t tab[256];
-    for (int d = 0; d < 256; d++) tab[d] = (int8_t)(eye * (back * (255 - d) - front * d) / 255);
+    for (int d = 0; d < 256; d++) { int v;
+        if (d <= g_zp) { int r = g_zp - g_lo; v = r > 0 ? back * (g_zp - (d < g_lo ? g_lo : d)) / r : 0; }        /* behind the screen */
+        else { int r = g_hi_d - g_zp; v = r > 0 ? -front * ((d > g_hi_d ? g_hi_d : d) - g_zp) / r : 0; }         /* in front */
+        tab[d] = (int8_t)(eye * v); }
     for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3; const uint8_t *dm = g_hi ? g_dmh[y] : g_dm[y >> 1];
         u8 *p = fb + (40 * 240 + (239 - y)) * 3;
         for (int x = 0; x < 320; x++, p += 240 * 3) { int k = x + tab[dm[x >> sh1]];
@@ -339,8 +358,8 @@ static void draw_scene(const uint8_t *rgb) {
           else if (full_picture(z) && sys_has_depth()) memset(g_dm, 150, sizeof g_dm);   /* no map (notices, opening text, menus): one flat plane, lettering stays clean */
           else if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
-          else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); g_hi = true; } } g_dm_sig = sig; }
-        int fb2 = (int)(sl * 6.0f + 0.5f), bk = (int)(sl * 8.0f + 0.5f);   /* full slider: 8 px behind .. 6 px in front per eye */
+          else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); g_hi = true; } } g_dm_sig = sig; depth_stats(); }
+        int fb2 = (int)(sl * 4.0f + 0.5f), bk = (int)(sl * 7.0f + 0.5f);   /* full slider: 7 px behind .. 4 px in front per eye, around the screen plane */
         make_half(rgb); draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
         draw_eye_dm(fr, bk, fb2, -1); return;
