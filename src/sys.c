@@ -130,6 +130,9 @@ static const uint8_t *menu_bottom(void) {
         for (int y = 0; y < L->h; y++) for (int x = 0; x < L->w; x++) { int a = INS(7, L->mx + x, L->my + y) ? MSK(7, L->mx + x, L->my + y) : 255; if (!a) continue;
             const uint8_t *c = surf[0] + ((L->sy + y) * SW + L->sx + x) * 3; uint8_t *d = bottom_buf + ((L->dy + y) * 320 + L->dx + x) * 3;
             for (int q = 0; q < 3; q++) d[q] = (d[q] * (255 - a) + c[q] * a) / 255; } }
+    if (k == 1) { int cx, cy; plat_cursor(&cx, &cy, false);   /* clear selection mark: pink bars beside the pointed button */
+        for (size_t i = 0; i < sizeof menu_lay / sizeof menu_lay[0]; i++) { const lay_rect *L = &menu_lay[i];
+            if (cx >= L->sx && cx < L->sx + L->w && cy >= L->sy && cy < L->sy + L->h) { fill_b(L->dx - 14, L->dy + 8, 8, 20, 239, 0, 95); fill_b(L->dx + L->w + 6, L->dy + 8, 8, 20, 239, 0, 95); } } }
     if (k == 2) {                                /* slot list as text rows (22 px) + page tabs */
         int cx, cy; plat_cursor(&cx, &cy, false); int hot = (cx >= 40 && cx < 556 && cy >= 52 && cy < 444) ? (cy - 52) / 40 : -1;
         dim_bg();
@@ -162,6 +165,15 @@ const uint8_t *sys_viewport_rgb(bool follow) {
     vp_px = cx; vp_py = cy;
     for (int y = 0; y < 240; y++) memcpy(bottom_buf + y * 320 * 3, surf[0] + ((vp_y + y) * SW + vp_x) * 3, 320 * 3);
     return bottom_buf;
+}
+/* the system menu is shown as one vertical list on the bottom screen, so the D-pad walks that list (the original moves in
+   its two-column layout): put the pointer on the next/previous button and let the menu's PROC 9 update the highlight */
+static void menu_step(vm_t *vm, int dir) {
+    int n = (int)(sizeof menu_lay / sizeof menu_lay[0]), cx, cy, cur = -1; plat_cursor(&cx, &cy, false);
+    for (int i = 0; i < n; i++) { const lay_rect *L = &menu_lay[i]; if (cx >= L->sx && cx < L->sx + L->w && cy >= L->sy && cy < L->sy + L->h) cur = i; }
+    int nx = cur < 0 ? (dir > 0 ? 0 : n - 1) : (cur + dir + n) % n;
+    int x = menu_lay[nx].sx + menu_lay[nx].w / 2, y = menu_lay[nx].sy + menu_lay[nx].h / 2; plat_cursor(&x, &y, true);
+    vm_call_proc(vm, 9);
 }
 bool sys_bottom_map(int bx, int by, int *x, int *y) {
     if (sys_bottom_viewport() && !bottom_kind()) { *x = vp_x + bx; *y = vp_y + by; vp_px = *x; vp_py = *y; return true; }
@@ -983,6 +995,7 @@ void sys_menu_exec(vm_t *vm) {
             bool down = plat_key(k);
             if (k >= 2) { if (!down) { dir_held[k] = 0; continue; } int h = ++dir_held[k]; if (!(h == 1 || (h > 24 && (h - 24) % 6 == 0))) continue; }
             else if (!down) continue;
+            if (k >= 2 && bottom_kind() == 1) { menu_step(vm, k == 2 || k == 4 ? -1 : 1); break; }   /* bottom list order */
             if (getenv("AI5_TRACE")) plat_log("  key %d -> PROC %d", k, 2 + k); vm_call_proc(vm, 2 + k); break; }
         if (getenv("AI5_TRACE")) plat_log("  tick flags=%04x", SYS16(vm, 2));
         if (!frame(vm)) vm->quit = true;

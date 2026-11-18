@@ -59,6 +59,11 @@ static void pump(void) {
         else if (g_touching && !g_dragged) { int x, y; sys_bottom_map(g_tlx, g_tly, &x, &y); g_cx = x; g_cy = y; g_click = 2; }
         g_touching = t; g_touch_armed = false; return;
     }
+    if (g_menu_mode) {                   /* bottom-screen menus: the pointer follows the finger, lifting it is the click */
+        if (t) { hidTouchRead(&g_touch); int x, y; sys_bottom_map(g_touch.px, g_touch.py, &x, &y); g_cx = x; g_cy = y; g_tlx = g_touch.px; g_tly = g_touch.py; }
+        else if (g_touching) { int x, y; sys_bottom_map(g_tlx, g_tly, &x, &y); g_cx = x; g_cy = y; g_click = 2; }
+        g_touching = t; g_touch_armed = false; return;
+    }
     if (t) { hidTouchRead(&g_touch);
         if (!g_touching) {               /* touch began: point at the choice under the finger, confirm from the next frame on */
             g_touch_armed = false;
