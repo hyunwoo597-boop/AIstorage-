@@ -334,7 +334,7 @@ static void depth_fx(const uint8_t *z) {
     for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int i = y * 320 + x; int d = T[i];
         int nd = (d - g_lo) * 256 / range; if (nd < 0) nd = 0; if (nd > 256) nd = 256;
         int wb = (sn - nd - 26) * 205 / 102; if (wb < 0) wb = 0; if (wb > 205) wb = 205;            /* out of focus behind the subject (max 80 %) */
-        int hz = 23 * (256 - nd) * (256 - nd) >> 16;                                               /* haze in the distance (max 9 %) */
+        int hz = 0;                                                                                /* haze removed (user request) */
         int qi = (y >> 1) * 160 + (x >> 1); int dk = (shadow && !M[qi]) ? 256 - (S[qi] * 90 >> 8) : 256;   /* shadow behind characters (max 35 %) */
         uint8_t *o = g_half + i * 3; const uint8_t *b = B + i * 3; static const int hc[3] = { 170, 180, 200 };
         for (int c = 0; c < 3; c++) { int v = o[c] + ((b[c] - o[c]) * wb >> 8); v += (hc[c] - v) * hz >> 8; v = v * dk >> 8; o[c] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); } }
