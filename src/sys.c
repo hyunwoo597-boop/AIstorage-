@@ -121,8 +121,11 @@ static void bt_text(int x, int y, const char *sj, int r, int g, int b) {   /* fo
 static void fill_b(int x0, int y0, int w, int h, int r, int g, int b) { for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) if (x >= 0 && y >= 0 && x < 320 && y < 240) { uint8_t *d = bottom_buf + (y * 320 + x) * 3; d[0] = r; d[1] = g; d[2] = b; } }
 static int fit_ox, fit_oy, fit_w, fit_h, fit_sx, fit_sy, fit_sw, fit_sh;
 static const uint8_t *menu_bottom(void) {
-    int k = bottom_kind(); if (!k || !surf[0]) return NULL;
-    dim_bg();
+    if (snap_on && (cur_loop < 0 || cur_loop == 100) && surf[0]) { dim_bg(); return bottom_buf; }   /* between two menus / while the scene fades back */
+    if (cur_loop < 0 || cur_loop == 100 || !surf[0]) return NULL;
+    int k = bottom_kind();
+    dim_bg();                                   /* a menu that has not loaded its hit table yet (drawing / fading in): plain backdrop */
+    if (!k) return bottom_buf;
     if (k == 1) for (size_t i = 0; i < sizeof menu_lay / sizeof menu_lay[0]; i++) { const lay_rect *L = &menu_lay[i];   /* live button pixels, cut out by its shape */
         for (int y = 0; y < L->h; y++) for (int x = 0; x < L->w; x++) { int a = INS(7, L->mx + x, L->my + y) ? MSK(7, L->mx + x, L->my + y) : 255; if (!a) continue;
             const uint8_t *c = surf[0] + ((L->sy + y) * SW + L->sx + x) * 3; uint8_t *d = bottom_buf + ((L->dy + y) * 320 + L->dx + x) * 3;
@@ -961,7 +964,8 @@ void sys_menu_exec(vm_t *vm) {
     SET_SYS16(vm, 21, vm->menu_n[m]);
     /* [EXE 0x4149e0 copies the item addresses into a table]; here it is the array sys32[7] points at, which the library walks with SYS 14 */
     uint32_t prev_run = vm->menu_run; vm->menu_run = m; int prev_loop = cur_loop; cur_loop = (int)m;
-    if (m != 100) memset(slot_text, 0, sizeof slot_text);
+    char prev_a6[sizeof cur_a6]; memcpy(prev_a6, cur_a6, sizeof cur_a6);
+    if (m != 100) { memset(slot_text, 0, sizeof slot_text); cur_a6[0] = 0; }   /* the new menu's layout starts once it loads its .a6 */
     if (m != 100 && !snap_on && surf[0]) {          /* keep the story picture on the top screen while this menu runs (bottom screen) */
         if (!snap_rgb) { snap_rgb = malloc(SW * SH * 3); snap_z = malloc(SW * SH); }
         memcpy(snap_rgb, surf[0], SW * SH * 3); memcpy(snap_z, dpth[0], SW * SH); snap_on = true; }
@@ -985,5 +989,6 @@ void sys_menu_exec(vm_t *vm) {
         vm->steps = 0;
     }
     vm->menu_run = prev_run; cur_loop = prev_loop;
+    if (m != 100) memcpy(cur_a6, prev_a6, sizeof cur_a6);
     if (m != 100 && snap_on) snap_pending = true;   /* released at the next frame without a running crossfade (the scene is back by then) */
 }
