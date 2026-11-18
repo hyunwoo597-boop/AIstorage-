@@ -164,11 +164,15 @@ static void norm595(float *a) {   /* stretch so the 5th..95th percentile spans 0
    brighter than its surroundings is taken as nearer. g_shade = small-scale minus large-scale brightness, 0..1 (0.5 = flat). */
 static float g_shade[19200];
 static void build_shade(const uint8_t *rgb) {
-    static float a[19200], b[19200], t[19200];
+    static float a[19200], b[19200], e[19200], t[19200];
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { const uint8_t *p = rgb + ((y * 4 + 1) * 640 + x * 4 + 1) * 3; a[y * 160 + x] = b[y * 160 + x] = (p[0] * 3 + p[1] * 6 + p[2]) / 2550.0f; }
-    blur_rows(a, t, 2); blur_rows(b, t, 10); blur_rows(b, t, 10);
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int i = y * 160 + x; float dx = x < 159 ? fabsf(a[i + 1] - a[i]) : 0, dy = y < 119 ? fabsf(a[i + 160] - a[i]) : 0; e[i] = dx + dy; }
+    blur_rows(e, t, 4);                               /* edge density: lettering and fine detail are busy, bodies are smooth */
+    blur_rows(a, t, 4); blur_rows(a, t, 3);           /* only broad forms - thin strokes (logo, text) average away */
+    blur_rows(b, t, 12); blur_rows(b, t, 12);
     for (int i = 0; i < 19200; i++) g_shade[i] = a[i] - b[i];
     norm595(g_shade);
+    for (int i = 0; i < 19200; i++) { float w = 1.0f - (e[i] - 0.06f) * 8.0f; if (w < 0) w = 0; if (w > 1) w = 1; g_shade[i] = 0.5f + (g_shade[i] - 0.5f) * w; }
 }
 static void build_dm(const uint8_t *rgb) {
     static float sat[19200], edg[19200], lum[19200], tmp[19200];
