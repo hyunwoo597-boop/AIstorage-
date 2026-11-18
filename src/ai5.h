@@ -10,6 +10,8 @@ void *plat_read_file(const char *name, size_t *len);   /* game dir file, malloc'
 void  plat_log(const char *fmt, ...);
 /* one frame: present the 640x480 RGB screen, pump input, sleep to ~60fps. returns false when the app should quit */
 bool  plat_frame(const uint8_t *rgb, int w, int h);
+bool  plat_wants_composite(void);          /* false: the platform draws from sys_scene_rgb()/UI itself, the engine skips compose() */
+const uint8_t *sys_fade(int *alpha);
 void  plat_poll(void);     /* pump input only (called from tight script polling loops) */
 void  plat_cursor(int *x, int *y, bool set);   /* pointer position in 640x480 space (mouse / touch); set=true warps it */
 bool  plat_key(int key);   /* [EXE 0x409430] 0=confirm(Enter/LMB) 1=cancel(Esc/RMB) 2=up 3=down 4=left 5=right 6=skip(Shift) 7.. */

@@ -99,8 +99,10 @@ static int bottom_kind(void) {               /* 1 system menu, 2 save/load list,
     if (!strcasecmp(cur_a6, "load_dlg.a6")) return 4;
     return 0;
 }
-static void dim_bg(void) {                    /* plain dark backdrop for the bottom-screen layouts */
-    for (int y = 0; y < 240; y++) { int c = 10 + y * 22 / 239; for (int x = 0; x < 320; x++) { uint8_t *d = bottom_buf + (y * 320 + x) * 3; d[0] = c / 2; d[1] = c / 2; d[2] = c + 12; } }
+static void dim_bg(void) {                    /* plain dark backdrop for the bottom-screen layouts (built once) */
+    static uint8_t bg[320 * 240 * 3]; static bool made;
+    if (!made) { for (int y = 0; y < 240; y++) { int c = 10 + y * 22 / 239; for (int x = 0; x < 320; x++) { uint8_t *d = bg + (y * 320 + x) * 3; d[0] = c / 2; d[1] = c / 2; d[2] = c + 12; } } made = true; }
+    memcpy(bottom_buf, bg, sizeof bg);
 }
 static void blit_fit(int sx, int sy, int w, int h, int *ox, int *oy, int *ow, int *oh) {   /* crop of the screen, scaled down to fit, centred */
     int dw = w, dh = h; if (dw > 316) { dh = dh * 316 / dw; dw = 316; } if (dh > 236) { dw = dw * 236 / dh; dh = 236; }
@@ -195,6 +197,8 @@ const uint8_t *sys_bottom_rgb(void) {
         for (int k = 0; k < 3; k++) d[k] = a[k] / 5; }
     pop_draw(bottom_buf, 320, 240); return bottom_buf;
 }
+/* SYS 10,1 crossfade in progress: the old picture (surface 11) and how much of it is still visible (255..0) */
+const uint8_t *sys_fade(int *alpha) { if (!fx_left || snap_on || !surf[11] || sw[11] != SW || sh[11] < SH) return NULL; *alpha = fx_left * 255 / 16; return surf[11]; }
 const uint8_t *sys_scene_depth(void) {
     if (snap_on && snap_z) return snap_z;
     return (surf[0] && !shake_x && !shake_y) ? dpth[0] : NULL; }
@@ -207,8 +211,8 @@ const uint8_t *sys_scene_rgb(void) {
 static const uint8_t *compose(void) {
     if (!(win[0].used && win[0].visible) && !(win[1].used && win[1].visible) && !shake_x && !shake_y && !fx_left) return surf[0];
     if (fx_left) { int a = fx_left * 255 / 16; fx_left--;      /* [EXE 0x42080a] 16-step fade from the snapshot */
-        for (int i = 0; i < SW * SH * 3; i++) { int sx = i / 3 % SW, sy = i / 3 / SW; uint8_t o = INS(11, sx, sy) ? PIX(11, sx, sy)[i % 3] : 0;
-            screen_out[i] = (o * a + surf[0][i] * (255 - a)) / 255; } }
+        bool ok = surf[11] && sw[11] == SW && sh[11] >= SH;
+        for (int i = 0; i < SW * SH * 3; i++) { int o = ok ? surf[11][i] : 0; screen_out[i] = (o * a + surf[0][i] * (256 - a)) >> 8; } }
     else if (!shake_x && !shake_y) memcpy(screen_out, surf[0], SW * SH * 3);
     else { memset(screen_out, 0, SW * SH * 3);
         for (int y = 0; y < SH; y++) { int sy = y - shake_y; if (sy < 0 || sy >= SH) continue;
@@ -265,16 +269,21 @@ static void once(vm_t *vm, uint32_t fn, const char *note) {
 static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
     /* Port addition: small cache of decoded images. Some screens (CG gallery) reload the same sheet many times
        per frame; the PC decodes fast enough, the 3DS does not. */
-    enum { NCACHE = 4 };
-    static struct { char name[32]; gcc_image im; unsigned use; } cache[NCACHE]; static unsigned tick;
+    enum { NCACHE = 16, CACHE_BYTES = 28 << 20 };   /* menus reopen the same sheets (menu frames, save/load, gallery pages) */
+    static struct { char name[32]; gcc_image im; unsigned use; size_t bytes; } cache[NCACHE]; static unsigned tick;
     gcc_image im; dst %= NSURF; int hit = -1;
     for (int i = 0; i < NCACHE; i++) if (cache[i].im.bgr && !strcasecmp(cache[i].name, name)) { hit = i; break; }
     if (hit < 0) {
         size_t n; uint8_t *raw = arc_load(&vm->arc_bg, name, &n); if (!raw) { plat_log("missing image %s", name); return; }
         int rc = gcc_decode(raw, n, &im); free(raw); if (rc) return;
+        size_t need = (size_t)im.w * im.h * 3 + (im.has_alpha ? (size_t)im.aw * im.ah : 0), total = need;
+        for (int i = 0; i < NCACHE; i++) if (cache[i].im.bgr) total += cache[i].bytes;
+        while (total > CACHE_BYTES) {               /* drop least recently used entries until the new one fits */
+            int lru = -1; for (int i = 0; i < NCACHE; i++) if (cache[i].im.bgr && (lru < 0 || cache[i].use < cache[lru].use)) lru = i;
+            if (lru < 0) break; total -= cache[lru].bytes; free(cache[lru].im.bgr); free(cache[lru].im.alpha); memset(&cache[lru], 0, sizeof cache[lru]); }
         hit = 0; for (int i = 1; i < NCACHE; i++) if (!cache[i].im.bgr || (cache[hit].im.bgr && cache[i].use < cache[hit].use)) hit = i;
         free(cache[hit].im.bgr); free(cache[hit].im.alpha);
-        cache[hit].im = im; snprintf(cache[hit].name, sizeof cache[hit].name, "%s", name);
+        cache[hit].im = im; cache[hit].bytes = need; snprintf(cache[hit].name, sizeof cache[hit].name, "%s", name);
     }
     cache[hit].use = ++tick; im = cache[hit].im;
     {
@@ -537,7 +546,9 @@ static void anim_tick_one(vm_t *vm, anim_stream *s) {
 }
 static void anim_tick(vm_t *vm) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state != AN_HALT) anim_tick_one(vm, &anim[a][b]); }
 static bool frame(vm_t *vm) { if (snap_pending && !fx_left && (cur_loop < 0 || cur_loop == 100)) snap_on = snap_pending = false;
-    anim_tick(vm); return plat_frame(compose(), SW, SH); }
+    anim_tick(vm);
+    if (!plat_wants_composite()) { if (fx_left) fx_left--; return plat_frame(surf[0], SW, SH); }   /* 3DS draws from sys_scene_rgb / UI */
+    return plat_frame(compose(), SW, SH); }
 /* ---- sound [EXE: SYS 5 -> 0x4072e0/0x41fdd0, SYS 6 -> 0x4200b0, SYS 7 -> 0x42bce0/0x420270] ---- */
 static char snd_cur[SND_SLOTS][24], snd_pend[SND_SLOTS][24]; static uint8_t snd_has_pend[SND_SLOTS];
 static void *snd_load(vm_t *vm, int kind, const char *name, size_t *n) {
@@ -844,9 +855,10 @@ static void crossfade(vm_t *vm, int src, int x0, int y0, int w, int h) {
     for (int y = 0; y < h; y++) memcpy(bak + (size_t)y * w * 3, PIX(0, x0, y0 + y), w * 3);
     for (int a = 16; a < 256 && !vm->quit; a += 16) {
         if (plat_key(6)) break;
-        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { if (!INS(src, x0 + x, y0 + y)) continue;
-            const uint8_t *o = bak + ((size_t)y * w + x) * 3, *n = PIX(src, x0 + x, y0 + y); uint8_t *d = PIX(0, x0 + x, y0 + y);
-            for (int c = 0; c < 3; c++) d[c] = (o[c] * (256 - a) + n[c] * a) >> 8; }
+        int cw = w; if (x0 + cw > sw[src]) cw = sw[src] - x0;
+        for (int y = 0; y < h && y0 + y < sh[src]; y++) { if (cw <= 0) break;
+            const uint8_t *o = bak + (size_t)y * w * 3, *n = PIX(src, x0, y0 + y); uint8_t *d = PIX(0, x0, y0 + y);
+            for (int i = 0; i < cw * 3; i++) d[i] = (o[i] * (256 - a) + n[i] * a) >> 8; }
         if (!frame(vm)) vm->quit = true; vm->steps = 0;
     }
     free(bak); gfx_copy(x0, y0, w, h, src, x0, y0, 0, 0);
@@ -866,19 +878,24 @@ static void rule_wipe(vm_t *vm, int kind, int x0, int y0, int w, int h, uint32_t
         } else {
             char nm[16]; snprintf(nm, sizeof nm, "%02u.bin", rule % 100); size_t n; uint8_t *r = arc_load_lzss(&vm->arc_data, nm, &n);
             if (r && n >= (size_t)SW * SH) {
-                if (kind == 3) {
-                    for (int step = 0; step < 256 && !vm->quit; ) {
+                if (kind == 3) {                            /* pixels bucketed by rule value once (counting sort), then revealed bucket by bucket */
+                    int cnt[257] = {0}; for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) if (INS(10, x, y)) cnt[r[y * SW + x] + 1]++;
+                    for (int v = 0; v < 256; v++) cnt[v + 1] += cnt[v];
+                    int *ord = malloc(sizeof(int) * (cnt[256] + 1)), pos[256]; memcpy(pos, cnt, sizeof pos);
+                    for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) if (INS(10, x, y)) ord[pos[r[y * SW + x]]++] = y * SW + x;
+                    for (int step = 0; step < 256 && !vm->quit && ord; ) {
                         for (int k = 0; k < 8 && step < 256; k++, step++) { int v = dir ? 255 - step : step;
-                            for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) if (r[y * SW + x] == v && INS(10, x, y)) { memcpy(PIX(0, x, y), PIX(10, x, y), 3); DEP(0, x, y) = DEP(10, x, y); } }
+                            for (int i = cnt[v]; i < cnt[v + 1]; i++) { int p = ord[i], x = p % SW, y = p / SW; memcpy(PIX(0, x, y), PIX(10, x, y), 3); DEP(0, x, y) = DEP(10, x, y); } }
                         if (!effects_on(vm)) break; if (!frame(vm)) vm->quit = true; vm->steps = 0;
                     }
+                    free(ord);
                 } else {
                     uint8_t *old = malloc((size_t)SW * SH * 3); memcpy(old, surf[0], (size_t)SW * SH * 3);
                     for (int t = 32; t < 384 && !vm->quit; t += 32) {
-                        for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) { if (!INS(10, x, y)) continue;
-                            int a = t - r[y * SW + x]; if (a <= 0) continue; if (a > 255) a = 255;
-                            const uint8_t *o = old + (y * SW + x) * 3, *nw = PIX(10, x, y); uint8_t *d = PIX(0, x, y);
-                            for (int c = 0; c < 3; c++) d[c] = (o[c] * (255 - a) + nw[c] * a) / 255; }
+                        int x1 = x0 + w > sw[10] ? sw[10] : x0 + w;
+                        for (int y = y0; y < y0 + h && y < sh[10]; y++) { const uint8_t *rr = r + y * SW, *o = old + y * SW * 3, *nw = surf[10] + (size_t)y * sw[10] * 3; uint8_t *d = surf[0] + y * SW * 3;
+                            for (int x = x0; x < x1; x++) { int a = t - rr[x]; if (a <= 0) continue; if (a > 255) a = 256;
+                                int k = x * 3; d[k] = (o[k] * (256 - a) + nw[k] * a) >> 8; d[k + 1] = (o[k + 1] * (256 - a) + nw[k + 1] * a) >> 8; d[k + 2] = (o[k + 2] * (256 - a) + nw[k + 2] * a) >> 8; } }
                         if (!effects_on(vm)) break; if (!frame(vm)) vm->quit = true; vm->steps = 0;
                     }
                     free(old);

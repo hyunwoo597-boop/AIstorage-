@@ -33,6 +33,7 @@ void plat_snd_stop(int slot) { snd_until[slot] = 0; }
 void plat_snd_fade(int slot, int ms) { (void)ms; snd_until[slot] = 0; }
 bool plat_snd_playing(int slot) { extern long g_frame; return g_frame < snd_until[slot]; }
 void snd_report(void) { printf("sound plays: music=%ld effects=%ld voice=%ld\n", snd_count[0], snd_count[1], snd_count[2]); }
+bool plat_wants_composite(void) { return true; }
 uint32_t plat_ms(void) { extern long g_frame; return (uint32_t)(g_frame * 1000 / 60); }
 void plat_datetime(int o[6]) { time_t t = time(NULL); struct tm *m = localtime(&t); o[0] = m->tm_year + 1900; o[1] = m->tm_mon + 1; o[2] = m->tm_mday; o[3] = m->tm_hour; o[4] = m->tm_min; o[5] = m->tm_sec; }
 bool plat_save_read(const char *name, void *buf, size_t len) {

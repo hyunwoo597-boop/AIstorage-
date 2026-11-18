@@ -75,6 +75,7 @@ static void pump(void) {
     else g_touch_armed = false;
     g_touching = t;
 }
+bool plat_wants_composite(void) { return false; }
 uint32_t plat_ms(void) { return (uint32_t)osGetTime(); }
 void plat_datetime(int o[6]) { time_t t = time(NULL); struct tm *m = localtime(&t); o[0] = m->tm_year + 1900; o[1] = m->tm_mon + 1; o[2] = m->tm_mday; o[3] = m->tm_hour; o[4] = m->tm_min; o[5] = m->tm_sec; }
 bool plat_save_read(const char *name, void *buf, size_t len) {
@@ -112,6 +113,7 @@ static inline void put(u8 *fb, int x, int y, int r, int g, int b) { u8 *p = fb +
    backdrop is pushed behind the screen (up to BACK_MAX px per eye) and characters/overlays come slightly forward
    (up to FRONT_MAX px per eye, opposite direction). Backdrop hidden behind a sprite is filled from the nearest backdrop. */
 enum { BACK_MAX = 7, FRONT_MAX = 3 };
+static const uint8_t *g_fade; static int g_fade_a;
 static inline void avg2(const uint8_t *r0, const uint8_t *r1, int sx, int *r, int *g, int *b) {
     const uint8_t *a = r0 + sx * 6, *c = r1 + sx * 6; *r = (a[0] + a[3] + c[0] + c[3]) >> 2; *g = (a[1] + a[4] + c[1] + c[4]) >> 2; *b = (a[2] + a[5] + c[2] + c[5]) >> 2;
 }
@@ -119,7 +121,11 @@ static inline void avg2(const uint8_t *r0, const uint8_t *r1, int sx, int *r, in
 static void draw_eye(u8 *fb, const uint8_t *rgb, const uint8_t *z, int back, int front, int eye) {
     for (int y = 0; y < 240; y++) {
         const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3;
-        if (!z || (!back && !front)) { for (int x = 0; x < 320; x++) { int r, g, b; avg2(r0, r1, x, &r, &g, &b); put(fb, 40 + x, y, r, g, b); } continue; }
+        if (!z || (!back && !front)) {
+            if (g_fade) { const uint8_t *f0 = g_fade + (y * 2) * 640 * 3, *f1 = f0 + 640 * 3; int fa = g_fade_a, na = 256 - fa;   /* SYS 10 crossfade */
+                for (int x = 0; x < 320; x++) { int r, g, b, R, G, B; avg2(r0, r1, x, &r, &g, &b); avg2(f0, f1, x, &R, &G, &B);
+                    put(fb, 40 + x, y, (r * na + R * fa) >> 8, (g * na + G * fa) >> 8, (b * na + B * fa) >> 8); } continue; }
+            for (int x = 0; x < 320; x++) { int r, g, b; avg2(r0, r1, x, &r, &g, &b); put(fb, 40 + x, y, r, g, b); } continue; }
         const uint8_t *z0 = z + (y * 2) * 640, *z1 = z0 + 640;
         #define NEAR(k) (z0[(k) * 2] | z0[(k) * 2 + 1] | z1[(k) * 2] | z1[(k) * 2 + 1])
         int sb = back * eye, sf = front * eye;
@@ -136,6 +142,7 @@ static void draw_eye(u8 *fb, const uint8_t *rgb, const uint8_t *z, int back, int
 }
 static void draw_scene(const uint8_t *rgb) {
     static bool stereo_on;
+    g_fade = sys_fade(&g_fade_a);
     float sl = osGet3DSliderState(); int back = (int)(sl * BACK_MAX + 0.5f), front = (int)(sl * FRONT_MAX + 0.5f);
     const uint8_t *z = sys_scene_depth(); bool st = rgb && sl > 0.01f;
     if (st != stereo_on) { gfxSet3D(st); stereo_on = st; }
