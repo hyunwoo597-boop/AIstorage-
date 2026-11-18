@@ -383,7 +383,7 @@ static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward wa
     for (int d = 0; d < 256; d++) { int v;   /* g_zp: screen plane, set by the slider in draw_scene */
         if (d <= g_zp) { int r = g_zp - g_lo; v = r > 0 ? back * (g_zp - (d < g_lo ? g_lo : d)) / r : 0; }        /* behind the screen */
         else { int r = g_hi_d - g_zp; v = r > 0 ? -front * ((d > g_hi_d ? g_hi_d : d) - g_zp) / r : 0; }         /* in front */
-        int t = 0; if (g_tilt_on) { int r = g_hi_d - g_lo; if (r > 40) t = (int)lroundf(g_tilt * 3.0f * ((d < g_lo ? g_lo : d > g_hi_d ? g_hi_d : d) - g_zp) / r); }   /* motion parallax: near and far slide apart */
+        int t = 0; if (g_tilt_on) { int r = g_hi_d - g_lo; if (r > 40) t = (int)lroundf(g_tilt * 5.0f * ((d < g_lo ? g_lo : d > g_hi_d ? g_hi_d : d) - g_zp) / r); }   /* motion parallax: near and far slide apart */
         int sv = eye * v + t, lim = back > front ? back : front; if (sv > lim) sv = lim; if (sv < -lim) sv = -lim;   /* stick never adds to the stereo extremes */
         tab[d] = (int8_t)sv; }
     for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3; const uint8_t *dm = g_hi ? g_dmh[y] : g_dm[y >> 1];
