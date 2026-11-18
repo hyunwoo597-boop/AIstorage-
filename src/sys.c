@@ -280,6 +280,7 @@ static const uint8_t *depth_map(const char *name, int *mw, int *mh) {
         if (!strcasecmp(nm, name)) { *mw = rd16(e + 16); *mh = rd16(e + 18); return dpk + rd32(e + 20); } }
     return NULL;
 }
+bool sys_has_depth(void) { int a, b; depth_map("", &a, &b); return dpk_n > 0; }
 static inline uint8_t dep_sprite(uint8_t src, uint8_t dst) {   /* layer value when a sprite pixel is drawn */
     if (src >= 128) return src; if (src >= 2) return (uint8_t)(src + 126);
     return dst >= 128 ? dst : 1;                    /* unmapped patch (face, eyes, mouth) over a mapped sprite keeps its depth */

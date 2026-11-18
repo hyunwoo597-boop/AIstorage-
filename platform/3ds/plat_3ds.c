@@ -227,10 +227,18 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
     if (n_raw_bg) build_room(rgb);                   /* backdrop without a map: room perspective and objects */
     bool chars = n_ai_spr > 384;                     /* mapped characters on screen */
     bool win = !chars && n_ai_bg > n_raw_bg;         /* mapped CG with only the text window as sprite */
-    if (n_raw_spr && !win) build_shade(rgb);         /* sprites without a map: shading */
+    /* lettering (title logo, opening notice, text window) is thin: it must sit on one flat plate, else the warp bends the strokes */
+    static uint8_t plate[19200]; bool text = false;
+    if (n_raw_spr) { int thick = 0;
+        for (int y = 3; y < 117; y++) for (int x = 3; x < 157; x++) { int i = y * 160 + x; thick += zc[i] == 1 && zc[i - 3] == 1 && zc[i + 3] == 1 && zc[i - 480] == 1 && zc[i + 480] == 1; }
+        text = thick * 5 < n_raw_spr || win; }
+    if (text) { static uint8_t h[19200];                 /* raw sprite cells grown by 3 cells (12 px) */
+        for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int f = 0; for (int k = -3; k <= 3 && !f; k++) { int xx = x + k; f = xx >= 0 && xx < 160 && zc[y * 160 + xx] == 1; } h[y * 160 + x] = (uint8_t)f; }
+        for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int f = 0; for (int k = -3; k <= 3 && !f; k++) { int yy = y + k; f = yy >= 0 && yy < 120 && h[yy * 160 + x]; } plate[y * 160 + x] = (uint8_t)f; } }
+    if (n_raw_spr && !text) build_shade(rgb);        /* sprites without a map: shading */
     /* chamfer distance to the nearest backdrop cell (3-4 metric), two passes */
     const float BIG = 1e6f;
-    if (n_raw_spr && !win) {                          /* volume from the outline: only for sprites without a map */
+    if (n_raw_spr && !text) {                         /* volume from the outline: only for sprites without a map */
     for (int i = 0; i < 19200; i++) dist[i] = spr[i] ? BIG : 0;
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int i = y * 160 + x; if (!spr[i]) continue; float d = dist[i];
         if (x > 0) d = fminf(d, dist[i - 1] + 1); if (y > 0) { d = fminf(d, dist[i - 160] + 1); if (x > 0) d = fminf(d, dist[i - 161] + 1.414f); if (x < 159) d = fminf(d, dist[i - 159] + 1.414f); }
@@ -239,9 +247,9 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
         if (x < 159) d = fminf(d, dist[i + 1] + 1); if (y < 119) { d = fminf(d, dist[i + 160] + 1); if (x < 159) d = fminf(d, dist[i + 161] + 1.414f); if (x > 0) d = fminf(d, dist[i + 159] + 1.414f); } dist[i] = d; }
     }
     for (int i = 0; i < 19200; i++) { float v; int c = zc[i];
-        if (c >= 128) v = 0.55f + 0.45f * (c - 128) / 125.0f;                                   /* AI depth of the character */
+        if (text && plate[i] && c < 128) v = win ? 0.9f : 0.8f;                                 /* flat plate for lettering */
+        else if (c >= 128) v = 0.55f + 0.45f * (c - 128) / 125.0f;                                   /* AI depth of the character */
         else if (c >= 2) v = (chars ? 0.5f : 0.85f) * (c - 2) / 125.0f;                         /* AI depth of the background / CG */
-        else if (spr[i] && win) v = 0.9f;                                                  /* text window in front of a CG */
         else if (spr[i]) { float t = dist[i] / 16.0f; if (t > 1) t = 1; v = 0.5f + 0.3f * sqrtf(t) + 0.45f * (g_shade[i] - 0.5f) * (0.4f + 0.6f * t);   /* volume + lit roundness */
                       if (v < 0.45f) v = 0.45f; if (v > 1) v = 1; }
         else v = 0.5f * g_room[i];                                                               /* backdrop 0..0.5: room + objects */
@@ -282,6 +290,7 @@ static void draw_scene(const uint8_t *rgb) {
         if (ai < 80 * 60 / 2) sig ^= pic_sig(rgb);    /* AI depth does not depend on the colours; guessed depth does */
         /* while the picture keeps changing (wipes, animation) rebuild at most every 4th frame, so transitions stay smooth */
         if (sig != g_dm_sig && (since >= 4 || g_dm_sig == 0)) { since = 0; if (full_picture(z) && ai_picture(z)) build_dm_layers(rgb, z);
+          else if (full_picture(z) && sys_has_depth()) memset(g_dm, 150, sizeof g_dm);   /* no map (notices, opening text, menus): one flat plane, lettering stays clean */
           else if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
           else build_dm_layers(rgb, z); g_dm_sig = sig; }
