@@ -306,9 +306,11 @@ static void draw_eye_dm(u8 *fb, const uint8_t *rgb, int back, int front, int eye
         const uint8_t *f0 = g_fade ? g_fade + (y * 2) * 640 * 3 : NULL;
         for (int x = 0; x < 320; x++) { int d = dm[x >> sh1]; int sh = eye * (back * (255 - d) - front * d) / 255; int k = x + sh;
             if (k >= 0 && k < 320) { d = dm[k >> sh1]; sh = eye * (back * (255 - d) - front * d) / 255; k = x + sh; }   /* second step: depth where the pixel comes from */
-            if (x < win || x >= 320 - win || k < 0 || k >= 320) { put(fb, 40 + x, y, 0, 0, 0); continue; }   /* straight black window edges, same in both eyes */
-            int r, g, b; avg2(r0, r1, k, &r, &g, &b);
-            if (f0) { int R, G, B, na = 256 - fa; avg2(f0, f0 + 640 * 3, k, &R, &G, &B); r = (r * na + R * fa) >> 8; g = (g * na + G * fa) >> 8; b = (b * na + B * fa) >> 8; }   /* crossfade stays 3D */
+            /* no side bars: the picture is drawn win px narrower on each side and spread back over the full width, so the
+               shifted samples always land inside it - the frame keeps its size at any slider position */
+            int sx = win + k * (320 - 2 * win) / 320; if (sx < 0) sx = 0; if (sx > 319) sx = 319;
+            int r, g, b; avg2(r0, r1, sx, &r, &g, &b);
+            if (f0) { int R, G, B, na = 256 - fa; avg2(f0, f0 + 640 * 3, sx, &R, &G, &B); r = (r * na + R * fa) >> 8; g = (g * na + G * fa) >> 8; b = (b * na + B * fa) >> 8; }   /* crossfade stays 3D */
             put(fb, 40 + x, y, r, g, b); } }
 }
 static void draw_scene(const uint8_t *rgb) {
