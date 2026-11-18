@@ -324,11 +324,17 @@ static void depth_fx(const uint8_t *z) {
     bool shadow = nm > 160 * 120 / 50 && nm < 160 * 120 * 9 / 10;
     if (shadow) { for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int sx = x - 3, sy = y - 2; S[y * 160 + x] = (sx >= 0 && sy >= 0) ? M[sy * 160 + sx] : 0; }
         box_u8(S, 160, 120, 1, 3); box_u8(S, 160, 120, 1, 3); }
+    /* depth for the effects: the farthest value within 4 px. The depth map runs a little past a character's outline;
+       without this the background right next to the character kept its sharp, clear look and showed as a pale halo */
+    static uint8_t D[240 * 320], T[240 * 320];
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) T[y * 320 + x] = g_hi ? g_dmh[y][x] : g_dm[y >> 1][x >> 1];
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int m = 255; for (int k = -4; k <= 4; k++) { int xx = x + k; if (xx < 0 || xx > 319) continue; int v = T[y * 320 + xx]; if (v < m) m = v; } D[y * 320 + x] = (uint8_t)m; }
+    for (int x = 0; x < 320; x++) for (int y = 0; y < 240; y++) { int m = 255; for (int k = -4; k <= 4; k++) { int yy = y + k; if (yy < 0 || yy > 239) continue; int v = D[yy * 320 + x]; if (v < m) m = v; } T[y * 320 + x] = (uint8_t)m; }
     int sn = (g_sub - g_lo) * 256 / range;
-    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int i = y * 320 + x; int d = g_hi ? g_dmh[y][x] : g_dm[y >> 1][x >> 1];
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int i = y * 320 + x; int d = T[i];
         int nd = (d - g_lo) * 256 / range; if (nd < 0) nd = 0; if (nd > 256) nd = 256;
         int wb = (sn - nd - 26) * 205 / 102; if (wb < 0) wb = 0; if (wb > 205) wb = 205;            /* out of focus behind the subject (max 80 %) */
-        int hz = 36 * (256 - nd) * (256 - nd) >> 16;                                               /* haze in the distance (max 14 %) */
+        int hz = 23 * (256 - nd) * (256 - nd) >> 16;                                               /* haze in the distance (max 9 %) */
         int qi = (y >> 1) * 160 + (x >> 1); int dk = (shadow && !M[qi]) ? 256 - (S[qi] * 90 >> 8) : 256;   /* shadow behind characters (max 35 %) */
         uint8_t *o = g_half + i * 3; const uint8_t *b = B + i * 3; static const int hc[3] = { 170, 180, 200 };
         for (int c = 0; c < 3; c++) { int v = o[c] + ((b[c] - o[c]) * wb >> 8); v += (hc[c] - v) * hz >> 8; v = v * dk >> 8; o[c] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); } }
@@ -347,7 +353,7 @@ static void make_half(const uint8_t *rgb, const uint8_t *z, bool fx) {
 /* per-scene depth budget: the scene's own depth range (3rd..98th percentile) is spread over the whole budget, and the
    screen plane sits between the far end and the subject (centre of the picture), so flat scenes still get full
    depth, the subject comes a little forward and only the nearest parts reach the front limit */
-static bool g_tilt_on; static float g_tilt; static int g_toast;   /* Y: tilt parallax (gyroscope) on/off */
+static bool g_tilt_on = true; static float g_tilt; static int g_toast;   /* circle pad: look around (motion parallax) */
 static void depth_stats(void) {
     int h[256] = { 0 }, hc[256] = { 0 }, n = 0, nc = 0;
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int d = g_hi ? g_dmh[y * 2][x * 2] : g_dm[y][x]; h[d]++; n++;
@@ -369,16 +375,22 @@ static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward wa
         tab[d] = (int8_t)(eye * v + t); }
     for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3; const uint8_t *dm = g_hi ? g_dmh[y] : g_dm[y >> 1];
         u8 *p = fb + (40 * 240 + (239 - y)) * 3;
-        for (int x = 0; x < 320; x++, p += 240 * 3) { int k = x + tab[dm[x >> sh1]];
-            if ((unsigned)k < 320) k = x + tab[dm[k >> sh1]];   /* second step: depth where the pixel comes from */
-            if (k < 0) k = 0; else if (k > 319) k = 319;        /* screen edge: repeat the edge column */
+        for (int x = 0; x < 320; x++, p += 240 * 3) {
+            /* find the source column k with k = x + shift(depth at k). Where that has no single answer the background is
+               being uncovered next to a character: take the farther candidate, so the gap is filled with background
+               instead of a stretched line of the character's edge */
+            int k1 = x + tab[dm[x >> sh1]]; if (k1 < 0) k1 = 0; else if (k1 > 319) k1 = 319;
+            int k2 = x + tab[dm[k1 >> sh1]]; if (k2 < 0) k2 = 0; else if (k2 > 319) k2 = 319;
+            int k = k2;
+            if (k2 != k1) { int k3 = x + tab[dm[k2 >> sh1]]; if (k3 < 0) k3 = 0; else if (k3 > 319) k3 = 319;
+                if (k3 != k2) k = dm[k2 >> sh1] <= dm[k1 >> sh1] ? k2 : k1; }
             const uint8_t *q = row + k * 3; p[0] = q[2]; p[1] = q[1]; p[2] = q[0]; } }
 }
 static void draw_scene(const uint8_t *rgb) {
     static bool stereo_on, ypr;
-    { bool yk = (hidKeysHeld() & KEY_Y) != 0; if (yk && !ypr) { g_tilt_on = !g_tilt_on; g_tilt = 0; g_toast = 90; if (g_tilt_on) HIDUSER_EnableGyroscope(); else HIDUSER_DisableGyroscope(); } ypr = yk; }
-    if (g_tilt_on) { angularRate r; hidGyroRead(&r); float v = r.y; if (fabsf(v) < 25) v = 0;   /* dead zone against drift */
-        g_tilt = g_tilt * 0.93f + v * 0.0003f; if (g_tilt > 1) g_tilt = 1; if (g_tilt < -1) g_tilt = -1; }
+    (void)ypr;
+    { circlePosition cp; hidCircleRead(&cp); float v = cp.dx / 150.0f; if (fabsf(v) < 0.12f) v = 0;   /* dead zone */
+        if (v > 1) v = 1; if (v < -1) v = -1; g_tilt += (v - g_tilt) * 0.25f; if (fabsf(g_tilt) < 0.01f) g_tilt = 0; }   /* eases back when released */
     g_fade = sys_fade(&g_fade_a);
     float sl = osGet3DSliderState(); int back = (int)(sl * BACK_MAX + 0.5f), front = (int)(sl * FRONT_MAX + 0.5f);
     const uint8_t *z = sys_scene_depth(); bool st = rgb && sl > 0.01f;
