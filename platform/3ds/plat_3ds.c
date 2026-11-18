@@ -220,12 +220,13 @@ static void build_room(const uint8_t *rgb) {
 /* background contrast curve (S-shaped): mid-distance steps about 1.6x larger, the far and near ends pressed together.
    Only for the backdrop behind standing characters; characters and event CGs keep the plain AI depth. */
 static const uint8_t bg_curve[126] = { 0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,2,2,2,3,3,4,4,5,5,6,6,7,8,9,9,10,11,12,13,14,15,17,18,19,21,22,24,25,27,29,30,32,34,36,38,40,42,44,46,48,50,52,55,57,59,61,64,66,68,70,73,75,77,79,81,83,85,87,89,91,93,95,96,98,100,101,103,104,106,107,108,110,111,112,113,114,115,116,116,117,118,119,119,120,120,121,121,122,122,123,123,123,124,124,124,124,124,125,125,125,125,125,125,125,125,125,125,125,125 };
+static float g_lo_raw[19200]; static bool g_lo_chars;   /* unblurred cell depth, and: scene of mapped characters only */
 static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
     static float dist[19200], tmp[19200]; static uint8_t spr[19200], zc[19200];
     /* layer per cell: 0/1 = backdrop/sprite without AI map, 2..127 / 128..253 = with AI depth (DEPTH.PAK) */
     int n_ai_spr = 0, n_ai_bg = 0, n_raw_bg = 0, n_raw_spr = 0;
-    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int n = 0, i = y * 160 + x; for (int j = 0; j < 4; j += 2) for (int k = 0; k < 4; k += 2) { int v = z[(y * 4 + j) * 640 + x * 4 + k]; n += v == 1 || v >= 128; }
-        spr[i] = n >= 2; int c = z[(y * 4 + 1) * 640 + x * 4 + 1]; if (spr[i] && c < 128 && c != 1) c = 1; if (!spr[i] && (c == 1 || c >= 128)) c = 0; zc[i] = (uint8_t)c;
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int n = 0, i = y * 160 + x, sv = 0; for (int j = 0; j < 4; j += 2) for (int k = 0; k < 4; k += 2) { int v = z[(y * 4 + j) * 640 + x * 4 + k]; n += v == 1 || v >= 128; if (v >= 128 && v > sv) sv = v; }
+        spr[i] = n >= 2; int c = z[(y * 4 + 1) * 640 + x * 4 + 1]; if (spr[i] && c < 128 && c != 1) c = sv ? sv : 1;   /* outline cell: depth of its sprite samples */ if (!spr[i] && (c == 1 || c >= 128)) c = 0; zc[i] = (uint8_t)c;
         if (c >= 128) n_ai_spr++; else if (c == 1) n_raw_spr++; else if (c == 0) n_raw_bg++; else n_ai_bg++; }
     if (n_raw_bg) build_room(rgb);                   /* backdrop without a map: room perspective and objects */
     bool chars = n_ai_spr > 384;                     /* mapped characters on screen */
@@ -257,6 +258,7 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
                       if (v < 0.45f) v = 0.45f; if (v > 1) v = 1; }
         else v = 0.5f * g_room[i];                                                               /* backdrop 0..0.5: room + objects */
         tmp[i] = v; }
+    memcpy(g_lo_raw, tmp, sizeof g_lo_raw); g_lo_chars = chars && !n_raw_spr;
     blur_rows(tmp, dist, 3);   /* soften the step at the outline so the warp stretches instead of tearing */
     for (int i = 0; i < 19200; i++) g_dm[i / 160][i % 160] = (uint8_t)(tmp[i] * 255);
 }
@@ -276,6 +278,27 @@ static void build_dm_hi(const uint8_t *z) {
         for (int x = 0; x < 320; x++) { c = t[y * 320 + x] * 2; if (x > 0) c += t[y * 320 + x - 1]; else c += t[y * 320 + x]; if (x < 319) c += t[y * 320 + x + 1]; else c += t[y * 320 + x]; r[x] = c / 4; } }
     for (int x = 0; x < 320; x++) { float prev = a[x];
         for (int y = 0; y < 240; y++) { float cur = a[y * 320 + x], nx = y < 239 ? a[(y + 1) * 320 + x] : cur; float v = (prev + 2 * cur + nx) / 4; prev = cur; g_dmh[y][x] = (uint8_t)(v * 255); } }
+}
+/* scenes with mapped characters: the smooth cell map (soft outlines, no tearing) plus the fine relief of the 1/2-size
+   character maps (faces, hands, folds) inside the body, away from the outline */
+static void build_dm_hi_layers(const uint8_t *z) {
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) {
+        float fx = x * 0.5f - 0.25f, fy = y * 0.5f - 0.25f; if (fx < 0) fx = 0; if (fy < 0) fy = 0;
+        int x0 = (int)fx, y0 = (int)fy, x1 = x0 < 159 ? x0 + 1 : 159, y1 = y0 < 119 ? y0 + 1 : 119; float ax = fx - x0, ay = fy - y0;
+        #define BIL(A) ((A(y0, x0) * (1 - ax) + A(y0, x1) * ax) * (1 - ay) + (A(y1, x0) * (1 - ax) + A(y1, x1) * ax) * ay)
+        #define DM(r, c) (g_dm[r][c] / 255.0f)
+        #define LR(r, c) (g_lo_raw[(r) * 160 + (c)])
+        float v = BIL(DM);
+        int px = x * 2, py = y * 2, c = z[py * 640 + px];
+        if (c >= 128) {
+            int in = 0; static const int o[4][2] = { { -10, 0 }, { 10, 0 }, { 0, -10 }, { 0, 10 } };
+            for (int k = 0; k < 4; k++) { int qx = px + o[k][0], qy = py + o[k][1]; in += qx >= 0 && qx < 640 && qy >= 0 && qy < 480 && z[qy * 640 + qx] >= 128; }
+            if (in == 4) { float raw = 0.6f + 0.35f * (c - 128) / 125.0f; v += raw - BIL(LR); }
+        }
+        #undef BIL
+        #undef DM
+        #undef LR
+        g_dmh[y][x] = (uint8_t)(v < 0 ? 0 : v > 1 ? 255 : v * 255); }
 }
 static void draw_eye_dm(u8 *fb, const uint8_t *rgb, int back, int front, int eye) {   /* backward warp with the depth map */
     int fa = g_fade_a, win = back > front ? back : front, sh1 = g_hi ? 0 : 1;
@@ -306,7 +329,7 @@ static void draw_scene(const uint8_t *rgb) {
           else if (full_picture(z) && sys_has_depth()) memset(g_dm, 150, sizeof g_dm);   /* no map (notices, opening text, menus): one flat plane, lettering stays clean */
           else if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
-          else build_dm_layers(rgb, z); g_dm_sig = sig; }
+          else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); g_hi = true; } } g_dm_sig = sig; }
         int fb2 = (int)(sl * 6.0f + 0.5f), bk = (int)(sl * 8.0f + 0.5f);   /* full slider: 8 px behind .. 6 px in front per eye */
         draw_eye_dm(fb, rgb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);

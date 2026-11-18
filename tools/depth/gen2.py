@@ -18,16 +18,21 @@ def blur(a, r):
         return (c.take(range(2 * r + 1, 2 * r + 1 + n), axis=ax) - c.take(range(0, n), axis=ax)) / (2 * r + 1)
     return b1(b1(a, 0), 1)
 ents = []; prev = []
-names = [l.strip() for l in open('cg_list.txt') if l.strip()]
+names = [l.strip() for l in open(os.environ.get('LIST', 'cg_list.txt')) if l.strip()]
 shard, nsh = int(os.environ.get('SHARD', 0)), int(os.environ.get('NSHARD', 1)); names = names[shard::nsh]
 import time; t0 = time.time()
 for n in names:
     f = 'img/' + n[:-4] + '.png'
     if not os.path.exists(f): continue
-    rgb = np.asarray(Image.open(f).convert('RGB'))
-    g = norm(infer(rgb, 518)); fine = norm(infer(rgb, 1036))
+    im = Image.open(f)
+    if im.mode == 'RGBA':                               # character sprite: on grey, normalised inside its mask
+        a = np.asarray(im)[:, :, 3]; al = a[:, :, None] / 255.0; m = a >= 128
+        rgb = (np.asarray(im)[:, :, :3] * al + 128 * (1 - al)).astype(np.uint8)
+    else: rgb = np.asarray(im.convert('RGB')); m = np.ones(rgb.shape[:2], bool)
+    def nm(d): lo, hi = np.percentile(d[m], 1), np.percentile(d[m], 99); return np.clip((d - lo) / max(hi - lo, 1e-6), 0, 1)
+    g = nm(infer(rgb, 518)); fine = nm(infer(rgb, 1036))
     detail = fine - blur(fine, 6)                       # local relief the big pass resolves (folds, faces, fingers)
-    v = np.clip(g + 0.8 * detail, 0, 1); v = norm(v)
+    v = nm(np.clip(g + 0.8 * detail, 0, 1)); v[~m] = 0
     h, w = v.shape; mw, mh = (w + 1) // 2, (h + 1) // 2
     small = np.asarray(Image.fromarray((v * 255).astype(np.uint8)).resize((mw, mh), Image.BILINEAR))
     ents.append((n, mw, mh, small.tobytes())); print(n, round(time.time() - t0), flush=True)

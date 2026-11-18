@@ -5,7 +5,7 @@ jobs:
   depth:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    strategy: { matrix: { shard: [4] } }
+    strategy: { matrix: { shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] } }
     steps:
       - uses: actions/checkout@v4
       - run: pip install onnxruntime numpy pillow huggingface_hub
@@ -16,7 +16,7 @@ jobs:
           for i in 1 2 3; do curl -fL --retry 3 --max-time 400 -o m/model.onnx https://huggingface.co/onnx-community/depth-anything-v2-large/resolve/main/onnx/model.onnx && break; done
           ls -l m
       - run: python gen2.py m/model.onnx
-        env: { SHARD: "${{ matrix.shard }}", NSHARD: "12" }
+        env: { SHARD: "${{ matrix.shard }}", NSHARD: "10", LIST: spr_list.txt }
       - uses: actions/upload-artifact@v4
         with: { name: "part${{ matrix.shard }}", path: out/ }
   merge:
@@ -26,8 +26,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { path: parts }
-      - uses: actions/download-artifact@v4
-        with: { path: parts, run-id: 44281290809, github-token: "${{ github.token }}" }
       - run: mkdir -p out && python merge.py && cp parts/part0/preview_cg_0.png out/ || true
       - name: publish
         run: |
