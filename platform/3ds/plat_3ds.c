@@ -173,12 +173,37 @@ static void build_dm(const uint8_t *rgb) {
     blur_rows(lum, tmp, 3); norm595(lum);
     for (int i = 0; i < 19200; i++) g_dm[i / 160][i % 160] = (uint8_t)(lum[i] * 255);
 }
+/* background objects: the picture (160x120, lightly blurred) is split into regions of similar colour (flood fill, neighbour
+   difference < 22). Big regions (walls, floor, ceiling, sky: >12% of the picture or spanning its width) follow a room
+   model - near at the picture's edges, far toward a vanishing point a bit above the centre. Smaller regions are objects
+   (phone, bed, vending machine, chairs, plants...) and get one depth from where they touch the ground: the lower their
+   bottom edge, the nearer. Result in g_room (0 far .. 1 near). */
+static float g_room[19200];
+static void build_room(const uint8_t *rgb) {
+    static int16_t c[19200][3]; static int lab[19200], q[19200];
+    for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int sum[3] = {0, 0, 0};
+        for (int j = 0; j < 4; j += 2) for (int i = 0; i < 4; i += 2) { const uint8_t *p = rgb + ((y * 4 + j) * 640 + x * 4 + i) * 3; sum[0] += p[0]; sum[1] += p[1]; sum[2] += p[2]; }
+        for (int k = 0; k < 3; k++) c[y * 160 + x][k] = sum[k] / 4; }
+    for (int i = 0; i < 19200; i++) lab[i] = -1;
+    for (int st = 0; st < 19200; st++) { if (lab[st] >= 0) continue;
+        int qh = 0, qt = 0, area = 0, minx = 159, maxx = 0, maxy = 0; q[qt++] = st; lab[st] = st;
+        while (qh < qt) { int i = q[qh++], x = i % 160, y = i / 160; area++; if (x < minx) minx = x; if (x > maxx) maxx = x; if (y > maxy) maxy = y;
+            int nb[4] = { x > 0 ? i - 1 : -1, x < 159 ? i + 1 : -1, y > 0 ? i - 160 : -1, y < 119 ? i + 160 : -1 };
+            for (int k = 0; k < 4; k++) { int n = nb[k]; if (n < 0 || lab[n] >= 0) continue;
+                if (abs(c[n][0] - c[i][0]) + abs(c[n][1] - c[i][1]) + abs(c[n][2] - c[i][2]) < 22) { lab[n] = st; q[qt++] = n; } } }
+        bool big = area > 2304 || (minx == 0 && maxx == 159) || area < 8;
+        float obj = 0.2f + 0.8f * maxy / 119.0f;
+        for (int k = 0; k < qt; k++) { int i = q[k], x = i % 160, y = i / 160;
+            if (big) { float ax = fabsf(x - 80) / 80.0f, ay = fabsf(y - 54) / 66.0f; float m = ax > ay ? ax : ay; g_room[i] = 0.9f * (m > 1 ? 1 : m); }
+            else g_room[i] = obj; } }
+    static float t[19200]; blur_rows(g_room, t, 1);
+}
 /* normal scenes: characters (sprite layer) are given volume. Depth inside a sprite grows with the distance from its
    outline (rounded: sqrt), so the middle of a body - chest, hips, faces - comes forward and the silhouette edges stay
    near the screen; the backdrop sits behind with a little of the guessed depth for variation. */
 static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
     static float dist[19200], tmp[19200]; static uint8_t spr[19200];
-    build_dm(rgb);                                   /* guessed depth, used faintly on the backdrop */
+    build_room(rgb);                                 /* backdrop: room perspective and objects */
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int n = 0; for (int j = 0; j < 4; j += 2) for (int i = 0; i < 4; i += 2) n += z[(y * 4 + j) * 640 + x * 4 + i] != 0; spr[y * 160 + x] = n >= 2; }
     /* chamfer distance to the nearest backdrop cell (3-4 metric), two passes */
     const float BIG = 1e6f;
@@ -190,7 +215,7 @@ static void build_dm_layers(const uint8_t *rgb, const uint8_t *z) {
         if (x < 159) d = fminf(d, dist[i + 1] + 1); if (y < 119) { d = fminf(d, dist[i + 160] + 1); if (x < 159) d = fminf(d, dist[i + 161] + 1.414f); if (x > 0) d = fminf(d, dist[i + 159] + 1.414f); } dist[i] = d; }
     for (int i = 0; i < 19200; i++) { float v;
         if (spr[i]) { float t = dist[i] / 22.0f; if (t > 1) t = 1; v = 0.55f + 0.45f * sqrtf(t); }   /* outline ~0.55, core up to 1.0 */
-        else v = 0.25f * g_dm[i / 160][i % 160] / 255.0f;                                        /* backdrop 0..0.25 */
+        else v = 0.5f * g_room[i];                                                               /* backdrop 0..0.5: room + objects */
         tmp[i] = v; }
     blur_rows(tmp, dist, 1);                         /* soften the step at the outline so the warp stretches instead of tearing */
     for (int i = 0; i < 19200; i++) g_dm[i / 160][i % 160] = (uint8_t)(tmp[i] * 255);
@@ -215,7 +240,9 @@ static void draw_scene(const uint8_t *rgb) {
     memset(fb, 0, 400 * 240 * 3); if (!rgb) return;
     if (!st) { draw_eye(fb, rgb, NULL, 0, 0, 1); return; }
     if (z && !g_fade) {                               /* depth map: guessed for full pictures, sprite volume for scenes */
-        uint32_t sig = pic_sig(rgb); for (int y = 2; y < 480; y += 8) for (int x = 2; x < 640; x += 8) sig = (sig ^ z[y * 640 + x]) * 16777619u; if (sig != g_dm_sig) { if (full_picture(z)) build_dm(rgb); else build_dm_layers(rgb, z); g_dm_sig = sig; }
+        uint32_t sig = pic_sig(rgb); for (int y = 2; y < 480; y += 8) for (int x = 2; x < 640; x += 8) sig = (sig ^ z[y * 640 + x]) * 16777619u; if (sig != g_dm_sig) { if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
+            for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
+          else build_dm_layers(rgb, z); g_dm_sig = sig; }
         int fb2 = (int)(sl * 5.0f + 0.5f);
         draw_eye_dm(fb, rgb, back, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
