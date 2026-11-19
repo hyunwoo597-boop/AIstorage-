@@ -57,7 +57,7 @@ static int s3d_mode = 0;              /* 3D style: 0 characters and the picture 
 static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong, 4 strongest (the 3D slider scales it further) */
 /* bottom-screen text is always shown at the smallest size (1.0x); the old size choice is gone and a saved text_size= line is ignored */
 static char cfg_path[320];
-static int voice_on = 1, voice_clips;          /* voice clips from VOICE.ARC (Windows version) */
+static int voice_on = 1, voice_clips; static unsigned voice_ok, voice_fail, voice_skip; static int voice_hooks; static char voice_last[16];          /* voice clips from VOICE.ARC (Windows version) */
 static void cfg_save(void) {
     FILE *f = fopen(cfg_path, "w"); if (!f) return;
     fprintf(f, "cpu_mode=%d\nmouse_level=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\nvoice=%d\n", cpu_mode, mouse_level, win_hide, pic_mode, s3d_level, s3d_mode, voice_on);
@@ -796,8 +796,10 @@ static void menu_draw(Machine *m, int sel) {
             break;
         case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터+테두리" : "배경+캐릭터"); break;
         case MI_VOICE:
-            if (!voice_clips) snprintf(line, sizeof line, "음성: 없음 (VOICE.ARC 를 넣으세요)");
-            else snprintf(line, sizeof line, "음성: %s", voice_on ? "켜기" : "끄기");
+            if (!voice_hooks) snprintf(line, sizeof line, "음성: 대본을 찾지 못함 (SAGWA.DAT)");
+            else if (!audio_ok) snprintf(line, sizeof line, "음성: 소리 장치 없음");
+            else if (!voice_clips) snprintf(line, sizeof line, "음성: 없음 (VOICE.ARC 를 넣으세요)");
+            else snprintf(line, sizeof line, "음성: %s  (%u/%u/%u/%u %s)", voice_on ? "켜기" : "끄기", voice_clips, voice_fired(m), voice_ok, voice_fail, voice_last);
             break;
         default: snprintf(line, sizeof line, "게임 종료"); break;
         }
@@ -948,7 +950,7 @@ int main(void) {
     if (!is_new) { int th = synth_start(m->opl); LOG("synth thread on core 1: %s", th ? "yes" : "no (single core)"); }
     textcap_init(m);
     idle_init(m);
-    { int vh = voice_init(m);
+    { int vh = voice_init(m); voice_hooks = vh;
 #ifdef HAVE_VOICE
       if (vh && audio_ok) voice_clips = vp_init(gdir);
 #endif
@@ -1055,7 +1057,11 @@ int main(void) {
         audio_pump(m);
         { const char *vn = voice_take(m);
 #ifdef HAVE_VOICE
-          if (vn && voice_on && voice_clips) vp_play(vn);
+          if (vn) {
+              snprintf(voice_last, sizeof voice_last, "%s", vn);
+              if (voice_on && voice_clips) { if (vp_play(vn)) voice_ok++; else { voice_fail++; LOG("voice %s: play failed", vn); } }
+              else voice_skip++;
+          }
           vp_pump();
 #else
           (void)vn;
