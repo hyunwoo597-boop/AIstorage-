@@ -78,7 +78,7 @@ static void v_on_load(Machine *m, uint16_t load_seg) {
     for (uint32_t o = 0; o < 0xF000; o++) {
         if (m->mem[base + o] != 0x8A || memcmp(m->mem + base + o, SIG_FETCH, sizeof SIG_FETCH)) continue;
         if (c->nbp < 8) { c->bp[c->nbp] = base + o; c->bp_fn[c->nbp] = fetch_cb; c->nbp++; }
-        if (getenv("VDBG")) fprintf(stderr, "[voice] fetch hook at %04X:%04X\n", load_seg, o);
+        if (getenv("VDBG")) fprintf(stderr, "[voice] fetch hook at %04X:%04X\n", (unsigned)load_seg, (unsigned)o);
         break;
     }
 }
