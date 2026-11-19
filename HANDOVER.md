@@ -103,7 +103,7 @@ docs/FORMATS.md 포맷 분석 + 단계별 작업 일지(가장 자세한 기록)
 
 ### 6-5. DEPTH.PAK 형식과 생성
 - `"DPK1"`, u32 개수, 항목 24바이트 `{char name[16]; u16 w, h; u32 off}`, 데이터 = 8비트(255 = 가장 가까움). 엔진은 이름(대소문자 무시)으로 찾음.
-- 현재 내용(PAK 항목 수는 아래 합계): 캐릭터 29장 + CG/배경 121장 = Large 모델 2배율 1/2 해상도(`gen2.py`, 스프라이트는 마스크 안 정규화), 나머지 base 모델 1/4 해상도(`gen.py`), 그림 변형 조각 18장(`gen_patch.py`: 밑그림과 합성해 계산 후 밑그림 척도로 맞춤), `TITLELOGO.GCC`(`add_logo.py`: OP 깊이 + 로고 평판).
+- 현재 내용(172항목): 캐릭터 29장 + CG/배경 121장 = Large 모델 2배율 1/2 해상도(`gen2.py`, 스프라이트는 마스크 안 정규화), 나머지 base 모델 1/4 해상도(`gen.py`), 그림 변형 조각 18장(`gen_patch.py`: 밑그림과 합성해 계산 후 밑그림 척도로 맞춤), `TITLELOGO.GCC`(`add_logo.py`: OP 깊이 + 로고 평판).
 - **가슴·엉덩이 강화**: `pose.py`(YOLOv8x-pose 관절) → `body_boost.py DEPTH.PAK pose.json out.pak 2.0`(가슴 2곳·골반/엉덩이 2곳 원형 가중치 안에서 국소 볼록함 증폭 + 약간 앞으로). 101장 적용, 강도 2.0.
 - 생성 순서(비공개 test 저장소 CI): 그림 추출(`tools/arc.py` + `gcc2raw`) → gen.py(전체) → gen2.py(CG·캐릭터, `LIST`/`SHARD`/`NSHARD` 환경변수로 병렬) → gen_patch.py → merge.py → add_logo.py → pose.py → body_boost.py. 모델은 HF `onnx-community/depth-anything-v2-large`(가끔 다운로드가 멈추면 해당 shard만 다시 돌림).
 
