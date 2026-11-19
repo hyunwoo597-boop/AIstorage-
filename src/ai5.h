@@ -116,6 +116,8 @@ void sys_on_goto(void);                    /* a new script replaces the current 
 void sys_fix_script(const char *name, uint8_t *code, size_t n);   /* port patches applied to loaded scripts */         /* the live 640x480 screen (shown on the bottom screen during full-screen menus) */
 const ui_text *sys_ui_text(vm_t *vm);
 const uint8_t *sys_font(uint32_t *cells);
+int  sys_set_dos_gfx(vm_t *vm, int on);       /* DOS-release pictures on/off (needs SILK*.DAT); returns the new state */
+int  sys_dos_gfx(void);
 bool sys_has_depth(void);                   /* DEPTH.PAK (AI depth maps) is present */
 int sys_font_flags(void);                  /* bit 0: Korean glyph remap font (full-width space drawn half width on the small screen) */   /* font16.bin glyph data: 128 bytes per 16x16 4bpp cell */
 uint32_t sys_glyph_index(const uint8_t **p, int *half);   /* decode one SJIS char, advance *p */

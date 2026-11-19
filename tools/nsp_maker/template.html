@@ -52,6 +52,13 @@ small { color:var(--sub); }
 </div>
 
 <div class="card">
+  <h2><span class="step">+</span>도스판 그림 (선택)</h2>
+  <p>도스판(DOS) 게임 zip 또는 그 안의 <b>SILK0.DAT ~ SILK4.DAT</b> 를 고르면, 게임 중 <b>- 버튼</b>으로 윈도우판 그림과 도스판 그림(16색)을 바꿔 볼 수 있습니다. 약 5.5MB 가 더해집니다.</p>
+  <label class="pick">여기를 눌러 도스판 zip 또는 SILK*.DAT 고르기<input type="file" id="inDos" multiple></label>
+  <div class="files" id="fDos"></div>
+</div>
+
+<div class="card">
   <h2><span class="step">3</span>prod.keys (필수)</h2>
   <p>본인 스위치에서 <b>Lockpick_RCM</b> 으로 뽑은 <b>prod.keys</b>. NSP 를 스위치 형식으로 암호화하는 데만 쓰이고 어디로도 보내지지 않습니다.</p>
   <label class="pick">여기를 눌러 prod.keys 고르기<input type="file" id="inKeys"></label>
@@ -121,6 +128,39 @@ $('langNote').innerHTML = KR_BUILTIN ? '한글 패치(대사·그림·글꼴·�
 $('inKor').onchange = function () { picked.kor = Array.from(this.files);
     var mes = picked.kor.find(function (f) { return f.name.toUpperCase() === 'MES.ARC'; }), bg = picked.kor.find(function (f) { return f.name.toUpperCase() === 'BG.ARC'; });
     show('fKor', picked.kor, (mes ? '<span class="ok">✔ 한글 대사</span> ' : '<span class="warn">mes.arc 없음</span> ') + (bg ? '<span class="ok">✔ 한글 그림</span>' : '<span class="warn">Bg.Arc 없음</span>')); };
+/* 도스판 그림: SILK0..4.DAT (zip 안에 있으면 꺼낸다 — 브라우저의 deflate 풀기 사용) */
+var dosFiles = [];
+async function unzipPick(file, want) {
+    var b = new Uint8Array(await file.arrayBuffer()), out = {}, dv = new DataView(b.buffer);
+    var e = b.length - 22; while (e >= 0 && dv.getUint32(e, true) !== 0x06054b50) e--;
+    if (e < 0) throw new Error(file.name + ': zip 이 아닙니다');
+    var n = dv.getUint16(e + 10, true), p = dv.getUint32(e + 16, true);
+    for (var i = 0; i < n; i++) {
+        var method = dv.getUint16(p + 10, true), csz = dv.getUint32(p + 20, true), usz = dv.getUint32(p + 24, true), nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), lo = dv.getUint32(p + 42, true);
+        var name = new TextDecoder().decode(b.subarray(p + 46, p + 46 + nl)), base = name.split('/').pop().toUpperCase();
+        p += 46 + nl + xl + cl;
+        if (want.indexOf(base) < 0 || out[base]) continue;
+        var ds = lo + 30 + dv.getUint16(lo + 26, true) + dv.getUint16(lo + 28, true), raw = b.subarray(ds, ds + csz), data;
+        if (method === 0) data = raw.slice();
+        else if (method === 8) data = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+        else continue;
+        if (data.length !== usz) throw new Error(base + ' 를 풀지 못했습니다');
+        out[base] = data;
+    }
+    return out;
+}
+$('inDos').onchange = async function () {
+    dosFiles = []; var list = Array.from(this.files), want = ['SILK0.DAT', 'SILK1.DAT', 'SILK2.DAT', 'SILK3.DAT', 'SILK4.DAT'], got = {};
+    show('fDos', list, '<span class="warn">확인 중…</span>');
+    try {
+        for (var f of list) { var up = f.name.toUpperCase();
+            if (want.indexOf(up) >= 0) got[up] = f;
+            else if (/\.ZIP$/.test(up)) Object.assign(got, await unzipPick(f, want)); }
+        var miss = want.filter(function (k) { return !got[k]; });
+        dosFiles = miss.length ? [] : want.map(function (k) { return { name: k, data: got[k] }; });
+        show('fDos', list, miss.length ? '<span class="bad">빠진 파일: ' + miss.join(', ') + '</span>' : '<span class="ok">✔ 도스판 그림 ' + want.length + '개 파일</span>');
+    } catch (e) { show('fDos', list, '<span class="bad">' + e.message + '</span>'); }
+};
 var keys = null, gameOk = false;
 function refresh() { $('go').disabled = !(keys && (gameOk || $('small').checked)); }
 $('small').onchange = refresh;
@@ -158,6 +198,7 @@ $('go').onclick = async function () {
         files.push({ name: 'font16.bin', data: b64($(korean ? 'font' : 'fontjp').textContent) });
         if (korean) { var patch = JSON.parse($('patch').textContent); for (var k in patch) files.push({ name: 'patch_' + k, data: b64(patch[k]) }); }
         }
+        dosFiles.forEach(function (f) { files.push(f); });
         var nsp = await NspCore.buildNsp({ keys: keys, nso: b64($('nso').textContent), npdm: b64($('npdm').textContent), nacp: b64($('nacp').textContent), icon: b64($('icon').textContent), titleId: '01004e4f4e4f0000', files: files },
             function (f, m) { setp(0.05 + 0.95 * f); say(m + '… ' + Math.round(f * 100) + '%'); });
         setp(1); say('완료: ' + mb(nsp.size));

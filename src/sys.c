@@ -294,16 +294,37 @@ static inline uint8_t dep_sprite(uint8_t src, uint8_t dst) {   /* layer value wh
 /* load a GCC image into surface dst.  [EXE 0x41ab80, used by SYS 9 (0x420540) and SYS 25 (0x421b30)]
    ox/oy: -1 = use the file's position; otherwise the colour rect is moved by (ox,oy) and the mask rect is placed AT (ox,oy).
    Only the m variants write the mask plane. The resulting rectangle goes to sys16[17..20] (x, y, w, h). */
+/* Port addition: DOS-release pictures (src/dosgfx.c), switched with sys_set_dos_gfx(). The image loads since the last
+   full-screen picture of each surface are remembered, so a switch can redraw the current scene at once. */
+int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im);
+int dosgfx_available(void);
+static int dos_mode, img_replaying, img_nolog;
+enum { NLOG = 96, OP_LOAD = 0, OP_COPY, OP_KEY, OP_BLEND, OP_FILL };
+typedef struct { uint32_t seq; uint8_t op; int a[10]; char name[24]; } ImgOp;
+static ImgOp img_log[NSURF][NLOG]; static int img_nlog[NSURF]; static uint32_t img_seq;
+static void oplog(int op, int dst, const int *a, int na, const char *name, bool covers) {   /* what was drawn into each surface since it was last fully covered */
+    if (img_replaying || img_nolog) return;
+    dst %= NSURF; if (dst == 6) return;          /* surface 6 is the text strip: the text on it stays as it is */
+    if (covers) img_nlog[dst] = 0;
+    if (img_nlog[dst] == NLOG) { memmove(img_log[dst], img_log[dst] + 1, sizeof img_log[dst][0] * (NLOG - 1)); img_nlog[dst]--; }
+    ImgOp *e = &img_log[dst][img_nlog[dst]++]; memset(e, 0, sizeof *e); e->seq = ++img_seq; e->op = (uint8_t)op;
+    for (int i = 0; i < na; i++) e->a[i] = a[i];
+    if (name) snprintf(e->name, sizeof e->name, "%s", name);
+}
 static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
     /* Port addition: small cache of decoded images. Some screens (CG gallery) reload the same sheet many times
        per frame; the PC decodes fast enough, the 3DS does not. */
     enum { NCACHE = 16, CACHE_BYTES = 28 << 20 };   /* menus reopen the same sheets (menu frames, save/load, gallery pages) */
-    static struct { char name[32]; gcc_image im; unsigned use; size_t bytes; } cache[NCACHE]; static unsigned tick;
-    gcc_image im; dst %= NSURF; int hit = -1;
-    for (int i = 0; i < NCACHE; i++) if (cache[i].im.bgr && !strcasecmp(cache[i].name, name)) { hit = i; break; }
+    static struct { char name[36]; gcc_image im; unsigned use; size_t bytes; bool dos; } cache[NCACHE]; static unsigned tick;
+    gcc_image im; dst %= NSURF; int hit = -1; bool isdos = false;
+    char key[36]; snprintf(key, sizeof key, "%s%s", dos_mode ? "D:" : "", name);
+    for (int i = 0; i < NCACHE; i++) if (cache[i].im.bgr && !strcasecmp(cache[i].name, key)) { hit = i; break; }
     if (hit < 0) {
         size_t n; uint8_t *raw = arc_load(&vm->arc_bg, name, &n); if (!raw) { plat_log("missing image %s", name); return; }
-        int rc = gcc_decode(raw, n, &im); free(raw); if (rc) return;
+        int rc = -1;
+        if (dos_mode && n >= 12) rc = dosgfx_make(name, rd16(raw + 8), rd16(raw + 10), raw[3] == 'm', &im);
+        if (rc == 0) isdos = true; else rc = gcc_decode(raw, n, &im);
+        free(raw); if (rc) return;
         size_t need = (size_t)im.w * im.h * 3 + (im.has_alpha ? (size_t)im.aw * im.ah : 0), total = need;
         for (int i = 0; i < NCACHE; i++) if (cache[i].im.bgr) total += cache[i].bytes;
         while (total > CACHE_BYTES) {               /* drop least recently used entries until the new one fits */
@@ -311,14 +332,15 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
             if (lru < 0) break; total -= cache[lru].bytes; free(cache[lru].im.bgr); free(cache[lru].im.alpha); memset(&cache[lru], 0, sizeof cache[lru]); }
         hit = 0; for (int i = 1; i < NCACHE; i++) if (!cache[i].im.bgr || (cache[hit].im.bgr && cache[i].use < cache[hit].use)) hit = i;
         free(cache[hit].im.bgr); free(cache[hit].im.alpha);
-        cache[hit].im = im; cache[hit].bytes = need; snprintf(cache[hit].name, sizeof cache[hit].name, "%s", name);
+        cache[hit].im = im; cache[hit].bytes = need; cache[hit].dos = isdos; snprintf(cache[hit].name, sizeof cache[hit].name, "%s", key);
     }
-    cache[hit].use = ++tick; im = cache[hit].im;
+    cache[hit].use = ++tick; im = cache[hit].im; isdos = cache[hit].dos;
+    { int a[3] = { dst, ox, oy }; oplog(OP_LOAD, dst, a, 3, name, im.w * im.h >= SW * SH * 9 / 10); }   /* (for an instant DOS/Windows switch) */
     {
         int cx = im.x + (ox != -1 ? ox : 0), cy = im.y + (oy != -1 ? oy : 0);
         int ax = ox != -1 ? ox : im.ax, ay = oy != -1 ? oy : im.ay;
         if (dst != 0) { surf_ensure(dst, cx + im.w, cy + im.h); if (im.has_alpha) surf_ensure(dst, ax + im.aw, ay + im.ah); }
-        int mw = 0, mh = 0; const uint8_t *dm = depth_map(name, &mw, &mh);
+        int mw = 0, mh = 0; const uint8_t *dm = isdos ? NULL : depth_map(name, &mw, &mh);
         bool part = im.w * im.h < SW * SH * 9 / 10;   /* unmapped variant patch over a mapped picture keeps the picture's depth */
         for (int y = 0; y < im.h; y++) { int dy = cy + y; const uint8_t *s = im.bgr + (size_t)(im.h - 1 - y) * im.w * 3;
             const uint8_t *dr = dm ? dm + (size_t)(y * mh / im.h) * mw : NULL;   /* maps are 1/4 (sprites) or 1/2 (full pictures) size */
@@ -334,6 +356,7 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
 #define EACH(body) for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int sx = x0 + x, sy = y0 + y, tx = dx + x, ty = dy + y; if (!INS(ss, sx, sy) || !INS(ds, tx, ty)) continue; body }
 /* [EXE 0x41ae60] colour copy; with_mask adds [EXE 0x41b130] mask-plane copy */
 static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, int with_mask) {   /* with_mask 2: keep the destination's 3D layer */
+    { int a[9] = { x0, y0, w, h, ss, dx, dy, ds, with_mask }; oplog(OP_COPY, ds, a, 9, NULL, w * h >= SW * SH * 9 / 10); }
     ss %= NSURF; ds %= NSURF;
     bool patch = w * h < SW * SH * 9 / 10;          /* unmapped patch (animation frame) over a mapped picture keeps its depth */
     EACH(memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy);
@@ -341,17 +364,20 @@ static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int d
 }
 /* [EXE 0x41af20] copy skipping the key colour (COLORREF); exact compare is assumed */
 static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer) {
+    { int a[10] = { x0, y0, w, h, ss, dx, dy, ds, (int)key, keep_layer }; oplog(OP_KEY, ds, a, 10, NULL, false); }
     ss %= NSURF; ds %= NSURF; uint8_t kr = key, kg = key >> 8, kb = key >> 16;
     EACH(const uint8_t *s = PIX(ss, sx, sy); if (s[0] == kr && s[1] == kg && s[2] == kb) continue; memcpy(PIX(ds, tx, ty), s, 3); if (!keep_layer) DEP(ds, tx, ty) = dep_key(DEP(ss, sx, sy), DEP(ds, tx, ty));)
 }
 /* [EXE 0x41b640/0x41b310] blend src over dst through the source mask plane (0 = skip, 255 = copy) */
 static void gfx_blend(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds) {
+    { int a[8] = { x0, y0, w, h, ss, dx, dy, ds }; oplog(OP_BLEND, ds, a, 8, NULL, false); }
     ss %= NSURF; ds %= NSURF;
     EACH(int a = MSK(ss, sx, sy); if (!a) continue; const uint8_t *s = PIX(ss, sx, sy); uint8_t *d = PIX(ds, tx, ty); if (a >= 128) DEP(ds, tx, ty) = dep_sprite(DEP(ss, sx, sy), DEP(ds, tx, ty));
         if (a == 255) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; } else for (int c = 0; c < 3; c++) d[c] = (s[c] * a + d[c] * (255 - a)) / 255;)
 }
 /* [EXE 0x41b390] fill; clear_mask adds [EXE 0x41b040] */
 static void gfx_fill(int x0, int y0, int w, int h, int s, uint32_t c, int clear_mask) {
+    { int a[7] = { x0, y0, w, h, s, (int)c, clear_mask }; oplog(OP_FILL, s, a, 7, NULL, w * h >= SW * SH * 9 / 10); }
     s %= NSURF;
     for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) { if (!INS(s, x, y)) continue;
         uint8_t *d = PIX(s, x, y); d[0] = c; d[1] = c >> 8; d[2] = c >> 16; DEP(s, x, y) = 0; if (clear_mask) MSK(s, x, y) = 0; }
@@ -547,16 +573,18 @@ static anim_stream anim[10][32]; static uint32_t anim_calls;   /* mem offset of 
 enum { AN_RUN = 0, AN_STOPREQ = 1, AN_HALT = 0xFF };
 static void anim_reset(void) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) anim[a][b].state = AN_HALT; }
 static void anim_draw(vm_t *vm, uint32_t n) {
+    img_nolog = 1;      /* animation frames are not part of what a DOS/Windows switch redraws */
     const uint8_t *r = vm->mem + ((anim_calls + n * 28) & (MEM_SIZE - 1)); uint32_t t = rd32(r);
     int sx = rd32(r + 4), sy = rd32(r + 8), w = rd32(r + 12), h = rd32(r + 16), dx = rd32(r + 20), dy = rd32(r + 24);
     /* [EXE 0x40f4e7 / 0x40f940] 0 = copy, 1 = green-key copy, 2 = nothing, 3/4 = sound effect (thunder), 5 = copy, 6 = full refresh */
     switch (t) {
-    case 0: case 5: gfx_copy(sx, sy, w, h, 1, dx, dy, 0, 2); break;        /* animation frames sit on whatever they cover (3D layer kept) */
-    case 1: gfx_copy_key(sx, sy, w, h, 1, dx, dy, 0, 0x00FF00, 1); break;
+    case 0: case 5: if (!dos_mode) gfx_copy(sx, sy, w, h, 1, dx, dy, 0, 2); break;        /* animation frames sit on whatever they cover (3D layer kept); the Windows frames don't fit the DOS pictures */
+    case 1: if (!dos_mode) gfx_copy_key(sx, sy, w, h, 1, dx, dy, 0, 0x00FF00, 1); break;
     case 3: snd_start(vm, SND_SE, SND_SE, "ns_se59.wav"); break;
     case 4: snd_start(vm, SND_SE, SND_SE, "ns_se58.wav"); break;
     default: break;
     }
+    img_nolog = 0;
 }
 static void anim_tick_one(vm_t *vm, anim_stream *s) {
     const uint8_t *m = vm->mem;
@@ -1062,4 +1090,31 @@ void sys_menu_exec(vm_t *vm) {
     vm->menu_run = prev_run; cur_loop = prev_loop;
     if (m != 100) memcpy(cur_a6, prev_a6, sizeof cur_a6);
     if (m != 100 && snap_on) snap_pending = true;   /* released at the next frame without a running crossfade (the scene is back by then) */
+}
+
+/* Port addition: switch between the Windows pictures and the DOS release's (SILK*.DAT must be in the data folder).
+   The pictures of the current scene are loaded again in the new style; the working surface is shown again. */
+int sys_dos_gfx(void) { return dos_mode; }
+int sys_set_dos_gfx(vm_t *vm, int on) {
+    on = on && dosgfx_available();
+    if (on == dos_mode) return dos_mode;
+    dos_mode = on;
+    uint16_t r[4] = { SYS16(vm, 17), SYS16(vm, 18), SYS16(vm, 19), SYS16(vm, 20) };
+    /* redo everything drawn into the surfaces since they were last fully covered, in the original order */
+    static ImgOp all[NSURF * NLOG]; int na = 0;
+    for (int sfc = 0; sfc < NSURF; sfc++) for (int i = 0; i < img_nlog[sfc]; i++) all[na++] = img_log[sfc][i];
+    for (int i = 1; i < na; i++) { ImgOp t = all[i]; int j = i - 1; while (j >= 0 && all[j].seq > t.seq) { all[j + 1] = all[j]; j--; } all[j + 1] = t; }
+    img_replaying = 1;
+    for (int i = 0; i < na; i++) { const int *q = all[i].a;
+        if (getenv("AI5_DOSLOG")) plat_log("replay op%d %s %d %d %d %d %d %d %d %d", all[i].op, all[i].name, q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]);
+        switch (all[i].op) {
+        case OP_LOAD: load_image(vm, all[i].name, q[0], q[1], q[2]); break;
+        case OP_COPY: gfx_copy(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8]); break;
+        case OP_KEY: gfx_copy_key(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], (uint32_t)q[8], q[9]); break;
+        case OP_BLEND: gfx_blend(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]); break;
+        case OP_FILL: gfx_fill(q[0], q[1], q[2], q[3], q[4], (uint32_t)q[5], q[6]); break;
+        } }
+    img_replaying = 0;
+    SET_SYS16(vm, 17, r[0]); SET_SYS16(vm, 18, r[1]); SET_SYS16(vm, 19, r[2]); SET_SYS16(vm, 20, r[3]);
+    return dos_mode;
 }

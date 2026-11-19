@@ -99,6 +99,17 @@ static void pump(void) {
         g_cx = (int)g_fx; g_cy = (int)g_fy; g_cur_shown = SDL_GetTicks();
     }
 }
+/* - button: Windows pictures <-> DOS release pictures (needs SILK0..4.DAT of the DOS release in the data folder) */
+static uint32_t g_toast_until; static int g_toast_kind;   /* 1 DOS on, 2 Windows, 3 no DOS files */
+static void minus_toggle(void) {
+    static bool was; bool now = g_btn[JMINUS];
+    if (now && !was) {
+        int want = !sys_dos_gfx(), got = sys_set_dos_gfx(g_vm, want);
+        g_toast_kind = want && !got ? 3 : got ? 1 : 2; g_toast_until = SDL_GetTicks() + 2000;
+        FILE *f = fopen(DATA_DIR "dosgfx.cfg", "w"); if (f) { fputc(got ? '1' : '0', f); fclose(f); }
+    }
+    was = now;
+}
 void plat_poll(void) { pump(); }
 void plat_cursor(int *x, int *y, bool set) { if (set) { g_cx = *x; g_cy = *y; g_fx = *x; g_fy = *y; } else { *x = g_cx; *y = g_cy; } }
 bool plat_key(int key) {
@@ -155,6 +166,17 @@ bool plat_frame(const uint8_t *rgb, int w, int h) {
     if (sys_popup_active()) up2(g_frame_buf, sys_bottom_rgb());
     else if (u->backlog) { static uint8_t page[320 * 240 * 3]; backlog_page(page, sys_scene_rgb()); up2(g_frame_buf, page); }
     else memcpy(g_frame_buf, rgb, sizeof g_frame_buf);
+    minus_toggle();
+    { static bool restored; if (!restored) { restored = true; FILE *f = fopen(DATA_DIR "dosgfx.cfg", "r"); if (f) { if (fgetc(f) == '1') sys_set_dos_gfx(g_vm, 1); fclose(f); } } }
+    if (SDL_GetTicks() < g_toast_until) {        /* a small label at the top left for 2 s */
+        const char *t = g_toast_kind == 1 ? "DOS GRAPHICS" : g_toast_kind == 2 ? "WINDOWS GRAPHICS" : "NO DOS FILES (SILK0-4.DAT)";
+        int w = (int)strlen(t) * 8 + 12;
+        for (int y = 8; y < 30; y++) for (int x = 8; x < 8 + w * 2 && x < 640; x++) { uint8_t *p = g_frame_buf + (y * 640 + x) * 3; p[0] = p[0] / 4; p[1] = p[1] / 4; p[2] = p[2] / 4; }
+        static uint8_t lab[320 * 240 * 3]; memset(lab, 0, sizeof lab);
+        int x = 8; for (const uint8_t *p = (const uint8_t *)t; *p; p++) { glyph(lab, x, 0, *p - 0x20, 8, 255, 220, 80); x += 8; }
+        for (int y = 0; y < 16; y++) for (int xx = 0; xx < x && xx < 320; xx++) { const uint8_t *q = lab + (y * 320 + xx) * 3; if (!(q[0] | q[1] | q[2])) continue;
+            for (int k = 0; k < 2; k++) { uint8_t *d = g_frame_buf + ((10 + y) * 640 + 8 + xx * 2 + k) * 3; d[0] = q[0]; d[1] = q[1]; d[2] = q[2]; } }
+    }
     draw_pointer(g_frame_buf);
     SDL_UpdateTexture(g_tex, NULL, g_frame_buf, 640 * 3);
     SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255); SDL_RenderClear(g_ren);
