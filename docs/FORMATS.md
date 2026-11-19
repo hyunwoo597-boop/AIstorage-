@@ -296,3 +296,11 @@
 - 다른 AI 분석: 정수 픽셀 이동이라 고정밀 지도로 바꿔도 캐릭터 픽셀의 86~87% 가 같은 이동량(S03·S05). → 이동표를 1/16 픽셀 고정소수(int16)로, 출력 픽셀은 이웃 두 원본 픽셀을 비율로 섞음(원천 찾기 3단계·먼 쪽 선택 규칙은 그대로).
 - S04 335프레임 상단 30픽셀이 이전 상태로 남던 문제: make_half 의 재사용 판정(pic_sig 성긴 표본)이 작은 변화를 놓침 → 재사용 삭제, 매 프레임 다시 만듦.
 - 35-2: 한글 패치 내장판(사용자가 직접 만든 패치라 내장 허락) — build.py --kr-mes mes.arc --kr-bg <폴더>: 한글 대사(mes.arc)와 Bg.Arc 에서 원본과 다른 그림 14장(BKTITLEN CG_BG CG_PT ED_BG ENDN MWAKU SCENE_BG SETTING SL_LOAD SL_PT SL_SAVE SOUND_BG SOUND_PT TITILE_PT, 15.5MB)만 넣음. 도구가 원본 BG.ARC 에서 그 14장만 바꿔 끼워 한글 Bg.Arc 와 바이트 단위로 같은 파일을 만듦. 언어 선택(한글판/일본어 원판: 일본어 글꼴, 한글 로고 없음). 한글 패치 파일 원본은 비공개 test 저장소 nonoxp-krpatch 브랜치. CI 는 패치 없는 판(사용자가 파일을 고름)만 만듦.
+
+## 37단계: 닌텐도 스위치판
+- platform/switch: libnx + SDL2. 화면은 PC 원판 그대로(엔진 합성 640x480 → 960x720, 1280x720 가운데). 타이틀 메뉴·확인창·이전 대사는 3DS 하단용 320x240 그림을 2배로 겹쳐 표시(터치 좌표 동일). 소리: SDL 오디오 콜백 48kHz 믹서(libvorbisfile / PCM16 WAV / AI5A ADPCM, 선형 리샘플).
+- 조작: A 결정, B 취소, + 메뉴, L 이전 대사, R·ZR 넘기기, 십자키·왼쪽 스틱 이동, 오른쪽 스틱 포인터, 터치(손을 떼면 클릭).
+- 파일: sdmc:/switch/nonoxp/ 먼저, 없으면 RomFS(patch_x). 저장은 SD.
+- Makefile.switch → nonoxp.nro (아이콘 assets/icon_switch.jpg). CI 의 switch 작업이 NSO(elf2nso)·main.npdm(tools/nsp_maker/exefs.json, 프로그램 ID 01004E4F4E4F0000)·NACP 도 만든다.
+- NSP 만들기 HTML(tools/nsp_maker): hacbrewpack 과 같은 구성을 브라우저에서. Program NCA(ExeFS PFS0 + RomFS IVFC 6단계 0x4000), Control NCA(control.nacp + 언어별 icon_*.dat), Meta NCA(Application_<id>.cnmt), 표준 암호(키 세대 0, key_area_key_application_00, 헤더 AES-XTS header_key, 섹션 AES-CTR), 서명 0(sigpatch 필요). 모든 해시 단계는 블록 배수로 채워 기록(마지막 블록 해석 차이 없음). prod.keys 는 사용자가 넣음.
+- 검사: tools/nsp_maker/check_nsp.py (cryptography 로 독립 복호화·해시 검증). 시험 키로 실제 게임 파일 NSP 315MB 생성 5초, 모든 해시·NCA ID·CNMT 기록 일치.
