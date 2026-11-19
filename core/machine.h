@@ -38,6 +38,7 @@ typedef struct {
     int dev;       /* 0 none, 1 EMM device, 2 console/null, 3 read-only file served from the RAM cache (mem/msize/mpos) */
     uint16_t psp;
     const uint8_t *mem; uint32_t msize, mpos;
+    uint8_t tag;   /* set by on_open (0 = not watched): reads of a tagged file are reported to on_read */
 } DosFile;
 
 struct Machine {
@@ -53,6 +54,10 @@ struct Machine {
     void (*vga_wr_dbg)(Machine *, uint32_t off);
     void (*on_load)(Machine *, uint16_t load_seg);   /* called after INT 21h/4B01 loaded a child program */
     void (*on_load2)(Machine *, uint16_t load_seg);  /* second hook (idle detection) */
+    void (*on_load3)(Machine *, uint16_t load_seg);  /* third hook (voice) */
+    int  (*on_open)(Machine *, const char *dosname); /* returns a tag (0 = don't watch) for a file being opened */
+    void (*on_read)(Machine *, int tag, uint32_t pos, uint32_t n, uint16_t seg, uint16_t off);  /* a tagged file was read: n bytes from pos to seg:off */
+    struct Voice *voice;
     int poll_force;                                  /* frontend: CPU is struggling, accelerate idle polls even without text */
     int text_on;                                     /* the engine has text on screen (set by textcap) */
     int poll_streak;                                 /* consecutive input polls that found nothing new */

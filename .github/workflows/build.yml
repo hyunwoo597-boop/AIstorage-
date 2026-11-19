@@ -14,7 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Make sure the 3DS libraries are present
-        run: dkp-pacman -Sy --noconfirm --needed 3ds-dev || true
+        run: |
+          for i in 1 2 3; do dkp-pacman -Sy --noconfirm --needed 3ds-dev 3ds-libvorbisidec 3ds-libogg && break; sleep 20; done
+          ls $DEVKITPRO/portlibs/3ds/lib | grep -E "vorbisidec|ogg" || (echo "Tremor/Ogg libraries missing" && exit 1)
       - name: Build
         run: make -C ctr
       - uses: actions/upload-artifact@v4

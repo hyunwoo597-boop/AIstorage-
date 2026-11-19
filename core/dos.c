@@ -380,13 +380,14 @@ static void int21(Machine *m) {
         read_asciiz(m, c->seg[DS], c->r[DX], name, sizeof name);
         if (!strcasecmp(name, "EMMXXXX0")) { int h = alloc_handle(m); if (h < 0) { dos_err(m, 4); return; } m->files[h].dev = 1; m->files[h].psp = m->cur_psp; c->r[AX] = h; hret(m, 0); return; }
         int ex = resolve_path(m, name, host, sizeof host);
+        uint8_t tag = (ah == 0x3D && m->on_open) ? (uint8_t)m->on_open(m, name) : 0;
         FILE *f;
         if (ah == 0x3D && ex && (al & 3) == 0) {          /* read-only: serve big data files from the RAM cache */
             const uint8_t *cd; uint32_t cs;
             if (cache_lookup(host, &cd, &cs)) {
                 int h = alloc_handle(m); if (h < 0) { dos_err(m, 4); return; }
                 if (m->verbose) fprintf(stderr, "[dos] cached open %s (%u bytes)\n", host, (unsigned)cs);
-                m->files[h].fp = NULL; m->files[h].dev = 3; m->files[h].mem = cd; m->files[h].msize = cs; m->files[h].mpos = 0; m->files[h].psp = m->cur_psp;
+                m->files[h].fp = NULL; m->files[h].dev = 3; m->files[h].mem = cd; m->files[h].msize = cs; m->files[h].mpos = 0; m->files[h].psp = m->cur_psp; m->files[h].tag = tag;
                 c->r[AX] = h; hret(m, 0); return;
             }
         } else cache_drop(host);                           /* the file may be modified: forget any cached copy */
@@ -395,12 +396,13 @@ static void int21(Machine *m) {
         if (!f && ah == 0x3D && ex && (al & 3) != 0) f = fopen(host, "rb");
         if (!f) { dos_err(m, ex ? 5 : 2); return; }
         int h = alloc_handle(m); if (h < 0) { fclose(f); dos_err(m, 4); return; }
-        m->files[h].fp = f; m->files[h].dev = 0; m->files[h].psp = m->cur_psp;
+        m->files[h].fp = f; m->files[h].dev = 0; m->files[h].psp = m->cur_psp; m->files[h].tag = ah == 0x3D ? tag : 0;
         c->r[AX] = h; hret(m, 0); return; }
     case 0x3E: { int h = c->r[BX]; if (h < 0 || h >= MAX_FILES) { dos_err(m, 6); return; }
         if (m->files[h].fp) { fclose(m->files[h].fp); m->files[h].fp = NULL; }
         if (m->files[h].dev == 3) m->files[h].mem = NULL;
         if (h >= 5) m->files[h].dev = 0;
+        m->files[h].tag = 0;
         hret(m, 0); return; }
     case 0x3F: { int h = c->r[BX]; uint16_t n = c->r[CX];
         if (h < 0 || h >= MAX_FILES || (!m->files[h].fp && !m->files[h].dev)) { dos_err(m, 6); return; }
@@ -408,12 +410,15 @@ static void int21(Machine *m) {
             DosFile *df = &m->files[h]; uint32_t left = df->msize > df->mpos ? df->msize - df->mpos : 0, got = n < left ? n : left;
             uint16_t o = c->r[DX]; const uint8_t *src = df->mem + df->mpos;
             for (uint32_t i = 0; i < got; i++) mem_wb(m, LIN(c->seg[DS], (uint16_t)(o + i)), src[i]);
+            if (df->tag && m->on_read) m->on_read(m, df->tag, df->mpos, got, c->seg[DS], o);
             df->mpos += got; c->r[AX] = (uint16_t)got; hret(m, 0); return;
         }
         if (!m->files[h].fp) { c->r[AX] = 0; hret(m, 0); return; }
+        long pos0 = m->files[h].tag ? ftell(m->files[h].fp) : 0;
         static uint8_t tmp[65536]; size_t got = fread(tmp, 1, n, m->files[h].fp);
         uint32_t a = LIN(c->seg[DS], c->r[DX]); uint16_t o = c->r[DX];
         for (size_t i = 0; i < got; i++) mem_wb(m, LIN(c->seg[DS], (uint16_t)(o + i)), tmp[i]);
+        if (m->files[h].tag && m->on_read) m->on_read(m, m->files[h].tag, (uint32_t)pos0, (uint32_t)got, c->seg[DS], o);
         (void)a; c->r[AX] = (uint16_t)got; hret(m, 0); return; }
     case 0x40: { int h = c->r[BX]; uint16_t n = c->r[CX];
         if (h < 0 || h >= MAX_FILES || (!m->files[h].fp && !m->files[h].dev)) { dos_err(m, 6); return; }
@@ -495,7 +500,7 @@ static void int21(Machine *m) {
             LoadInfo li;
             if (load_prog(m, name, args, &li)) { dos_err(m, 2); return; }
             wr16(m, bs, bo + 0x0E, li.sp); wr16(m, bs, bo + 0x10, li.ss); wr16(m, bs, bo + 0x12, li.ip); wr16(m, bs, bo + 0x14, li.cs);
-            m->cur_psp = li.psp; if (m->on_load) m->on_load(m, li.psp + 0x10); if (m->on_load2) m->on_load2(m, li.psp + 0x10); hret(m, 0); return;
+            m->cur_psp = li.psp; if (m->on_load) m->on_load(m, li.psp + 0x10); if (m->on_load2) m->on_load2(m, li.psp + 0x10); if (m->on_load3) m->on_load3(m, li.psp + 0x10); hret(m, 0); return;
         } else if (al == 3) {
             if (load_overlay(m, name, rd16(m, bs, bo), rd16(m, bs, bo + 2))) { dos_err(m, 2); return; }
             hret(m, 0); return;

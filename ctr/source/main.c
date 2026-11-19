@@ -12,6 +12,11 @@
 
 #include "../../core/machine.h"
 #include "../../core/textcap.h"
+#include "../../core/voice.h"
+#if defined(__3DS__) && !defined(STUB_COSTMODEL)
+#define HAVE_VOICE 1
+#include "voiceplay.h"
+#endif
 #include "vgascale.h"
 #include "font8x8.h"
 #include "kfont.h"
@@ -51,9 +56,10 @@ static int s3d_mode = 0;              /* 3D style: 0 characters and the picture 
 static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong, 4 strongest (the 3D slider scales it further) */
 /* bottom-screen text is always shown at the smallest size (1.0x); the old size choice is gone and a saved text_size= line is ignored */
 static char cfg_path[320];
+static int voice_on = 1, voice_clips;          /* voice clips from VOICE.ARC (Windows version) */
 static void cfg_save(void) {
     FILE *f = fopen(cfg_path, "w"); if (!f) return;
-    fprintf(f, "cpu_mode=%d\nmouse_level=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\n", cpu_mode, mouse_level, win_hide, pic_mode, s3d_level, s3d_mode);
+    fprintf(f, "cpu_mode=%d\nmouse_level=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\nvoice=%d\n", cpu_mode, mouse_level, win_hide, pic_mode, s3d_level, s3d_mode, voice_on);
     fclose(f);
 }
 static void cfg_load(void) {
@@ -65,6 +71,7 @@ static void cfg_load(void) {
         else if (sscanf(line, "win_hide=%d", &v) == 1) win_hide = v ? 1 : 0;
         else if (sscanf(line, "pic_mode=%d", &v) == 1 && v >= 0 && v < 2) pic_mode = v;
         else if (sscanf(line, "s3d=%d", &v) == 1 && v >= 0 && v < 5) s3d_level = v;
+        else if (sscanf(line, "voice=%d", &v) == 1) voice_on = v ? 1 : 0;
         else if (sscanf(line, "s3dm=%d", &v) == 1 && v >= 0 && v < 5) s3d_mode = v ? 1 : 0;      /* (older versions had more styles: 1..4 are the background-depth style now) */
     }
     fclose(f);
@@ -332,6 +339,9 @@ static void audio_pump(Machine *m) {
 }
 /* the pause menu does not run the emulator: let the queue play out silently and start clean afterwards */
 static void audio_hold(void) {
+#ifdef HAVE_VOICE
+    vp_stop();
+#endif
     if (!audio_ok) return;
     ndspChnSetPaused(0, true); audio_started = 0;
 }
@@ -757,7 +767,7 @@ static void bottom_render(Machine *m) {
 }
 
 /* ------------------------------------------------------------------ pause menu */
-enum { MI_RESUME, MI_WIN, MI_PIC, MI_3D, MI_3DM, MI_CPU, MI_MOUSE, MI_QUIT, MI_COUNT };
+enum { MI_RESUME, MI_WIN, MI_PIC, MI_3D, MI_3DM, MI_VOICE, MI_CPU, MI_MOUSE, MI_QUIT, MI_COUNT };
 static const char *PIC_NAME[] = { "꽉 채움", "늘림" };
 static double stat_speed = 1.0, stat_mips = 0, stat_busy = 0, stat_skip = 0;
 
@@ -784,6 +794,10 @@ static void menu_draw(Machine *m, int sel) {
             else snprintf(line, sizeof line, "상단 3D 효과: %s (슬라이더 %d%%)", S3D_NAME[s3d_level], (int)(s3d_slider * 100.f + 0.5f));
             break;
         case MI_3DM: snprintf(line, sizeof line, "상단 3D 방식: %s", s3d_mode == 0 ? "캐릭터+테두리" : "배경+캐릭터"); break;
+        case MI_VOICE:
+            if (!voice_clips) snprintf(line, sizeof line, "음성: 없음 (VOICE.ARC 를 넣으세요)");
+            else snprintf(line, sizeof line, "음성: %s", voice_on ? "켜기" : "끄기");
+            break;
         default: snprintf(line, sizeof line, "게임 종료"); break;
         }
         if (i == sel) frect(fbBot, 320, 3, y - 1, 314, step, bar);
@@ -826,6 +840,7 @@ static int pause_menu(Machine *m) {
         if (sel == MI_PIC && (dir || (d & KEY_A))) { pic_mode = (pic_mode + (dir ? dir : 1) + 2) % 2; top_clear(); top_render(m); }
         if (sel == MI_3D && (dir || (d & KEY_A))) s3d_level = (s3d_level + (dir ? dir : 1) + 5) % 5;
         if (sel == MI_3DM && (dir || (d & KEY_A))) s3d_mode = (s3d_mode + (dir ? dir : 1) + 2) % 2;
+        if (sel == MI_VOICE && voice_clips && (dir || (d & KEY_A))) voice_on ^= 1;
         if (sel == MI_RESUME && (d & KEY_A)) { cfg_save(); return 0; }
         if (sel == MI_QUIT && (d & KEY_A)) { cfg_save(); return 1; }
     }
@@ -926,6 +941,11 @@ int main(void) {
     if (!is_new) { int th = synth_start(m->opl); LOG("synth thread on core 1: %s", th ? "yes" : "no (single core)"); }
     textcap_init(m);
     idle_init(m);
+    { int vh = voice_init(m);
+#ifdef HAVE_VOICE
+      if (vh && audio_ok) voice_clips = vp_init(gdir);
+#endif
+      LOG("voice: script hooks %s, VOICE.ARC clips %d", vh ? "ok" : "unavailable (SAGWA.DAT directory not found)", voice_clips); }
     uint32_t ips = is_new ? 4000000u : 1500000u;
     machine_set_ips(m, ips);
 
@@ -1026,6 +1046,14 @@ int main(void) {
         }
         tk = svcGetSystemTick(); pt[0] = (double)(tk - f0) * 1000.0 / TICKS_PER_SEC; u64 tk0 = tk;
         audio_pump(m);
+        { const char *vn = voice_take(m);
+#ifdef HAVE_VOICE
+          if (vn && voice_on && voice_clips) vp_play(vn);
+          vp_pump();
+#else
+          (void)vn;
+#endif
+        }
         tk = svcGetSystemTick(); pt[1] = (double)(tk - tk0) * 1000.0 / TICKS_PER_SEC; tk0 = tk;
         /* Keep the queued sound at its target: if the DSP clock and the system clock disagree a little, or a hiccup left the queue
          * fuller or emptier than planned, the game is run a hair slower or faster until the queue is back (no pitch change, no dropped sound). */

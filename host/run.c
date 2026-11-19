@@ -1,6 +1,8 @@
 /* Headless test runner: loads game dir, runs MUSICV + SILV1, dumps frames. */
 #include "../core/machine.h"
 #include "../core/textcap.h"
+#include "../core/voice.h"
+#include "../core/voice.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -79,7 +81,7 @@ int main(int argc, char **argv) {
     Machine *m = machine_new(argv[1]);
     m->verbose = getenv("NV") ? atoi(getenv("NV")) : 0;
     int oplrate = getenv("OPLRATE") ? atoi(getenv("OPLRATE")) : 32728; m->opl = opl_new(oplrate); opl_attach(m->opl, (opl_clock_fn)machine_vtime_ns, m);
-    textcap_init(m); if (!getenv("NOIDLE")) idle_init(m);
+    textcap_init(m); if (!getenv("NOIDLE")) idle_init(m); fprintf(stderr, "[host] voice_init=%d\n", voice_init(m)); fprintf(stderr, "[host] voice_init=%d\n", voice_init(m));
     if (!getenv("NOCACHE")) dos_cache_preload(m);
 #ifdef OPL_TRACE
     if (getenv("OPLTRACE")) otr = fopen(getenv("OPLTRACE"), "w");
@@ -109,6 +111,8 @@ int main(int argc, char **argv) {
         if (!bp_set && glog && m->cur_psp != 0 && m->cur_psp != m->cpu.seg[CS] - 0 && m->exit_psp != m->cur_psp) { }
         if (!bp_set && glog && done > 60000000L) { m->cpu.bp[0] = LIN((m->cur_psp + 0x10), 0x200A); m->cpu.nbp = 1; m->cpu.bp_cb = glyph_cb; bp_set = 1; fprintf(stderr, "[host] bp at %04X:200A\n", m->cur_psp + 0x10); }
         done += machine_run(m, 200000); drain_audio(m);
+        { const char *vn = voice_take(m); if (vn) fprintf(stderr, "[voice] %s at %ld\n", vn, done); }
+        { const char *vn = voice_take(m); if (vn) fprintf(stderr, "[voice] %s at %ld\n", vn, done); }
         if (done >= next_dump) { char p[256]; snprintf(p, sizeof p, "%s_%03d.ppm", outp, n++); dump_ppm(m, p); next_dump += dump_every; }
     }
     fprintf(stderr, "[host] SILV1 exited=%d code=%d after %ld instr  CS:IP=%04X:%04X mode=%02X unhandled=%u\n", m->exited, m->exit_code, done, m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, m->stat_unhandled);
