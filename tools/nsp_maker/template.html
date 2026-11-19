@@ -61,6 +61,7 @@ small { color:var(--sub); }
 <div class="card">
   <h2><span class="step">4</span>만들기</h2>
   <p>배경음악은 3DS 에 맞게 압축합니다(263MB → 약 66MB). 결과 NSP 는 약 300MB 이며, 휴대폰에서는 1~3분 걸릴 수 있습니다. 그동안 화면을 끄지 마세요.</p>
+  <label style="display:block;margin:0 0 10px"><input type="checkbox" id="small" style="position:static;width:auto;height:auto;opacity:1;pointer-events:auto"> 작은 NSP (약 5MB, 게임 파일은 SD 카드 <b>switch/nonoxp/</b> 에 직접 넣기)</label>
   <button class="go" id="go" disabled>NSP 만들기</button>
   <div class="bar"><i id="bar"></i></div>
   <div id="log"></div>
@@ -121,7 +122,8 @@ $('inKor').onchange = function () { picked.kor = Array.from(this.files);
     var mes = picked.kor.find(function (f) { return f.name.toUpperCase() === 'MES.ARC'; }), bg = picked.kor.find(function (f) { return f.name.toUpperCase() === 'BG.ARC'; });
     show('fKor', picked.kor, (mes ? '<span class="ok">✔ 한글 대사</span> ' : '<span class="warn">mes.arc 없음</span> ') + (bg ? '<span class="ok">✔ 한글 그림</span>' : '<span class="warn">Bg.Arc 없음</span>')); };
 var keys = null, gameOk = false;
-function refresh() { $('go').disabled = !(gameOk && keys); }
+function refresh() { $('go').disabled = !(keys && (gameOk || $('small').checked)); }
+$('small').onchange = refresh;
 $('inKeys').onchange = async function () { keys = null; var f = this.files[0]; if (!f) return;
     try { keys = NspCore.parseKeys(await f.text()); show('fKeys', [f], '<span class="ok">✔ 키 확인</span>'); } catch (e) { show('fKeys', [f], '<span class="bad">' + e.message + '</span>'); }
     refresh(); };
@@ -135,15 +137,16 @@ $('go').onclick = async function () {
         var kor = function (n) { return picked.kor.find(function (f) { return f.name.toUpperCase() === n; }); };
         var given = function (n) { return picked.game.find(function (f) { return f.name.toUpperCase() === n; }); };
         var korean = $('langKr').checked;
+        if (!$('small').checked) {
         if (korean && !kor('MES.ARC') && !KR_BUILTIN) throw new Error('한글판에는 한글 패치의 mes.arc 가 필요합니다');
         var mes = korean ? (kor('MES.ARC') || b64($('krmes').textContent)) : g['MES.ARC'];
         var bg = g['BG.ARC'];
         if (korean && kor('BG.ARC')) bg = kor('BG.ARC');
         else if (korean && KR_BUILTIN) {           /* 원본 BG.ARC 에서 한글 그림만 바꿔 끼운다 */
-            say('한글 그림 넣는 중…'); var src = await XpCore.asBlob(g['BG.ARC'], function (f) { setp(0.02 * Math.min(f, 1)); });
+            say('한글 그림 넣는 중…'); var src = g['BG.ARC'];
             var rep = JSON.parse($('krbg').textContent), list = await XpCore.arcList(src), up = {};
             for (var rk in rep) up[rk.toUpperCase()] = rep[rk];
-            bg = XpCore.arcBuild(list.map(function (e) { var r = up[e.name.toUpperCase()]; return { name: e.name, data: r ? b64(r) : src.slice(e.off, e.off + e.size) }; }));
+            bg = NspCore.arcBuildV(list.map(function (e) { var r = up[e.name.toUpperCase()]; return { name: e.name, data: r ? b64(r) : src.slice(e.off, e.off + e.size) }; }));
         }
         files.push({ name: 'MES.ARC', data: mes });
         files.push({ name: 'BG.ARC', data: bg });
@@ -154,7 +157,7 @@ $('go').onclick = async function () {
         files.push({ name: 'SOUND.ARC', data: snd });
         files.push({ name: 'font16.bin', data: b64($(korean ? 'font' : 'fontjp').textContent) });
         if (korean) { var patch = JSON.parse($('patch').textContent); for (var k in patch) files.push({ name: 'patch_' + k, data: b64(patch[k]) }); }
-        for (var fi = 0; fi < files.length; fi++) if (files[fi].data instanceof XpCore.RawFile) files[fi] = { name: files[fi].name, data: await XpCore.asBlob(files[fi].data) };
+        }
         var nsp = await NspCore.buildNsp({ keys: keys, nso: b64($('nso').textContent), npdm: b64($('npdm').textContent), nacp: b64($('nacp').textContent), icon: b64($('icon').textContent), titleId: '01004e4f4e4f0000', files: files },
             function (f, m) { setp(0.05 + 0.95 * f); say(m + '… ' + Math.round(f * 100) + '%'); });
         setp(1); say('완료: ' + mb(nsp.size));

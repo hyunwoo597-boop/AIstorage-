@@ -23,6 +23,30 @@ function hexb(s) { s = s.replace(/[^0-9a-fA-F]/g, ''); var u = new Uint8Array(s.
 function hex(u) { var s = ''; for (var i = 0; i < u.length; i++) s += ('0' + u[i].toString(16)).slice(-2); return s; }
 function utf8(s) { return new TextEncoder().encode(s); }
 
+/* ---------- VBlob: 조각(Blob / Uint8Array / RawFile / VBlob)을 복사하지 않고 이어 붙인 읽기 전용 덩어리 ----------
+   브라우저 Blob 에 CD 이미지 속 파일을 넣으려면 메모리로 꺼내야 하는데(수백 MB), 암호화 결과까지 더하면 브라우저 한도를 넘는다.
+   VBlob 은 읽을 때만 해당 조각을 읽는다. */
+function VBlob(parts) { this.parts = []; this.offs = []; var o = 0;
+    for (var i = 0; i < parts.length; i++) { var p = parts[i], n = sizeOf(p); if (!n) continue; this.parts.push(p); this.offs.push(o); o += n; } this.size = o; }
+VBlob.prototype.slice = function (a, b) {
+    if (b === undefined || b > this.size) b = this.size; if (a < 0) a = 0; if (b < a) b = a; var out = [];
+    for (var i = 0; i < this.parts.length; i++) { var s = this.offs[i], e = s + sizeOf(this.parts[i]); if (e <= a || s >= b) continue;
+        var p = this.parts[i], x = Math.max(a, s) - s, y = Math.min(b, e) - s; out.push(p instanceof Uint8Array ? p.subarray(x, y) : p.slice(x, y)); }
+    return new VBlob(out);
+};
+VBlob.prototype.arrayBuffer = async function () {
+    var out = new Uint8Array(this.size), o = 0;
+    for (var i = 0; i < this.parts.length; i++) { var p = this.parts[i]; var d = p instanceof Uint8Array ? p : new Uint8Array(await p.arrayBuffer()); out.set(d, o); o += d.length; }
+    return out.buffer;
+};
+function cat(parts) { return new VBlob(parts); }
+function arcBuildV(entries) {   /* XpCore.arcBuild 과 같지만 VBlob (RawFile 조각을 그대로 담을 수 있음) */
+    var n = entries.length, tab = new Uint8Array(4 + n * 28), pos = 4 + n * 28; w32(tab, 0, n);
+    entries.forEach(function (e, i) { var sz = sizeOf(e.data); for (var c = 0; c < e.name.length && c < 20; c++) tab[4 + i*28 + c] = e.name.charCodeAt(c);
+        w32(tab, 4 + i*28 + 20, (sz ^ 0x15056109) >>> 0); w32(tab, 4 + i*28 + 24, (pos ^ 0x32300645) >>> 0); pos += sz; });
+    return cat([tab].concat(entries.map(function (e) { return e.data; })));
+}
+
 /* ---------- 키 ---------- */
 function parseKeys(text) {
     var k = {}; text.split(/\r?\n/).forEach(function (l) { var m = /^\s*([a-z0-9_]+)\s*=\s*([0-9a-fA-F]+)\s*$/.exec(l); if (m) k[m[1].toLowerCase()] = m[2]; });
@@ -63,7 +87,7 @@ function buildPfs0(files) {      /* files: [{name, data: Uint8Array|Blob}] → B
     var h = new Uint8Array(0x10 + files.length * 0x18 + st); h.set([0x50, 0x46, 0x53, 0x30]); w32(h, 4, files.length); w32(h, 8, st);
     var off = 0, so = 0, base = 0x10 + files.length * 0x18;
     files.forEach(function (f, i) { var e = 0x10 + i * 0x18; w64(h, e, off); w64(h, e + 8, sizeOf(f.data)); w32(h, e + 16, so); h.set(names[i], base + so); so += names[i].length + 1; off += sizeOf(f.data); });
-    return new BlobC([h].concat(files.map(function (f) { return f.data; })));
+    return cat([h].concat(files.map(function (f) { return f.data; })));
 }
 
 /* ---------- Switch RomFS (루트 폴더 하나) ---------- */
@@ -97,7 +121,7 @@ function buildSwitchRomfs(files) {
     files.forEach(function (f, k) { var at = fileDataStart + dataOff[k]; if (at > pos) parts.push(new Uint8Array(at - pos)); parts.push(f.data); pos = at + sizeOf(f.data); });
     if (dataEnd > pos) parts.push(new Uint8Array(dataEnd - pos));
     parts.push(meta);
-    return new BlobC(parts);
+    return cat(parts);
 }
 
 /* ---------- 해시 단계 ---------- */
@@ -108,11 +132,11 @@ async function hashBlocks(blob, bs, prog) {     /* blob(크기는 bs 의 배수)
         prog && prog((p + d.length) / blob.size); await tick(); }
     return out;
 }
-function padTo(blob, a) { var s = sizeOf(blob), t = align(Math.max(s, 1), a); return t > s ? new BlobC([blob, new Uint8Array(t - s)]) : (blob instanceof Uint8Array ? new BlobC([blob]) : blob); }
+function padTo(blob, a) { var s = sizeOf(blob), t = align(Math.max(s, 1), a); return cat(t > s ? [blob, new Uint8Array(t - s)] : [blob]); }
 /* PFS0 섹션: [해시 표][PFS0] — 블록 0x1000, 데이터는 블록 배수로 채움 */
 async function pfsSection(pfs) {
     var bs = 0x1000, data = padTo(pfs, bs), table = await hashBlocks(data, bs);
-    var tsize = table.length, dataOff = align(tsize, 0x200), sec = new BlobC([table, new Uint8Array(dataOff - tsize), data]);
+    var tsize = table.length, dataOff = align(tsize, 0x200), sec = cat([table, new Uint8Array(dataOff - tsize), data]);
     var hd = new Uint8Array(0xF8); hd.set(sha256(table), 0); w32(hd, 0x20, bs); w32(hd, 0x24, 2);
     w64(hd, 0x28, 0); w64(hd, 0x30, tsize); w64(hd, 0x38, dataOff); w64(hd, 0x40, data.size);
     return { blob: sec, fsType: 1, hashType: 2, hashData: hd };
@@ -128,7 +152,7 @@ async function romfsSection(romfs, prog) {
     var off = 0, parts = [];
     for (var j = 0; j < 6; j++) { var e = 0x10 + j * 0x18; w64(hd, e, off); w64(hd, e + 8, levels[j].size); w32(hd, e + 16, 14); off += levels[j].size; parts.push(levels[j]); }
     hd.set(master, 0xC0);
-    return { blob: new BlobC(parts), fsType: 0, hashType: 3, hashData: hd };
+    return { blob: cat(parts), fsType: 0, hashType: 3, hashData: hd };
 }
 
 /* ---------- NCA ---------- */
@@ -183,9 +207,9 @@ async function buildNsp(o, prog) {
     var P = function (a, b, m) { return function (f) { prog && prog(a + (b - a) * Math.min(f, 1), m); }; };
     /* Program NCA */
     var exefs = await pfsSection(buildPfs0([{ name: 'main', data: o.nso }, { name: 'main.npdm', data: o.npdm }]));
-    var romfsBlob = buildSwitchRomfs(o.files);
-    var rom = await romfsSection(romfsBlob, P(0.02, 0.35, '데이터 확인값 계산'));
-    var program = await buildNca(o.keys, 0, o.titleId, [exefs, rom], function (f, i) { if (i === 1) P(0.35, 0.9, '암호화')(f); });
+    var secs = [exefs];
+    if (o.files && o.files.length) secs.push(await romfsSection(buildSwitchRomfs(o.files), P(0.02, 0.35, '데이터 확인값 계산')));   /* 없으면 게임 파일은 SD 카드에서 */
+    var program = await buildNca(o.keys, 0, o.titleId, secs, function (f, i) { if (i === 1) P(0.35, 0.9, '암호화')(f); });
     /* Control NCA: control.nacp + 언어별 아이콘 */
     var cfiles = [{ name: 'control.nacp', data: o.nacp }];
     for (var li = 0; li < LANGS.length; li++) { var t = o.nacp.subarray(li * 0x300, li * 0x300 + 0x200); if (t[0]) cfiles.push({ name: 'icon_' + LANGS[li] + '.dat', data: o.icon }); }
@@ -195,12 +219,12 @@ async function buildNsp(o, prog) {
     var cnmt = buildCnmt(o.titleId, [{ hash: program.hash, id: program.id, size: program.size, type: 1 }, { hash: control.hash, id: control.id, size: control.size, type: 3 }]);
     var meta = await buildNca(o.keys, 1, o.titleId, [await pfsSection(buildPfs0([{ name: 'Application_' + o.titleId.replace(/^0x/, '').toLowerCase() + '.cnmt', data: cnmt }]))]);
     prog && prog(0.95, 'NSP 묶는 중');
-    var nsp = buildPfs0([{ name: program.id + '.nca', data: program.blob }, { name: control.id + '.nca', data: control.blob }, { name: meta.id + '.cnmt.nca', data: meta.blob }]);
+    var nsp = new BlobC(buildPfs0([{ name: program.id + '.nca', data: program.blob }, { name: control.id + '.nca', data: control.blob }, { name: meta.id + '.cnmt.nca', data: meta.blob }]).parts);   /* 진짜 Blob (암호화된 조각뿐) */
     prog && prog(1, '완료');
     return nsp;
 }
 
-var api = { parseKeys: parseKeys, buildNsp: buildNsp, buildPfs0: buildPfs0, buildSwitchRomfs: buildSwitchRomfs, pfsSection: pfsSection, romfsSection: romfsSection, buildNca: buildNca, buildCnmt: buildCnmt, xtsEncrypt: xtsEncrypt };
+var api = { VBlob: VBlob, cat: cat, arcBuildV: arcBuildV, parseKeys: parseKeys, buildNsp: buildNsp, buildPfs0: buildPfs0, buildSwitchRomfs: buildSwitchRomfs, pfsSection: pfsSection, romfsSection: romfsSection, buildNca: buildNca, buildCnmt: buildCnmt, xtsEncrypt: xtsEncrypt };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 root.NspCore = api;
 })(typeof self !== 'undefined' ? self : this);

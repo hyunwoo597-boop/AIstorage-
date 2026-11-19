@@ -304,3 +304,4 @@
 - Makefile.switch → nonoxp.nro (아이콘 assets/icon_switch.jpg). CI 의 switch 작업이 NSO(elf2nso)·main.npdm(tools/nsp_maker/exefs.json, 프로그램 ID 01004E4F4E4F0000)·NACP 도 만든다.
 - NSP 만들기 HTML(tools/nsp_maker): hacbrewpack 과 같은 구성을 브라우저에서. Program NCA(ExeFS PFS0 + RomFS IVFC 6단계 0x4000), Control NCA(control.nacp + 언어별 icon_*.dat), Meta NCA(Application_<id>.cnmt), 표준 암호(키 세대 0, key_area_key_application_00, 헤더 AES-XTS header_key, 섹션 AES-CTR), 서명 0(sigpatch 필요). 모든 해시 단계는 블록 배수로 채워 기록(마지막 블록 해석 차이 없음). prod.keys 는 사용자가 넣음.
 - 검사: tools/nsp_maker/check_nsp.py (cryptography 로 독립 복호화·해시 검증). 시험 키로 실제 게임 파일 NSP 315MB 생성 5초, 모든 해시·NCA ID·CNMT 기록 일치.
+- 37-1: 브라우저 Blob 한도 — 내장 NSP 는 입력(메모리로 꺼낸 CD 파일 ~300MB) + 암호화 결과(300MB)가 동시에 있어 Chrome 이 "file could not be read" 로 실패. VBlob(조각을 복사하지 않고 읽을 때만 읽는 이어붙이기)으로 CD 이미지 속 파일을 꺼내지 않고 바로 암호화 → 헤드리스 Chrome 291MB NSP 10초 성공, check_nsp.py 전 항목 OK. "작은 NSP"(약 5MB, RomFS 없음, 게임 파일은 SD) 선택 추가.
