@@ -32,10 +32,10 @@ def voice_of(t):
         if r>best[1]: best=(xmap[k],r)
     return best if best[1]>=0.8 else (None,best[1])
 D='/tmp/dos/'; table=[]; stat=collections.Counter(); miss=collections.Counter()
-for f in sorted(os.listdir(D+'kr')):
+for kdir,pre,f in [(k,p,f) for k,p in (('kr',''),('kra','A_')) for f in sorted(os.listdir(D+k))]:
     if not os.path.exists(D+'x/'+f): continue
-    kd=open(D+'kr/'+f,'rb').read(); jd=open(D+'x/'+f,'rb').read()
-    K=toks(D+'kr/'+f,70); J=toks(D+'x/'+f)
+    kd=open(D+kdir+'/'+f,'rb').read(); jd=open(D+'x/'+f,'rb').read()
+    K=toks(D+kdir+'/'+f,70); J=toks(D+'x/'+f)
     sig=lambda d,t: d[max(0,t[0]-8):t[0]]+bytes([t[3]])
     ks=[sig(kd,t) for t in K]; js=[sig(jd,t) for t in J]
     sm=difflib.SequenceMatcher(None,js,ks,autojunk=False)
@@ -78,7 +78,7 @@ for f in sorted(os.listdir(D+'kr')):
         stat['voiced']+=1
         if ji in pair:
             kt=K[pair[ji]]; stat['mapped']+=1
-            table.append(dict(mes=f,kr_line=pair[ji],kr_off=kt[0],jp_line=ji,ogg=v,jp=txt))
+            table.append(dict(mes=pre+f,kr_line=pair[ji],kr_off=kt[0],jp_line=ji,ogg=v,jp=txt))
         else: stat["unmapped"]+=1; miss[f]+=1
 print(stat, len({x['ogg'] for x in table}))
 json.dump(table,open('/home/claude/dosvo/voice_map.json','w'),ensure_ascii=False,indent=0)
