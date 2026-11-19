@@ -1,5 +1,6 @@
 # Independent check of a CIA made by the HTML maker: TMD content hash, NCCH exheader / RomFS superblock hashes, the IVFC
 # hash tree and the RomFS file table (lists files, optional compare with local files).  usage: check_cia.py file.cia [dir]
+# DUMP=BG.ARC,MES.ARC DUMPDIR=/tmp/x  also writes those files out
 import sys, struct, hashlib, os
 f = open(sys.argv[1], 'rb'); d = lambda o, n: (f.seek(o), f.read(n))[1]
 u32 = lambda b, o: struct.unpack_from('<I', b, o)[0]
@@ -40,4 +41,9 @@ while p < fms:
     name = fm[p + 32:p + 32 + nl].decode('utf-16le'); line = '%-16s %10d' % (name, size)
     if len(sys.argv) > 2 and os.path.exists(os.path.join(sys.argv[2], name)):
         a = open(os.path.join(sys.argv[2], name), 'rb').read(); b = d(L3 + fdo + off, size); line += '  ' + ('same' if a == b else 'DIFF')
-    print(line); p += 0x20 + (nl + 3) // 4 * 4
+    print(line)
+    if os.environ.get('DUMP') and name in os.environ['DUMP'].split(','):
+        with open(os.path.join(os.environ.get('DUMPDIR', '.'), name), 'wb') as o:
+            left, at = size, L3 + fdo + off
+            while left: n = min(left, 16 << 20); o.write(d(at, n)); at += n; left -= n
+    p += 0x20 + (nl + 3) // 4 * 4

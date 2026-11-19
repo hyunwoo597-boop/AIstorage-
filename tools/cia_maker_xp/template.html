@@ -42,8 +42,11 @@ small { color:var(--sub); }
 </div>
 
 <div class="card">
-  <h2><span class="step">2</span>한글 패치 (선택)</h2>
-  <p>PC용 한글 패치의 <b>mes.arc</b> 와 <b>Bg.Arc</b>. 넣으면 대사·그림이 한글판으로 들어갑니다. (한글 글꼴과 한글 로고는 이 도구 안에 들어 있습니다)</p>
+  <h2><span class="step">2</span>언어</h2>
+  <p id="langNote"></p>
+  <label style="display:block;margin:4px 0"><input type="radio" name="lang" value="kr" id="langKr" checked style="position:static;width:auto;height:auto;opacity:1;pointer-events:auto"> 한글판</label>
+  <label style="display:block;margin:4px 0 10px"><input type="radio" name="lang" value="jp" id="langJp" style="position:static;width:auto;height:auto;opacity:1;pointer-events:auto"> 일본어 원판</label>
+  <p id="korPickNote">다른 한글 패치 파일(<b>mes.arc</b>, <b>Bg.Arc</b>)을 쓰려면 여기서 고르세요. 고르면 내장 패치 대신 그 파일을 씁니다.</p>
   <label class="pick">여기를 눌러 파일 고르기<input type="file" id="inKor" multiple></label>
   <div class="files" id="fKor"></div>
 </div>
@@ -80,6 +83,9 @@ small { color:var(--sub); }
 <script id="base" type="application/octet-stream">__BASE64__</script>
 <script id="font" type="application/octet-stream">__FONT64__</script>
 <script id="patch" type="application/json">__PATCHJSON__</script>
+<script id="fontjp" type="application/octet-stream">__FONTJP64__</script>
+<script id="krmes" type="application/octet-stream">__KRMES64__</script>
+<script id="krbg" type="application/json">__KRBGJSON__</script>
 <script>
 /*__CORE__*/
 </script>
@@ -111,6 +117,8 @@ async function scanGame() {
     } catch (e) { show('fGame', picked.game, '<span class="bad">읽을 수 없습니다: ' + e.message + '</span>'); }
 }
 $('inGame').onchange = function () { picked.game = Array.from(this.files); scanGame(); };
+var KR_BUILTIN = $('krmes').textContent.trim().length > 0;
+$('langNote').innerHTML = KR_BUILTIN ? '한글 패치(대사·그림·글꼴·로고)가 이 도구에 들어 있어 따로 넣지 않아도 됩니다.' : '한글판을 만들려면 한글 패치의 <b>mes.arc</b> 와 <b>Bg.Arc</b> 를 아래에서 고르세요.';
 $('inKor').onchange = function () { picked.kor = Array.from(this.files);
     var mes = picked.kor.find(function (f) { return f.name.toUpperCase() === 'MES.ARC'; }), bg = picked.kor.find(function (f) { return f.name.toUpperCase() === 'BG.ARC'; });
     show('fKor', picked.kor, (mes ? '<span class="ok">✔ 한글 대사</span> ' : '<span class="warn">mes.arc 없음</span> ') + (bg ? '<span class="ok">✔ 한글 그림</span>' : '<span class="warn">Bg.Arc 없음</span>')); };
@@ -125,16 +133,26 @@ $('go').onclick = async function () {
         var files = [], g = found;
         var kor = function (n) { return picked.kor.find(function (f) { return f.name.toUpperCase() === n; }); };
         var given = function (n) { return picked.game.find(function (f) { return f.name.toUpperCase() === n; }); };
-        files.push({ name: 'MES.ARC', data: kor('MES.ARC') || g['MES.ARC'] });
-        files.push({ name: 'BG.ARC', data: kor('BG.ARC') || g['BG.ARC'] });
+        var korean = $('langKr').checked;
+        if (korean && !kor('MES.ARC') && !KR_BUILTIN) throw new Error('한글판에는 한글 패치의 mes.arc 가 필요합니다');
+        var mes = korean ? (kor('MES.ARC') || b64($('krmes').textContent)) : g['MES.ARC'];
+        var bg = g['BG.ARC'];
+        if (korean && kor('BG.ARC')) bg = kor('BG.ARC');
+        else if (korean && KR_BUILTIN) {           /* 원본 BG.ARC 에서 한글 그림만 바꿔 끼운다 */
+            say('한글 그림 넣는 중…'); var src = await XpCore.asBlob(g['BG.ARC'], function (f) { setp(0.02 * Math.min(f, 1)); });
+            var rep = JSON.parse($('krbg').textContent), list = await XpCore.arcList(src), up = {};
+            for (var rk in rep) up[rk.toUpperCase()] = rep[rk];
+            bg = XpCore.arcBuild(list.map(function (e) { var r = up[e.name.toUpperCase()]; return { name: e.name, data: r ? b64(r) : src.slice(e.off, e.off + e.size) }; }));
+        }
+        files.push({ name: 'MES.ARC', data: mes });
+        files.push({ name: 'BG.ARC', data: bg });
         files.push({ name: 'DATA.ARC', data: g['DATA.ARC'] });
         files.push({ name: 'VOICE.ARC', data: g['VOICE.ARC'] });
         var snd = given('SOUND.ARC');
         if (!snd) { say('배경음악 압축 중…'); snd = await XpCore.musicToAdpcm(g['MUSIC.ARC'], function (f, n) { setp(0.05 * f); say('배경음악 압축 중… ' + Math.round(f * 100) + '% ' + n); }); }
         files.push({ name: 'SOUND.ARC', data: snd });
-        files.push({ name: 'font16.bin', data: b64($('font').textContent) });
-        var patch = JSON.parse($('patch').textContent);
-        for (var k in patch) files.push({ name: 'patch_' + k, data: b64(patch[k]) });
+        files.push({ name: 'font16.bin', data: b64($(korean ? 'font' : 'fontjp').textContent) });
+        if (korean) { var patch = JSON.parse($('patch').textContent); for (var k in patch) files.push({ name: 'patch_' + k, data: b64(patch[k]) }); }
         if (picked.depth.length) files.push({ name: 'DEPTH.PAK', data: picked.depth[0] });
         var base = b64($('base').textContent);
         var cia = await XpCore.buildCia(base, files, function (f, m) { setp(f); say(m + '… ' + Math.round(f * 100) + '%'); });
