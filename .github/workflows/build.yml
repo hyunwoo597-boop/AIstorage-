@@ -66,10 +66,11 @@ jobs:
             banner="-banner out/banner.bnr"
           fi
           ./makerom -f cia -o out/nonoxp.cia -elf out/nonoxp.elf -rsf ctr/nonoxp.rsf -icon out/nonoxp.smdh $banner -exefslogo -target t
+          python3 tools/cia_maker_xp/build.py out/nonoxp.cia out/nonoxp_cia_maker.html "$(date -u +%Y-%m-%d) 판"
           ls -l out
       - name: Publish binaries to branch nonoxp-3ds-bin
         run: |
-          mkdir pub && cp out/nonoxp.3dsx out/nonoxp.smdh out/nonoxp.cia pub/ && cd pub
+          mkdir pub && cp out/nonoxp.3dsx out/nonoxp.smdh out/nonoxp.cia out/nonoxp_cia_maker.html pub/ && cd pub
           git init -q
           git config user.name "github-actions"
           git config user.email "actions@github.com"

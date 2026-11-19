@@ -282,3 +282,11 @@
 - 배너: main 브랜치의 움직이는 입체 배너(ctr/banner.cgfx, banner.wav) 재사용. 아이콘·SMDH 제목 "Nonomura Hospital XP".
 - CI: build 작업이 elf까지 올리고, cia 작업이 makerom/bannertool을 받아 CIA를 만든 뒤 nonoxp-3ds-bin에 3dsx·smdh·cia를 함께 올림.
 - 게임 파일은 CIA에 넣지 않음(SD:/3ds/nonoxp/ 그대로).
+
+## 35단계: HTML CIA 만들기 도구 (tools/cia_maker_xp)
+- 휴대폰·PC 브라우저에서 원본 CD(분할 zip Disc.zip+Disc.z01 / 이미지 .img·.iso·.bin(2048 또는 2352 원시 섹터) / ARC 파일)와 한글 패치(mes.arc, Bg.Arc), 선택 DEPTH.PAK 을 넣으면 게임 파일 내장 CIA(약 300MB) 를 만든다.
+- 모든 큰 데이터는 Blob 조각으로만 다룸(복사 없음), 해시는 8MB 씩 읽으며 계산(조각 이어 계산하는 SHA-256). RomFS·IVFC·NCCH·TMD 갱신과 시험용 키 재서명은 DOS판 ciacore 와 같은 방식.
+- 배경음악: MUSIC.ARC 의 WAV → AI5A(IMA ADPCM 4비트, 블록 2048 프레임, 블록마다 예측값·단계 저장, smpl 루프 유지) → SOUND.ARC 66MB. 음악 SNR 약 38dB. 음성(VOICE.ARC)은 원래 OGG 라 그대로.
+- RomFS 는 루트 하나: MES.ARC BG.ARC DATA.ARC VOICE.ARC SOUND.ARC font16.bin DEPTH.PAK patch_*.gcc.
+- 엔진: romfsInit 후 romfs:/MES.ARC 가 있으면 RomFS 사용. 파일은 SD(sdmc:/3ds/nonoxp/) 가 먼저, 없으면 RomFS("patch/x" → "patch_x"). 저장·로그는 항상 SD. snd_3ds 에 AI5A 디코더 추가.
+- 검사: tools/cia_maker_xp/check_cia.py (TMD·NCCH·IVFC 해시와 파일 목록을 독립 검증). node 시험: 실제 CD 분할 zip → 5개 ARC 원본과 바이트 일치, CIA 314MB 생성 9초, 모든 해시 OK.

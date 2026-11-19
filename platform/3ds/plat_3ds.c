@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdarg.h>
 #include "ai5.h"
 
@@ -25,18 +26,30 @@ static bool g_menu_mode;                /* no text window open (save/load/settin
 
 /* ---- files: keep a few archives open ---- */
 static struct { char name[24]; FILE *f; } g_open[6];
+/* Game files come from the SD folder; a CIA made with the HTML maker carries them in its RomFS instead (flat: "patch/x"
+   is stored as "patch_x"). A file on the SD card always wins, so single files (e.g. DEPTH.PAK) can still be replaced. */
+static bool g_romfs;
+static FILE *open_data(const char *name) {
+    char p[96]; snprintf(p, sizeof p, DATA_DIR "%s", name); FILE *f = fopen(p, "rb"); if (f || !g_romfs) return f;
+    snprintf(p, sizeof p, "romfs:/%s", name); for (char *c = p + 7; *c; c++) if (*c == '/') *c = '_';
+    return fopen(p, "rb");
+}
 static FILE *get_file(const char *name) {
     for (int i = 0; i < 6; i++) if (g_open[i].f && !strcmp(g_open[i].name, name)) return g_open[i].f;
-    char p[96]; snprintf(p, sizeof p, DATA_DIR "%s", name); FILE *f = fopen(p, "rb"); if (!f) return NULL;
+    FILE *f = open_data(name); if (!f) return NULL;
     for (int i = 0; i < 6; i++) if (!g_open[i].f) { strncpy(g_open[i].name, name, 23); g_open[i].f = f; return f; }
     fclose(g_open[0].f); strncpy(g_open[0].name, name, 23); g_open[0].f = f; return f;
 }
 bool plat_read_at(const char *name, uint32_t off, void *dst, uint32_t len) {
     FILE *f = get_file(name); if (!f) return false; if (fseek(f, off, SEEK_SET)) return false; return fread(dst, 1, len, f) == len; }
-int plat_list(const char *dir, char names[][24], int max) {   /* file names in a game-folder subdirectory */
-    char p[96]; snprintf(p, sizeof p, DATA_DIR "%s", dir); DIR *d = opendir(p); if (!d) return 0; int n = 0; struct dirent *e;
-    while ((e = readdir(d)) && n < max) { if (e->d_name[0] == '.' || strlen(e->d_name) > 23) continue; strcpy(names[n++], e->d_name); }
-    closedir(d); return n; }
+int plat_list(const char *dir, char names[][24], int max) {   /* file names in a game-folder subdirectory (SD, then RomFS) */
+    char p[96]; snprintf(p, sizeof p, DATA_DIR "%s", dir); DIR *d = opendir(p); int n = 0; struct dirent *e;
+    if (d) { while ((e = readdir(d)) && n < max) { if (e->d_name[0] == '.' || strlen(e->d_name) > 23) continue; strcpy(names[n++], e->d_name); } closedir(d); }
+    if (g_romfs && (d = opendir("romfs:/"))) { size_t pl = strlen(dir);
+        while ((e = readdir(d)) && n < max) { if (strncmp(e->d_name, dir, pl) || e->d_name[pl] != '_') continue; const char *nm = e->d_name + pl + 1;
+            bool dup = false; for (int i = 0; i < n; i++) if (!strcasecmp(names[i], nm)) dup = true; if (!dup && strlen(nm) <= 23) strcpy(names[n++], nm); }
+        closedir(d); }
+    return n; }
 uint32_t plat_file_size(const char *name) { FILE *f = get_file(name); if (!f) return 0; fseek(f, 0, SEEK_END); return (uint32_t)ftell(f); }
 void *plat_read_file(const char *name, size_t *len) { uint32_t n = plat_file_size(name); if (!n) return NULL; void *b = malloc(n + 1);
     if (!b || !plat_read_at(name, 0, b, n)) { free(b); return NULL; } if (len) *len = n; return b; }
@@ -533,11 +546,13 @@ static bool splash(void) {
 int main(void) {
     gfxInitDefault(); gfxSetDoubleBuffering(GFX_TOP, true); gfxSetDoubleBuffering(GFX_BOTTOM, true);
     osSetSpeedupEnable(true);
+    mkdir("sdmc:/3ds", 0777); mkdir(DATA_DIR, 0777);
+    if (R_SUCCEEDED(romfsInit())) { FILE *t = fopen("romfs:/MES.ARC", "rb"); if (t) { fclose(t); g_romfs = true; } }
     void snd_init(void), snd_exit(void); snd_init();
     static vm_t vm; g_vm = &vm;
     if (!splash()) { snd_exit(); gfxExit(); return 0; }
     if (!vm_init(&vm)) fatal("Archives not found (MES.ARC DATA.ARC BG.ARC).");
     else if (!vm_load_mes(&vm, "MAIN.MES")) fatal("MAIN.MES missing in MES.ARC.");
     else vm_run(&vm);
-    snd_exit(); gfxExit(); return 0;
+    snd_exit(); if (g_romfs) romfsExit(); gfxExit(); return 0;
 }

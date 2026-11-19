@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>노노무라 병원의 사람들 XP for 3DS — CIA 만들기</title>
+<style>
+:root { --bg:#f4f1ea; --card:#fffdf8; --ink:#1f2328; --sub:#667079; --line:#d9d3c5; --acc:#b3261e; --ok:#1d6b3a; --warn:#8a5a00; --chip:#ece7da; }
+@media (prefers-color-scheme: dark) { :root { --bg:#15171a; --card:#1e2125; --ink:#e8e6e1; --sub:#9aa3ab; --line:#33383e; --acc:#e0574e; --ok:#6fcf8f; --warn:#e3b35a; --chip:#2a2e33; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; }
+main { max-width:640px; margin:0 auto; padding:20px 16px 48px; }
+h1 { font-size:21px; margin:4px 0 2px; } .sub { color:var(--sub); font-size:14px; margin:0 0 18px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin:12px 0; }
+.card h2 { font-size:16px; margin:0 0 6px; } .card p { margin:4px 0 10px; color:var(--sub); font-size:14px; }
+.step { display:inline-block; min-width:22px; height:22px; border-radius:11px; background:var(--acc); color:#fff; text-align:center; font-size:13px; line-height:22px; margin-right:6px; }
+.pick { display:block; border:2px dashed var(--line); border-radius:12px; padding:14px; text-align:center; cursor:pointer; color:var(--sub); }
+.pick:active { background:var(--chip); }
+input[type=file] { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+.files { margin-top:8px; font-size:13px; } .files div { padding:2px 0; word-break:break-all; }
+.chip { display:inline-block; background:var(--chip); border-radius:8px; padding:1px 7px; margin:2px 4px 2px 0; font-size:13px; }
+.ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--acc); }
+button.go { width:100%; padding:14px; font-size:17px; border:0; border-radius:12px; background:var(--acc); color:#fff; font-weight:600; }
+button.go:disabled { opacity:.45; }
+button.small { padding:6px 12px; border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:8px; font-size:14px; }
+.bar { height:10px; background:var(--chip); border-radius:5px; overflow:hidden; margin:10px 0 4px; } .bar > i { display:block; height:100%; width:0; background:var(--acc); transition:width .2s; }
+#log { font-size:13px; color:var(--sub); white-space:pre-wrap; margin-top:6px; }
+a.dl { display:block; text-align:center; padding:14px; border-radius:12px; background:var(--ok); color:#fff; text-decoration:none; font-weight:600; margin-top:10px; }
+small { color:var(--sub); }
+</style>
+</head>
+<body>
+<main>
+<h1>노노무라 병원의 사람들 XP for 3DS</h1>
+<p class="sub">게임 파일을 넣어 한 번에 설치되는 CIA 를 만듭니다. 파일은 이 기기 안에서만 처리되고 어디로도 보내지지 않습니다.<br>제작자 : 디시인사이드 스위치CFW 갤러리 -루카- · __BASEINFO__</p>
+
+<div class="card">
+  <h2><span class="step">1</span>원본 게임 (필수)</h2>
+  <p>CD 이미지 분할 압축(<b>Disc.zip + Disc.z01</b> 둘 다), CD 이미지(<b>.img / .iso / .bin</b>), 또는 게임 폴더의 <b>MES.ARC · BG.ARC · DATA.ARC · MUSIC.ARC · VOICE.ARC</b> 를 고르세요. 여러 개를 한 번에 고를 수 있습니다.</p>
+  <label class="pick">여기를 눌러 파일 고르기<input type="file" id="inGame" multiple></label>
+  <div class="files" id="fGame"></div>
+</div>
+
+<div class="card">
+  <h2><span class="step">2</span>한글 패치 (선택)</h2>
+  <p>PC용 한글 패치의 <b>mes.arc</b> 와 <b>Bg.Arc</b>. 넣으면 대사·그림이 한글판으로 들어갑니다. (한글 글꼴과 한글 로고는 이 도구 안에 들어 있습니다)</p>
+  <label class="pick">여기를 눌러 파일 고르기<input type="file" id="inKor" multiple></label>
+  <div class="files" id="fKor"></div>
+</div>
+
+<div class="card">
+  <h2><span class="step">3</span>입체 깊이 DEPTH.PAK (선택)</h2>
+  <p>AI 로 만든 입체 3D 깊이 파일. 없으면 입체가 단순한 추정 방식으로 나옵니다. 나중에 SD 카드의 <b>3ds/nonoxp/</b> 에 넣어도 됩니다.</p>
+  <label class="pick">여기를 눌러 DEPTH.PAK 고르기<input type="file" id="inDepth"></label>
+  <div class="files" id="fDepth"></div>
+</div>
+
+<div class="card">
+  <h2><span class="step">4</span>만들기</h2>
+  <p>배경음악은 3DS 에 맞게 압축합니다(263MB → 약 66MB). 결과 CIA 는 약 300MB 이며, 휴대폰에서는 1~3분 걸릴 수 있습니다. 그동안 화면을 끄지 마세요.</p>
+  <button class="go" id="go" disabled>게임 파일 내장 CIA 만들기</button>
+  <div class="bar"><i id="bar"></i></div>
+  <div id="log"></div>
+  <div id="out"></div>
+</div>
+
+<div class="card">
+  <h2>게임 파일 없는 설치판</h2>
+  <p>게임 파일을 SD 카드 <b>3ds/nonoxp/</b> 폴더에 직접 넣어 쓰는 경우의 작은 설치 파일(약 1MB)입니다.</p>
+  <button class="small" id="dlBase">nonoxp.cia 받기</button>
+</div>
+
+<div class="card">
+  <h2>설치와 실행</h2>
+  <p>1) 만든 CIA 를 SD 카드에 복사하고 FBI 로 설치합니다.<br>2) 홈 메뉴에서 실행합니다. 저장 파일은 SD 카드 <b>3ds/nonoxp/save/</b> 에 생깁니다.<br>3) 소리가 안 나면 SD 카드 <b>3ds/dspfirm.cdc</b> 가 있는지 확인하세요(DSP1 으로 만들 수 있습니다).<br>4) SD 카드 3ds/nonoxp/ 에 같은 이름의 파일을 두면 CIA 안의 것 대신 그 파일을 씁니다(예: 새 DEPTH.PAK).</p>
+  <small>New 3DS 전용입니다. 구형 3DS 에서는 실행되지 않습니다.</small>
+</div>
+</main>
+
+<script id="base" type="application/octet-stream">__BASE64__</script>
+<script id="font" type="application/octet-stream">__FONT64__</script>
+<script id="patch" type="application/json">__PATCHJSON__</script>
+<script>
+/*__CORE__*/
+</script>
+<script>
+'use strict';
+var $ = function (id) { return document.getElementById(id); };
+function b64(s) { s = s.replace(/\s+/g, ''); var bin = atob(s), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+function mb(n) { return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + 'MB'; }
+var picked = { game: [], kor: [], depth: [] };
+function show(id, list, note) {
+    $(id).innerHTML = list.map(function (f) { return '<span class="chip">' + f.name.replace(/[<>&]/g, '') + ' · ' + mb(f.size) + '</span>'; }).join('') + (note ? '<div>' + note + '</div>' : '');
+}
+var found = null;
+async function scanGame() {
+    found = null; $('go').disabled = true;
+    if (!picked.game.length) { show('fGame', [], ''); return; }
+    show('fGame', picked.game, '<span class="warn">확인 중…</span>');
+    try {
+        var msgs = [];
+        found = await XpCore.findGame(picked.game.map(function (f) { return { name: f.name, blob: f }; }), function (m) { msgs.push(m); });
+        var need = ['MES.ARC', 'BG.ARC', 'DATA.ARC', 'VOICE.ARC'], miss = need.filter(function (k) { return !found[k]; });
+        var music = found['MUSIC.ARC'] || picked.game.find(function (f) { return f.name.toUpperCase() === 'SOUND.ARC'; });
+        if (!music) miss.push('MUSIC.ARC');
+        var note = Object.keys(found).map(function (k) { return '<span class="ok">✔ ' + k + '</span>'; }).join(' ');
+        if (miss.length) note += '<br><span class="bad">빠진 파일: ' + miss.join(', ') + '</span>';
+        if (msgs.length) note += '<br><small>' + msgs.join('<br>') + '</small>';
+        show('fGame', picked.game, note);
+        $('go').disabled = miss.length > 0;
+    } catch (e) { show('fGame', picked.game, '<span class="bad">읽을 수 없습니다: ' + e.message + '</span>'); }
+}
+$('inGame').onchange = function () { picked.game = Array.from(this.files); scanGame(); };
+$('inKor').onchange = function () { picked.kor = Array.from(this.files);
+    var mes = picked.kor.find(function (f) { return f.name.toUpperCase() === 'MES.ARC'; }), bg = picked.kor.find(function (f) { return f.name.toUpperCase() === 'BG.ARC'; });
+    show('fKor', picked.kor, (mes ? '<span class="ok">✔ 한글 대사</span> ' : '<span class="warn">mes.arc 없음</span> ') + (bg ? '<span class="ok">✔ 한글 그림</span>' : '<span class="warn">Bg.Arc 없음</span>')); };
+$('inDepth').onchange = function () { picked.depth = Array.from(this.files).slice(0, 1); show('fDepth', picked.depth, picked.depth.length ? '<span class="ok">✔ 입체 깊이</span>' : ''); };
+$('dlBase').onclick = function () { var u = URL.createObjectURL(new Blob([b64($('base').textContent)])); var a = document.createElement('a'); a.href = u; a.download = 'nonoxp.cia'; document.body.appendChild(a); a.click(); a.remove(); };
+
+$('go').onclick = async function () {
+    var btn = this; btn.disabled = true; $('out').innerHTML = ''; var logEl = $('log'), bar = $('bar');
+    var say = function (m) { logEl.textContent = m; };
+    var setp = function (f) { bar.style.width = Math.round(f * 100) + '%'; };
+    try {
+        var files = [], g = found;
+        var kor = function (n) { return picked.kor.find(function (f) { return f.name.toUpperCase() === n; }); };
+        var given = function (n) { return picked.game.find(function (f) { return f.name.toUpperCase() === n; }); };
+        files.push({ name: 'MES.ARC', data: kor('MES.ARC') || g['MES.ARC'] });
+        files.push({ name: 'BG.ARC', data: kor('BG.ARC') || g['BG.ARC'] });
+        files.push({ name: 'DATA.ARC', data: g['DATA.ARC'] });
+        files.push({ name: 'VOICE.ARC', data: g['VOICE.ARC'] });
+        var snd = given('SOUND.ARC');
+        if (!snd) { say('배경음악 압축 중…'); snd = await XpCore.musicToAdpcm(g['MUSIC.ARC'], function (f, n) { setp(0.05 * f); say('배경음악 압축 중… ' + Math.round(f * 100) + '% ' + n); }); }
+        files.push({ name: 'SOUND.ARC', data: snd });
+        files.push({ name: 'font16.bin', data: b64($('font').textContent) });
+        var patch = JSON.parse($('patch').textContent);
+        for (var k in patch) files.push({ name: 'patch_' + k, data: b64(patch[k]) });
+        if (picked.depth.length) files.push({ name: 'DEPTH.PAK', data: picked.depth[0] });
+        var base = b64($('base').textContent);
+        var cia = await XpCore.buildCia(base, files, function (f, m) { setp(f); say(m + '… ' + Math.round(f * 100) + '%'); });
+        setp(1); say('완료: ' + mb(cia.size));
+        var u = URL.createObjectURL(cia);
+        $('out').innerHTML = '<a class="dl" href="' + u + '" download="nonoxp_full.cia">nonoxp_full.cia 저장 (' + mb(cia.size) + ')</a><small>저장한 뒤 SD 카드에 복사해 FBI 로 설치하세요.</small>';
+    } catch (e) { say('실패: ' + (e && e.message ? e.message : e)); }
+    btn.disabled = false;
+};
+</script>
+</body>
+</html>
