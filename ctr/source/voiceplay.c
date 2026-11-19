@@ -25,8 +25,11 @@ static int m_close(void *ds) { (void)ds; return 0; }
 static long m_tell(void *ds) { (void)ds; return (long)clip_pos; }
 
 int vp_init(const char *gdir) {
+    /* the game folder first, then the folder of the Windows-version 3DS port (it uses the very same VOICE.ARC) */
     char p[300]; const char *nm[] = { "VOICE.ARC", "voice.arc", "Voice.arc", NULL };
-    for (int i = 0; nm[i] && !arc; i++) { snprintf(p, sizeof p, "%s/%s", gdir, nm[i]); arc = fopen(p, "rb"); }
+    const char *dirs[] = { gdir, "sdmc:/3ds/nonoxp", NULL };
+    for (int d = 0; dirs[d] && !arc; d++)
+        for (int i = 0; nm[i] && !arc; i++) { snprintf(p, sizeof p, "%s/%s", dirs[d], nm[i]); arc = fopen(p, "rb"); }
     if (!arc) return 0;
     uint32_t n = 0; uint8_t *t = NULL;
     if (fread(&n, 4, 1, arc) != 1 || n < 2 || n > 20000) goto bad;
