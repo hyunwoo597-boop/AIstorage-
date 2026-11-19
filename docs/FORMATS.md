@@ -291,3 +291,7 @@
 - 엔진: romfsInit 후 romfs:/MES.ARC 가 있으면 RomFS 사용. 파일은 SD(sdmc:/3ds/nonoxp/) 가 먼저, 없으면 RomFS("patch/x" → "patch_x"). 저장·로그는 항상 SD. snd_3ds 에 AI5A 디코더 추가.
 - 검사: tools/cia_maker_xp/check_cia.py (TMD·NCCH·IVFC 해시와 파일 목록을 독립 검증). node 시험: 실제 CD 분할 zip → 5개 ARC 원본과 바이트 일치, CIA 314MB 생성 9초, 모든 해시 OK.
 - 35-1: 원시 섹터(2352) CD 이미지에서 섹터마다 Blob 조각을 만들면 Chrome 이 멈춤(조각 수십만 개) → RawFile(필요할 때 512섹터씩 읽어 잘라 냄, toBlob 은 4MB 덩어리). 헤드리스 Chrome 실측: 분할 zip + 한글 패치 + DEPTH.PAK → 299MB CIA 8초, check_cia.py 전 항목 OK, 들어간 파일 전부 원본과 바이트 일치.
+
+## 36단계: 1/16 픽셀 시차, 화면 갱신 누락
+- 다른 AI 분석: 정수 픽셀 이동이라 고정밀 지도로 바꿔도 캐릭터 픽셀의 86~87% 가 같은 이동량(S03·S05). → 이동표를 1/16 픽셀 고정소수(int16)로, 출력 픽셀은 이웃 두 원본 픽셀을 비율로 섞음(원천 찾기 3단계·먼 쪽 선택 규칙은 그대로).
+- S04 335프레임 상단 30픽셀이 이전 상태로 남던 문제: make_half 의 재사용 판정(pic_sig 성긴 표본)이 작은 변화를 놓침 → 재사용 삭제, 매 프레임 다시 만듦.

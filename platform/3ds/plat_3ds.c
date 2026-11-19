@@ -353,8 +353,8 @@ static void depth_fx(const uint8_t *z) {
         for (int c = 0; c < 3; c++) { int v = o[c] + ((b[c] - o[c]) * wb >> 8); v += (hc[c] - v) * hz >> 8; v = v * dk >> 8; o[c] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); } }
 }
 static void make_half(const uint8_t *rgb, const uint8_t *z, bool fx) {
-    static uint32_t last; uint32_t sig = pic_sig(rgb) ^ (g_dm_sig * 2654435761u) ^ (uint32_t)fx;
-    if (!g_fade && sig == last) return; last = g_fade ? 0 : sig;             /* unchanged picture: reuse */
+    /* rebuilt every frame: the old reuse test sampled a sparse grid and missed small changes (S04 frame 335: a 30-pixel
+       update stayed stale on the top screen) */
     int fa = g_fade_a, na = 256 - fa;
     for (int y = 0; y < 240; y++) { const uint8_t *r0 = rgb + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; uint8_t *o = g_half + y * 320 * 3;
         const uint8_t *f0 = g_fade ? g_fade + (y * 2) * 640 * 3 : NULL;
@@ -392,25 +392,32 @@ static void soften_steps(void) {
             int d = g_dmh[y][x] - bl; if (d > 12) d = 12; if (d < -12) d = -12; g_dmh[y][x] = (uint8_t)(bl + d); } }
 }
 static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
-    int sh1 = g_hi ? 0 : 1; int8_t tab[256];
-    for (int d = 0; d < 256; d++) { int v;   /* g_zp: screen plane, set by the slider in draw_scene */
-        if (d <= g_zp) { int r = g_zp - g_lo; v = r > 0 ? back * (g_zp - (d < g_lo ? g_lo : d)) / r : 0; }        /* behind the screen */
-        else { int r = g_hi_d - g_zp; v = r > 0 ? -front * ((d > g_hi_d ? g_hi_d : d) - g_zp) / r : 0; }         /* in front */
-        int t = 0; if (g_tilt_on) { int r = g_hi_d - g_lo; if (r > 40) t = (int)lroundf(g_tilt * 5.0f * ((d < g_lo ? g_lo : d > g_hi_d ? g_hi_d : d) - g_zp) / r); }   /* motion parallax: near and far slide apart */
-        int sv = eye * v + t, lim = back > front ? back : front; if (sv > lim) sv = lim; if (sv < -lim) sv = -lim;   /* stick never adds to the stereo extremes */
-        tab[d] = (int8_t)sv; }
+    /* shifts in 1/16 pixel: whole-pixel shifts turned most of the fine relief of the depth maps into the same shift (86 %
+       of character pixels unchanged between the old and the detailed maps); the output pixel is mixed from the two
+       neighbouring source pixels instead */
+    int sh1 = g_hi ? 0 : 1; int16_t tab[256];
+    for (int d = 0; d < 256; d++) { float v;   /* g_zp: screen plane, set by the slider in draw_scene */
+        if (d <= g_zp) { int r = g_zp - g_lo; v = r > 0 ? back * (float)(g_zp - (d < g_lo ? g_lo : d)) / r : 0; }        /* behind the screen */
+        else { int r = g_hi_d - g_zp; v = r > 0 ? -front * (float)((d > g_hi_d ? g_hi_d : d) - g_zp) / r : 0; }         /* in front */
+        float t = 0; if (g_tilt_on) { int r = g_hi_d - g_lo; if (r > 40) t = g_tilt * 5.0f * ((d < g_lo ? g_lo : d > g_hi_d ? g_hi_d : d) - g_zp) / r; }   /* motion parallax: near and far slide apart */
+        float sv = eye * v + t, lim = back > front ? back : front; if (sv > lim) sv = lim; if (sv < -lim) sv = -lim;   /* stick never adds to the stereo extremes */
+        tab[d] = (int16_t)lroundf(sv * 16); }
     for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3; const uint8_t *dm = g_hi ? g_dmh[y] : g_dm[y >> 1];
         u8 *p = fb + (40 * 240 + (239 - y)) * 3;
         for (int x = 0; x < 320; x++, p += 240 * 3) {
             /* find the source column k with k = x + shift(depth at k). Where that has no single answer the background is
                being uncovered next to a character: take the farther candidate, so the gap is filled with background
                instead of a stretched line of the character's edge */
-            int k1 = x + tab[dm[x >> sh1]]; if (k1 < 0) k1 = 0; else if (k1 > 319) k1 = 319;
-            int k2 = x + tab[dm[k1 >> sh1]]; if (k2 < 0) k2 = 0; else if (k2 > 319) k2 = 319;
+            #define CL(v) ((v) < 0 ? 0 : (v) > 319 * 16 ? 319 * 16 : (v))
+            int x16 = x * 16;
+            int k1 = CL(x16 + tab[dm[x >> sh1]]);
+            int k2 = CL(x16 + tab[dm[(k1 + 8) >> 4 >> sh1]]);
             int k = k2;
-            if (k2 != k1) { int k3 = x + tab[dm[k2 >> sh1]]; if (k3 < 0) k3 = 0; else if (k3 > 319) k3 = 319;
-                if (k3 != k2) k = dm[k2 >> sh1] <= dm[k1 >> sh1] ? k2 : k1; }
-            const uint8_t *q = row + k * 3; p[0] = q[2]; p[1] = q[1]; p[2] = q[0]; } }
+            if ((k2 >> 4) != (k1 >> 4)) { int k3 = CL(x16 + tab[dm[(k2 + 8) >> 4 >> sh1]]);
+                if ((k3 >> 4) != (k2 >> 4)) k = dm[(k2 + 8) >> 4 >> sh1] <= dm[(k1 + 8) >> 4 >> sh1] ? k2 : k1; }
+            #undef CL
+            int i = k >> 4, fr = k & 15; const uint8_t *q = row + i * 3, *q2 = i < 319 ? q + 3 : q;
+            p[0] = (uint8_t)((q[2] * (16 - fr) + q2[2] * fr) >> 4); p[1] = (uint8_t)((q[1] * (16 - fr) + q2[1] * fr) >> 4); p[2] = (uint8_t)((q[0] * (16 - fr) + q2[0] * fr) >> 4); } }
 }
 static void draw_scene(const uint8_t *rgb) {
     static bool stereo_on, ypr;
