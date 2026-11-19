@@ -16,7 +16,7 @@ static FILE *arc;
 static ndspWaveBuf vb[NVB];
 static int16_t *vbuf;
 static uint8_t *clip; static size_t clip_len, clip_pos;
-static OggVorbis_File vf; static int playing, eof, channels;
+static OggVorbis_File vf; static int playing, eof, channels, finished;
 static float volume = 1.0f;
 
 static size_t m_read(void *p, size_t sz, size_t n, void *ds) { (void)ds; size_t want = sz * n, left = clip_len - clip_pos; if (want > left) want = left; memcpy(p, clip + clip_pos, want); clip_pos += want; return sz ? want / sz : 0; }
@@ -77,7 +77,7 @@ int vp_play(const char *name) {
     ndspChnSetFormat(VCH, channels == 2 ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
     float mix[12] = { 0 }; mix[0] = mix[1] = volume; ndspChnSetMix(VCH, mix);
     for (int i = 0; i < NVB; i++) { vb[i].status = NDSP_WBUF_FREE; vb[i].data_pcm16 = vbuf + (size_t)i * VB_FRAMES * 2; }
-    playing = 1; eof = 0;
+    playing = 1; eof = 0; finished = 0;
     vp_pump();
     return 1;
 }
@@ -97,8 +97,9 @@ void vp_pump(void) {
         }
         if (fr > 0) { w->nsamples = (u32)fr; DSP_FlushDataCache(w->data_pcm16, (u32)fr * 2 * channels); ndspChnWaveBufAdd(VCH, w); busy++; }
     }
-    if (eof && !busy) { ov_clear(&vf); free(clip); clip = NULL; playing = 0; }
+    if (eof && !busy) { ov_clear(&vf); free(clip); clip = NULL; playing = 0; finished = 1; }
 }
 
 int vp_playing(void) { return playing; }
+int vp_take_finished(void) { int f = finished; finished = 0; return f; }
 void vp_set_volume(float v) { volume = v; if (playing) { float mix[12] = { 0 }; mix[0] = mix[1] = v; ndspChnSetMix(VCH, mix); } }

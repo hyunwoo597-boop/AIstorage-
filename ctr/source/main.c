@@ -57,7 +57,8 @@ static int s3d_mode = 0;              /* 3D style: 0 characters and the picture 
 static int s3d_level = 2;             /* top screen stereoscopic 3D: 0 off, 1 weak, 2 medium, 3 strong, 4 strongest (the 3D slider scales it further) */
 /* bottom-screen text is always shown at the smallest size (1.0x); the old size choice is gone and a saved text_size= line is ignored */
 static char cfg_path[320];
-static int voice_on = 1, voice_clips; static unsigned voice_ok, voice_fail, voice_skip; static int voice_hooks; static char voice_last[16];          /* voice clips from VOICE.ARC (Windows version) */
+static int voice_on = 1, voice_clips; static unsigned voice_ok, voice_fail, voice_skip; static int voice_hooks;
+static int voice_prompt;      /* the clip of the current line has ended: show the "press A" sign on the bottom screen until the player goes on */ static char voice_last[16];          /* voice clips from VOICE.ARC (Windows version) */
 static void cfg_save(void) {
     FILE *f = fopen(cfg_path, "w"); if (!f) return;
     fprintf(f, "cpu_mode=%d\nmouse_level=%d\nwin_hide=%d\npic_mode=%d\ns3d=%d\ns3dm=%d\nvoice=%d\n", cpu_mode, mouse_level, win_hide, pic_mode, s3d_level, s3d_mode, voice_on);
@@ -377,8 +378,19 @@ static void mouse_move(Machine *m, float dx, float dy) {
     if (m->mouse_y > m->mouse_maxy) m->mouse_y = m->mouse_maxy;
 }
 
+/* While a line's voice is playing, A / X(Enter) / a tap do not go on to the next line (so the voice is never cut off); choice menus are not held. */
+static int voice_blocking(void) {
+#ifdef HAVE_VOICE
+    return voice_on && voice_clips && vp_playing() && !textcap_menu_active();
+#else
+    return 0;
+#endif
+}
 static void input_frame(Machine *m) {
-    uint32_t held = hidKeysHeld();
+    uint32_t raw = hidKeysHeld(), held = raw;
+    int vblock = voice_blocking();
+    if (vblock) held &= ~(uint32_t)(KEY_A | KEY_X);
+    if (voice_prompt && (raw & ~prev_held & (KEY_A | KEY_X | KEY_TOUCH))) voice_prompt = 0;
     /* keyboard keys: press edges immediately; releases only after >= 4 frames so the game's tick-rate polling never misses a tap */
     for (unsigned i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++) {
         uint32_t k = KEYS[i].key; uint32_t bit = 1u << i;
@@ -435,6 +447,7 @@ static void input_frame(Machine *m) {
         else if (!touch_moved && touch_age < 15) left_touch = 1;
         touch_active = 0; touch_menu = 0;
     }
+    if (vblock) { left_touch = 0; lb_frames = 0; }
     if (left_touch) lb_frames = 3;
     int btn = 0;
     if ((held & KEY_A) || lb_frames > 0) btn |= 1;
@@ -442,7 +455,7 @@ static void input_frame(Machine *m) {
     if (lb_frames > 0) lb_frames--;
     if (rb_frames > 0) rb_frames--;
     m->mouse_btn = btn;
-    prev_held = held;
+    prev_held = raw;            /* a press made while the voice was playing does not fire later: only a new press after it counts */
 }
 
 static void input_release_all(Machine *m) {
@@ -1058,11 +1071,13 @@ int main(void) {
         { const char *vn = voice_take(m);
 #ifdef HAVE_VOICE
           if (vn) {
+              voice_prompt = 0;
               snprintf(voice_last, sizeof voice_last, "%s", vn);
               if (voice_on && voice_clips) { if (vp_play(vn)) voice_ok++; else { voice_fail++; LOG("voice %s: play failed", vn); } }
               else voice_skip++;
           }
           vp_pump();
+          if (vp_take_finished() && voice_on) voice_prompt = 1;
 #else
           (void)vn;
 #endif
@@ -1102,6 +1117,18 @@ int main(void) {
         if (bot_force || ((gen != last_gen || m->vga.dirty != bot_dirty || unsettled) && frame - last_bot_frame >= (starving ? 10 : gen != last_gen ? 4 : unsettled ? 3 : 8))) {
             bottom_render(m); COST(c_bot_ms);
             last_gen = gen; bot_dirty = m->vga.dirty; last_bot_frame = frame; bot_force = 0;
+        }
+        {   /* "press A" sign at the bottom right once the line's voice has ended (blinking); erased by re-rendering the text */
+            static int shown;
+            int want = voice_prompt && last_glyphs > 0 && !textcap_menu_active();
+            if (!want && voice_prompt && last_glyphs == 0) voice_prompt = 0;
+            int on = want && (frame / 30) % 2 == 0;
+            if (on) {
+                const char *t = "A ▶"; int w = kwidth(t) + 12, x = 320 - w - 4, y = 240 - KF_LH - 8;
+                frect(fbBot, 320, x, y, w, KF_LH + 4, C565(255, 220, 80));
+                ktext(fbBot, 320, x + 6, y + 2, w, t, C565(20, 20, 40), 1);
+                shown = 1;
+            } else if (shown) { bottom_render(m); shown = 0; }
         }
         u64 f1 = svcGetSystemTick();
         pt[3] = (double)(f1 - tk0) * 1000.0 / TICKS_PER_SEC;
