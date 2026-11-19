@@ -11,6 +11,7 @@
  * GP4: see dosgfx_decode below (a reimplementation of the DOS engine's routine). */
 #include "ai5.h"
 #include "gccdec.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
