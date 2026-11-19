@@ -276,3 +276,9 @@
 - 33-20: 슬라이더 최대에서 캐릭터 주변 잔상 테두리 — 외곽의 깊이 차이(이동량 차이)가 부드러운 경계 폭보다 커서 픽셀이 겹쳐 접히던 것. 고해상도 깊이에 단차 완화(13x13 평균 + 차이 ±12단계로 제한: 큰 단차는 약 12px 경사, 작은 굴곡은 유지). 최대 강도 뒤 10→9px, 앞 6→5px.
 - 33-21: 왼쪽 스틱 시차 잔상 — 스틱 이동폭 ±6 → ±3px, 입체 이동과 합친 값이 슬라이더 최대 이동폭을 넘지 않게 제한(접힘·드러난 배경 띠 감소).
 - 33-22: 스틱 시차 폭 ±5px(사용자 선택), 합친 이동량 제한은 유지.
+
+## 34단계: 설치형 CIA
+- ctr/nonoxp.rsf(DOS판 main 브랜치 rsf 기반): UniqueId 0xFA3D2(DOS판 0xFA3D1과 동시 설치 가능), ProductCode CTR-P-NNXP, New 3DS 124MB·804MHz·L2, SD 직접 접근.
+- 배너: main 브랜치의 움직이는 입체 배너(ctr/banner.cgfx, banner.wav) 재사용. 아이콘·SMDH 제목 "Nonomura Hospital XP".
+- CI: build 작업이 elf까지 올리고, cia 작업이 makerom/bannertool을 받아 CIA를 만든 뒤 nonoxp-3ds-bin에 3dsx·smdh·cia를 함께 올림.
+- 게임 파일은 CIA에 넣지 않음(SD:/3ds/nonoxp/ 그대로).

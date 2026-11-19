@@ -23,9 +23,53 @@ jobs:
           path: |
             nonoxp.3dsx
             nonoxp.smdh
-      - name: Publish binary to branch nonoxp-3ds-bin
+            nonoxp.elf
+  # installable version (.cia): the same program wrapped with makerom, the icon and the moving 3D banner (ctr/banner.cgfx,
+  # made for the DOS port on branch main). Game files stay on the SD card (sdmc:/3ds/nonoxp/).
+  cia:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: nonoxp-3dsx, path: out }
+      - name: Get makerom
         run: |
-          mkdir out && cp nonoxp.3dsx nonoxp.smdh out/ && cd out
+          set -e
+          git clone --depth 1 https://github.com/3DSGuy/Project_CTR.git tools-ctr
+          make -C tools-ctr/makerom -j"$(nproc)"
+          cp "$(find tools-ctr/makerom -type f -name makerom | head -n 1)" ./makerom
+      - name: Get bannertool
+        run: |
+          git config --global url."https://github.com/".insteadOf git://github.com/
+          export GIT_TERMINAL_PROMPT=0
+          for repo in Epicpkmn11/bannertool carstene1ns/3ds-bannertool; do
+            rm -rf tools-bt
+            git clone --depth 1 "https://github.com/$repo.git" tools-bt || continue
+            if [ -f tools-bt/.gitmodules ] && ! git -C tools-bt submodule update --init --depth 1; then
+              rm -rf tools-bt/buildtools
+              git clone --depth 1 https://github.com/Epicpkmn11/buildtools.git tools-bt/buildtools || continue
+            fi
+            if make -C tools-bt -j"$(nproc)"; then
+              bt="$(find tools-bt -type f -name bannertool -perm -u+x | head -n 1)"
+              if [ -n "$bt" ]; then cp "$bt" ./bannertool && echo "using $repo" && break; fi
+            fi
+          done
+          ls -l bannertool || echo "NO BANNERTOOL"
+      - name: Make banner and CIA
+        run: |
+          set -e
+          banner=""
+          if [ -x ./bannertool ]; then
+            ./bannertool makebanner -i ctr/banner.png -a ctr/banner.wav -o out/banner.bnr
+            if ./bannertool makebanner -ci ctr/banner.cgfx -a ctr/banner.wav -o out/banner3d.bnr; then mv out/banner3d.bnr out/banner.bnr; else echo "::warning::3D banner failed - flat banner"; fi
+            banner="-banner out/banner.bnr"
+          fi
+          ./makerom -f cia -o out/nonoxp.cia -elf out/nonoxp.elf -rsf ctr/nonoxp.rsf -icon out/nonoxp.smdh $banner -exefslogo -target t
+          ls -l out
+      - name: Publish binaries to branch nonoxp-3ds-bin
+        run: |
+          mkdir pub && cp out/nonoxp.3dsx out/nonoxp.smdh out/nonoxp.cia pub/ && cd pub
           git init -q
           git config user.name "github-actions"
           git config user.email "actions@github.com"

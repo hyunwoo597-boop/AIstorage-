@@ -9,9 +9,9 @@ TARGET      := nonoxp
 BUILD       := build
 SOURCES     := src platform/3ds
 INCLUDES    := src
-APP_TITLE       := NONOXP
-APP_DESCRIPTION := AI5WIN engine port
-APP_AUTHOR      := Luka
+APP_TITLE       := Nonomura Hospital XP
+APP_DESCRIPTION := Korean 3D edition for New 3DS
+APP_AUTHOR      := DC Switch CFW gallery - Luka
 
 ARCH     := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 CFLAGS   := -g -Wall -O2 -mword-relocations -ffunction-sections $(ARCH) $(INCLUDE) -D__3DS__ -Wno-misleading-indentation -Wno-unused-function
