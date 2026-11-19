@@ -72,11 +72,9 @@ async function isoFiles(img) {
     if (!ss) return null;
     var pvd2 = await rd(img, 16 * ss + dataOff, 2048);
     var rootLba = u32(pvd2, 156 + 2), rootLen = u32(pvd2, 156 + 10);
-    function sectors(lba, len) {           /* 파일 내용을 Blob 으로 (원시 섹터면 섹터마다 2048 바이트만) */
+    function sectors(lba, len) {           /* 파일 내용: 2048 섹터면 그대로 Blob, 원시 섹터(2352)면 필요할 때 읽는 RawFile */
         if (ss === 2048) return img.slice(lba * 2048, lba * 2048 + len);
-        var parts = [], left = len, s = lba, RUN = 1;
-        while (left > 0) { var take = Math.min(2048, left); parts.push(img.slice(s * ss + dataOff, s * ss + dataOff + take)); left -= take; s += RUN; }
-        return new BlobC(parts);
+        return new RawFile(img, lba, len, ss, dataOff);
     }
     var dir = await rd(img, rootLba * ss + dataOff, 2048), out = {};
     /* 루트 폴더가 여러 섹터일 수 있음 */
@@ -89,6 +87,33 @@ async function isoFiles(img) {
             p += l; } }
     return out;
 }
+/* 원시 섹터 CD 이미지 속 파일. 섹터마다 Blob 조각을 만들면 브라우저가 멈추므로(조각 수십만 개) 큰 덩어리로 읽어 잘라 낸다.
+   Blob 처럼 size / slice(a,b).arrayBuffer() 를 지원하고, toBlob() 은 내용을 4 MB 덩어리로 꺼내 진짜 Blob 을 만든다. */
+function RawFile(img, lba, len, ss, dataOff, base) { this.img = img; this.lba = lba; this.size = len; this.ss = ss; this.dataOff = dataOff; this.base = base || 0; }
+RawFile.prototype.slice = function (a, b) {
+    if (b === undefined || b > this.size) b = this.size; if (a < 0) a = 0; if (b < a) b = a;
+    var r = new RawFile(this.img, this.lba, b - a, this.ss, this.dataOff, this.base + a); return r;
+};
+RawFile.prototype.arrayBuffer = async function () {
+    var out = new Uint8Array(this.size), pos = 0, off = this.base, ss = this.ss, CH = 512;   /* 512 섹터(약 1.2 MB)씩 읽기 */
+    while (pos < this.size) {
+        var sec = Math.floor(off / 2048), inSec = off % 2048, n = Math.min(CH, Math.ceil((inSec + this.size - pos) / 2048));
+        var raw = new Uint8Array(await this.img.slice((this.lba + sec) * ss, (this.lba + sec + n) * ss).arrayBuffer());
+        for (var k = 0; k < n && pos < this.size; k++) {
+            var from = k * ss + this.dataOff + (k === 0 ? inSec : 0), take = Math.min(2048 - (k === 0 ? inSec : 0), this.size - pos);
+            out.set(raw.subarray(from, from + take), pos); pos += take;
+        }
+        off = this.base + pos;
+    }
+    return out.buffer;
+};
+RawFile.prototype.toBlob = async function (prog) {
+    var parts = [], CH = 4 << 20;
+    for (var p = 0; p < this.size; p += CH) { parts.push(new Uint8Array(await this.slice(p, Math.min(this.size, p + CH)).arrayBuffer())); prog && prog((p + CH) / this.size); await tick(); }
+    return new BlobC(parts);
+};
+async function asBlob(x, prog) { return x instanceof RawFile ? await x.toBlob(prog) : x; }
+
 /* 분할 zip(Disc.z01 + Disc.zip, 무압축 저장)에서 첫 파일의 내용 Blob */
 async function storedZipMember(parts) {
     var all = new BlobC(parts), h = await rd(all, 0, 64), o = 0;
@@ -277,6 +302,8 @@ function parseCia(cia) {
 }
 async function buildCia(base, files, prog) {
     var c = parseCia(base), n = c.contentOff;
+    for (var fi = 0; fi < files.length; fi++) if (files[fi].data instanceof RawFile) {
+        var nm = files[fi].name; files[fi] = { name: nm, data: await files[fi].data.toBlob(function (f) { prog && prog(0.05 * Math.min(f, 1), 'CD 이미지에서 ' + nm + ' 꺼내는 중'); }) }; }
     var romfs = await buildRomfs(files, function (f) { prog && prog(0.05 + 0.6 * f, '데이터 확인값 계산'); });
     var keep = c.romfsSize ? c.romfsOff : c.contentSize;
     var romOff = align(keep, 0x1000), ncchSize = romOff + romfs.size, metaOff = a64(c.contentOff + ncchSize);
@@ -307,7 +334,7 @@ async function buildCia(base, files, prog) {
     return new BlobC([head, romfs, zeros(tailPad), base.subarray(c.metaOff, c.metaOff + c.metaSize)]);
 }
 
-var api = { Sha: Sha, sha256: sha256, findGame: findGame, isoFiles: isoFiles, arcList: arcList, arcBuild: arcBuild, wavToAdpcm: wavToAdpcm, musicToAdpcm: musicToAdpcm, buildRomfs: buildRomfs, parseCia: parseCia, buildCia: buildCia, Blob: BlobC };
+var api = { RawFile: RawFile, asBlob: asBlob, Sha: Sha, sha256: sha256, findGame: findGame, isoFiles: isoFiles, arcList: arcList, arcBuild: arcBuild, wavToAdpcm: wavToAdpcm, musicToAdpcm: musicToAdpcm, buildRomfs: buildRomfs, parseCia: parseCia, buildCia: buildCia, Blob: BlobC };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 root.XpCore = api;
 })(typeof self !== 'undefined' ? self : this);
