@@ -157,3 +157,89 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
     free(g.idx);
     return 0;
 }
+
+/* ---- DOS animations (.S4 + <name>AN.GP4 sheet), played in place of the Windows ones while the DOS pictures are on ----
+ * S4: u8 n (=10 streams), n x u16 stream start offsets, then 33-byte draw entries {u8 type|flags, u8 sx/8, u16 sy, u8 sx2/8,
+ * u16 sy2, u8 dx/8, u16 dy, ...}.  Stream bytes: 01 stop here if asked to, 02 n wait n ticks, 03 restart, 04/FF end,
+ * 05 n / 06 and 07 n / 08 loops, >= 0x14 draw entry (op - 0x14).  Type 0x10/0x30 copy, 0x20 copy with colour 8 transparent;
+ * flags bit 1: source is the sheet (else the screen), bit 0: destination is the sheet (ignored).  The DOS engine ticks at the
+ * music driver hook INT D1, measured 36 Hz. */
+enum { DA_SLOTS = 10, DA_STREAMS = 10 };
+typedef struct { uint8_t state, wait, l1, l2; uint16_t start, ip, l1ip, l2ip; } DaStream;
+static struct { char name[16]; const uint8_t *s4; uint32_t n4; Gp4 sheet; int ok; DaStream st[DA_STREAMS]; } da[DA_SLOTS];
+static double da_acc;
+
+void dosgfx_anim_reset(void) { for (int a = 0; a < DA_SLOTS; a++) for (int b = 0; b < DA_STREAMS; b++) da[a].st[b].state = 0; }
+static int base_of(const char *fn, char *out) {
+    const char *b = strrchr(fn, '\\'); b = b ? b + 1 : fn; int i = 0;
+    for (; b[i] && b[i] != '.' && i < 10; i++) out[i] = (char)(b[i] >= 'a' && b[i] <= 'z' ? b[i] - 32 : b[i]); out[i] = 0; return i;
+}
+/* the Windows engine loaded animation file axname into slot a */
+void dosgfx_anim_slot(int a, const char *axname) {
+    if (a < 0 || a >= DA_SLOTS) return; load_all();
+    char base[16]; base_of(axname, base);
+    if (da[a].ok && !strcmp(da[a].name, base)) return;
+    free(da[a].sheet.idx); memset(&da[a], 0, sizeof da[a]); snprintf(da[a].name, sizeof da[a].name, "%s", base);
+    char fn[24]; const DosEnt *s = NULL, *g = NULL;
+    snprintf(fn, sizeof fn, "%s.S4", base); for (int k = 0; k < nents; k++) if (!strcasecmp(ents[k].name, fn)) s = &ents[k];
+    snprintf(fn, sizeof fn, "%sAN.GP4", base); for (int k = 0; k < nents; k++) if (!strcasecmp(ents[k].name, fn)) g = &ents[k];
+    if (!s || !g || s->size < 21 || gp4_decode(g->data, g->size, &da[a].sheet)) return;
+    da[a].s4 = s->data; da[a].n4 = s->size; da[a].ok = 1; plat_log("DOS animation %s in slot %d", base, a);
+}
+void dosgfx_anim_ctl(int a, int b, int sub) {
+    if (sub == 6) { for (int i = 0; i < DA_SLOTS; i++) for (int j = 1; j < DA_STREAMS; j++) if (da[i].st[j].state) da[i].st[j].state = 1; return; }
+    if (sub == 7) { dosgfx_anim_reset(); return; }
+    if (a < 0 || a >= DA_SLOTS || b < 0 || b >= DA_STREAMS || !da[a].ok) return;
+    DaStream *s = &da[a].st[b]; const uint8_t *d = da[a].s4; if (getenv("AI5_ANIMLOG")) plat_log("dos ctl slot %d stream %d sub %d", a, b, sub);
+    switch (sub) {
+    case 0: { int n = d[0]; uint16_t o = b < n ? (uint16_t)(d[1 + 2 * b] | d[2 + 2 * b] << 8) : 0; memset(s, 0, sizeof *s); s->start = s->ip = o; break; }
+    case 1: case 4: case 5: s->state = 0xFF; s->ip = s->start; s->wait = 0; break;
+    case 2: if (s->state) s->state = 1; break;
+    case 3: s->state = 0; break;
+    }
+}
+typedef void (*da_put_fn)(int x, int y, const uint8_t rgb[3]);
+typedef int (*da_get_fn)(int x, int y, uint8_t rgb[3]);
+static void da_draw(int a, int e, da_put_fn put) {
+    const uint8_t *d = da[a].s4; uint32_t off = 1 + 2u * d[0] + 33u * (uint32_t)e; if (off + 10 > da[a].n4) return;
+    const uint8_t *r = d + off; int type = r[0] & 0xF0, fl = r[0] & 15;
+    if (type != 0x10 && type != 0x20 && type != 0x30) return;      /* palette changes and the rest are not reproduced */
+    if (!(fl & 2) || (fl & 1)) return;                              /* only sheet -> screen */
+    int sx = r[1] * 8, sy = r[2] | r[3] << 8, w = (r[4] - r[1] + 1) * 8, h = (r[5] | r[6] << 8) - sy + 1, dx = r[7] * 8, dy = r[8] | r[9] << 8;
+    const Gp4 *g = &da[a].sheet; if (w <= 0 || h <= 0) return;
+    if (getenv("AI5_ANIMLOG")) plat_log("dos draw %d e%d %d,%d %dx%d -> %d,%d", a, e, sx, sy, w, h, dx, dy);
+    /* destination rows in the stretched (x1.2) screen */
+    for (int ty = dy * 6 / 5; ty < (dy + h) * 6 / 5; ty++) {
+        int yy = ty * 5 / 6 - dy; if (yy < 0) yy = 0; if (yy >= h) yy = h - 1;
+        int gy = sy + yy - g->y; if (gy < 0 || gy >= g->h) continue;
+        for (int x = 0; x < w; x++) { int gx = sx + x - g->x; if (gx < 0 || gx >= g->W) continue;
+            uint8_t c = g->idx[(size_t)gy * g->W + gx] & 15; if (type == 0x20 && c == 8) continue;
+            put(dx + x, ty, g->pal[c]); }
+    }
+}
+static void da_tick_one(int a, DaStream *s, da_put_fn put) {
+    const uint8_t *d = da[a].s4; uint32_t n = da[a].n4;
+    if (!s->state) return;
+    if (s->wait) { s->wait--; return; }
+    for (int guard = 0; guard < 256; guard++) {
+        if (s->ip >= n) { s->state = 0; return; }
+        uint8_t op = d[s->ip++];
+        switch (op) {
+        case 1: if (s->state == 1) s->state = 0; return;
+        case 2: s->wait = s->ip < n ? d[s->ip++] : 0; return;
+        case 3: s->ip = s->start; return;
+        case 4: case 0xFF: s->state = 0; return;
+        case 5: s->l1 = s->ip < n ? d[s->ip++] : 0; s->l1ip = s->ip; return;
+        case 6: if (--s->l1) s->ip = s->l1ip; return;
+        case 7: s->l2 = s->ip < n ? d[s->ip++] : 0; s->l2ip = s->ip; return;
+        case 8: if (--s->l2) s->ip = s->l2ip; return;
+        default: if (op >= 0x14) da_draw(a, op - 0x14, put); else return; break;
+        }
+    }
+}
+/* one host frame of dt seconds */
+void dosgfx_anim_frame(double dt, da_put_fn put) {
+    da_acc += dt * 36.0; if (da_acc > 8) da_acc = 8;
+    while (da_acc >= 1) { da_acc -= 1;
+        for (int a = 0; a < DA_SLOTS; a++) if (da[a].ok) for (int b = 0; b < DA_STREAMS; b++) da_tick_one(a, &da[a].st[b], put); }
+}

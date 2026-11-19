@@ -297,6 +297,33 @@ static inline uint8_t dep_sprite(uint8_t src, uint8_t dst) {   /* layer value wh
 /* Port addition: DOS-release pictures (src/dosgfx.c), switched with sys_set_dos_gfx(). The image loads since the last
    full-screen picture of each surface are remembered, so a switch can redraw the current scene at once. */
 int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im);
+void dosgfx_anim_reset(void); void dosgfx_anim_slot(int a, const char *axname); void dosgfx_anim_ctl(int a, int b, int sub);
+void dosgfx_anim_frame(double dt, void (*put)(int x, int y, const uint8_t rgb[3]));
+static int dos_mode;
+/* where the pieces drawn into each surface came from: a Windows rectangle and (for a DOS picture) the DOS rectangle */
+typedef struct { int xr[4], dr[4]; bool isdos; } PartLoad;
+static PartLoad parts[NSURF][8]; static int nparts[NSURF]; static bool base_dos[NSURF];
+static void part_add(int s, const int xr[4], const int dr[4], bool isdos) {
+    if (nparts[s] == 8) { memmove(parts[s], parts[s] + 1, sizeof parts[s][0] * 7); nparts[s]--; }
+    PartLoad *p = &parts[s][nparts[s]++]; memcpy(p->xr, xr, sizeof p->xr); memcpy(p->dr, dr, sizeof p->dr); p->isdos = isdos;
+}
+/* DOS look: a partial copy out of a piece is redirected to the DOS piece's own rectangle (the DOS variants/sprites are drawn
+   where they belong on the DOS screen); a piece of Windows art is not pasted over a DOS picture. Returns 1 to skip the copy. */
+static int dos_remap(int *x0, int *y0, int *w, int *h, int ss, int *dx, int *dy, int ds) {
+    ss %= NSURF; ds %= NSURF;
+    if (*w * *h >= SW * SH * 9 / 10) { base_dos[ds] = base_dos[ss]; nparts[ds] = nparts[ss]; memcpy(parts[ds], parts[ss], sizeof parts[ss]); return 0; }
+    for (int i = nparts[ss] - 1; i >= 0; i--) { const PartLoad *p = &parts[ss][i];
+        if (*x0 >= p->xr[0] + p->xr[2] || *x0 + *w <= p->xr[0] || *y0 >= p->xr[1] + p->xr[3] || *y0 + *h <= p->xr[1]) continue;
+        if (!p->isdos) { if (dos_mode && base_dos[ds]) return 1; int r[4] = { *dx, *dy, *w, *h }; part_add(ds, r, r, false); return 0; }
+        if (!dos_mode) return 0;
+        int ddx = *dx - *x0, ddy = *dy - *y0;
+        int xr[4] = { *dx, *dy, *w, *h };
+        *x0 = p->dr[0]; *y0 = p->dr[1]; *w = p->dr[2]; *h = p->dr[3]; *dx = *x0 + ddx; *dy = *y0 + ddy;
+        int dr[4] = { *dx, *dy, *w, *h }; part_add(ds, xr, dr, true);
+        return 2; }
+    return 0;
+}
+static char ax_names[8][16]; static uint32_t ax_addr[8]; static int ax_n;   /* .ax animation files loaded, by address */
 int dosgfx_available(void);
 static int dos_mode, img_replaying, img_nolog;
 enum { NLOG = 96, OP_LOAD = 0, OP_COPY, OP_KEY, OP_BLEND, OP_FILL };
@@ -315,13 +342,15 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
     /* Port addition: small cache of decoded images. Some screens (CG gallery) reload the same sheet many times
        per frame; the PC decodes fast enough, the 3DS does not. */
     enum { NCACHE = 16, CACHE_BYTES = 28 << 20 };   /* menus reopen the same sheets (menu frames, save/load, gallery pages) */
-    static struct { char name[36]; gcc_image im; unsigned use; size_t bytes; bool dos; } cache[NCACHE]; static unsigned tick;
+    static struct { char name[36]; gcc_image im; unsigned use; size_t bytes; bool dos; int xr[4]; } cache[NCACHE]; static unsigned tick;
+    int xr[4] = { 0, 0, 0, 0 };
     gcc_image im; dst %= NSURF; int hit = -1; bool isdos = false;
     char key[36]; snprintf(key, sizeof key, "%s%s", dos_mode ? "D:" : "", name);
     for (int i = 0; i < NCACHE; i++) if (cache[i].im.bgr && !strcasecmp(cache[i].name, key)) { hit = i; break; }
     if (hit < 0) {
         size_t n; uint8_t *raw = arc_load(&vm->arc_bg, name, &n); if (!raw) { plat_log("missing image %s", name); return; }
         int rc = -1;
+        if (n >= 12) { xr[0] = rd16(raw + 4); xr[1] = rd16(raw + 6); xr[2] = rd16(raw + 8); xr[3] = rd16(raw + 10); }
         if (dos_mode && n >= 12) rc = dosgfx_make(name, rd16(raw + 8), rd16(raw + 10), raw[3] == 'm', &im);
         if (rc == 0) isdos = true; else rc = gcc_decode(raw, n, &im);
         free(raw); if (rc) return;
@@ -332,9 +361,9 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
             if (lru < 0) break; total -= cache[lru].bytes; free(cache[lru].im.bgr); free(cache[lru].im.alpha); memset(&cache[lru], 0, sizeof cache[lru]); }
         hit = 0; for (int i = 1; i < NCACHE; i++) if (!cache[i].im.bgr || (cache[hit].im.bgr && cache[i].use < cache[hit].use)) hit = i;
         free(cache[hit].im.bgr); free(cache[hit].im.alpha);
-        cache[hit].im = im; cache[hit].bytes = need; cache[hit].dos = isdos; snprintf(cache[hit].name, sizeof cache[hit].name, "%s", key);
+        cache[hit].im = im; cache[hit].bytes = need; cache[hit].dos = isdos; memcpy(cache[hit].xr, xr, sizeof xr); snprintf(cache[hit].name, sizeof cache[hit].name, "%s", key);
     }
-    cache[hit].use = ++tick; im = cache[hit].im; isdos = cache[hit].dos;
+    cache[hit].use = ++tick; im = cache[hit].im; isdos = cache[hit].dos; memcpy(xr, cache[hit].xr, sizeof xr);
     { int a[3] = { dst, ox, oy }; oplog(OP_LOAD, dst, a, 3, name, im.w * im.h >= SW * SH * 9 / 10); }   /* (for an instant DOS/Windows switch) */
     {
         int cx = im.x + (ox != -1 ? ox : 0), cy = im.y + (oy != -1 ? oy : 0);
@@ -351,12 +380,17 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
             for (int x = 0; x < im.aw; x++) { int dx = ax + x; if (INS(dst, dx, dy)) MSK(dst, dx, dy) = s[x]; } }
         int w = im.w, h = im.h; if (cx + w > sw[dst]) w = sw[dst] - cx; if (cy + h > sh[dst]) h = sh[dst] - cy;
         SET_SYS16(vm, 17, cx); SET_SYS16(vm, 18, cy); SET_SYS16(vm, 19, w > 0 ? w : 0); SET_SYS16(vm, 20, h > 0 ? h : 0);
+        if (im.w * im.h >= SW * SH * 9 / 10) { nparts[dst] = 0; base_dos[dst] = isdos; }
+        else { int x1[4] = { xr[0] + (ox != -1 ? ox : 0), xr[1] + (oy != -1 ? oy : 0), xr[2], xr[3] }, d1[4] = { cx, cy, im.w, im.h };
+            if (!isdos) memcpy(x1, d1, sizeof x1);
+            part_add(dst, x1, d1, isdos); }
     }
 }
 #define EACH(body) for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int sx = x0 + x, sy = y0 + y, tx = dx + x, ty = dy + y; if (!INS(ss, sx, sy) || !INS(ds, tx, ty)) continue; body }
 /* [EXE 0x41ae60] colour copy; with_mask adds [EXE 0x41b130] mask-plane copy */
 static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, int with_mask) {   /* with_mask 2: keep the destination's 3D layer */
     { int a[9] = { x0, y0, w, h, ss, dx, dy, ds, with_mask }; oplog(OP_COPY, ds, a, 9, NULL, w * h >= SW * SH * 9 / 10); }
+    if (dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds) == 1) return;
     ss %= NSURF; ds %= NSURF;
     bool patch = w * h < SW * SH * 9 / 10;          /* unmapped patch (animation frame) over a mapped picture keeps its depth */
     EACH(memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy);
@@ -365,12 +399,14 @@ static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int d
 /* [EXE 0x41af20] copy skipping the key colour (COLORREF); exact compare is assumed */
 static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer) {
     { int a[10] = { x0, y0, w, h, ss, dx, dy, ds, (int)key, keep_layer }; oplog(OP_KEY, ds, a, 10, NULL, false); }
+    { int r = dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds); if (r == 1) return; if (r == 2) key = 0x01000000; }   /* DOS pieces have no key colour */
     ss %= NSURF; ds %= NSURF; uint8_t kr = key, kg = key >> 8, kb = key >> 16;
     EACH(const uint8_t *s = PIX(ss, sx, sy); if (s[0] == kr && s[1] == kg && s[2] == kb) continue; memcpy(PIX(ds, tx, ty), s, 3); if (!keep_layer) DEP(ds, tx, ty) = dep_key(DEP(ss, sx, sy), DEP(ds, tx, ty));)
 }
 /* [EXE 0x41b640/0x41b310] blend src over dst through the source mask plane (0 = skip, 255 = copy) */
 static void gfx_blend(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds) {
     { int a[8] = { x0, y0, w, h, ss, dx, dy, ds }; oplog(OP_BLEND, ds, a, 8, NULL, false); }
+    if (dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds) == 1) return;
     ss %= NSURF; ds %= NSURF;
     EACH(int a = MSK(ss, sx, sy); if (!a) continue; const uint8_t *s = PIX(ss, sx, sy); uint8_t *d = PIX(ds, tx, ty); if (a >= 128) DEP(ds, tx, ty) = dep_sprite(DEP(ss, sx, sy), DEP(ds, tx, ty));
         if (a == 255) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; } else for (int c = 0; c < 3; c++) d[c] = (s[c] * a + d[c] * (255 - a)) / 255;)
@@ -378,6 +414,7 @@ static void gfx_blend(int x0, int y0, int w, int h, int ss, int dx, int dy, int 
 /* [EXE 0x41b390] fill; clear_mask adds [EXE 0x41b040] */
 static void gfx_fill(int x0, int y0, int w, int h, int s, uint32_t c, int clear_mask) {
     { int a[7] = { x0, y0, w, h, s, (int)c, clear_mask }; oplog(OP_FILL, s, a, 7, NULL, w * h >= SW * SH * 9 / 10); }
+    if (w * h >= SW * SH * 9 / 10) { nparts[s % NSURF] = 0; base_dos[s % NSURF] = false; }
     s %= NSURF;
     for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) { if (!INS(s, x, y)) continue;
         uint8_t *d = PIX(s, x, y); d[0] = c; d[1] = c >> 8; d[2] = c >> 16; DEP(s, x, y) = 0; if (clear_mask) MSK(s, x, y) = 0; }
@@ -571,11 +608,12 @@ static uint32_t *ini_slot(const char *sec, const char *key) {
 typedef struct { uint32_t state, base, ip, stall, wait, l1_ip, l1_cnt, l1_init, l2_ip, l2_cnt, l2_init; } anim_stream;
 static anim_stream anim[10][32]; static uint32_t anim_calls;   /* mem offset of draw-call table */
 enum { AN_RUN = 0, AN_STOPREQ = 1, AN_HALT = 0xFF };
-static void anim_reset(void) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) anim[a][b].state = AN_HALT; }
+static void anim_reset(void) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) anim[a][b].state = AN_HALT; dosgfx_anim_reset(); }
 static void anim_draw(vm_t *vm, uint32_t n) {
     img_nolog = 1;      /* animation frames are not part of what a DOS/Windows switch redraws */
     const uint8_t *r = vm->mem + ((anim_calls + n * 28) & (MEM_SIZE - 1)); uint32_t t = rd32(r);
     int sx = rd32(r + 4), sy = rd32(r + 8), w = rd32(r + 12), h = rd32(r + 16), dx = rd32(r + 20), dy = rd32(r + 24);
+    if (getenv("AI5_ANIMLOG")) plat_log("anim n=%u t=%u src %d,%d %dx%d -> %d,%d", n, t, sx, sy, w, h, dx, dy);
     /* [EXE 0x40f4e7 / 0x40f940] 0 = copy, 1 = green-key copy, 2 = nothing, 3/4 = sound effect (thunder), 5 = copy, 6 = full refresh */
     switch (t) {
     case 0: case 5: if (!dos_mode) gfx_copy(sx, sy, w, h, 1, dx, dy, 0, 2); break;        /* animation frames sit on whatever they cover (3D layer kept); the Windows frames don't fit the DOS pictures */
@@ -606,7 +644,9 @@ static void anim_tick_one(vm_t *vm, anim_stream *s) {
     default: anim_draw(vm, ARG()); break;
     }
 }
-static void anim_tick(vm_t *vm) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state != AN_HALT) anim_tick_one(vm, &anim[a][b]); }
+static void dos_put(int x, int y, const uint8_t rgb[3]) { if (!INS(0, x, y)) return; uint8_t *d = PIX(0, x, y); d[0] = rgb[0]; d[1] = rgb[1]; d[2] = rgb[2]; }
+static void anim_tick(vm_t *vm) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state != AN_HALT) anim_tick_one(vm, &anim[a][b]);
+    if (dos_mode) dosgfx_anim_frame(1.0 / 60.0, dos_put); }
 static bool frame(vm_t *vm) { if (snap_pending && !fx_left && (cur_loop < 0 || cur_loop == 100)) snap_on = snap_pending = false;
     anim_tick(vm);
     if (!plat_wants_composite()) { if (fx_left) fx_left--; return plat_frame(surf[0], SW, SH); }   /* 3DS draws from sys_scene_rgb / UI */
@@ -767,12 +807,17 @@ void sys_call(vm_t *vm, uint32_t fn) {
     switch (fn) {
     case 3: {                          /* [EXE 0x41fc20] */
         if (sub == 0) { uint32_t a = p[1].val % 10, b = p[2].val & 31, data = p[3].val & (MEM_SIZE - 1); anim_stream *st = &anim[a][b];
-            memset(st, 0, sizeof *st); st->state = AN_HALT; st->base = data + rd32(vm->mem + ((data + (a * 32 + b) * 4) & (MEM_SIZE - 1))); anim_calls = data + 0x500; return; }
+            memset(st, 0, sizeof *st); st->state = AN_HALT; st->base = data + rd32(vm->mem + ((data + (a * 32 + b) * 4) & (MEM_SIZE - 1))); anim_calls = data + 0x500;
+            if (getenv("AI5_ANIMLOG")) plat_log("anim init %u %u data=%x ax_n=%d first=%x", a, b, data, ax_n, ax_n ? ax_addr[0] : 0);
+            for (int i = 0; i < ax_n; i++) if (ax_addr[i] == data) dosgfx_anim_slot((int)a, ax_names[i]);   /* the DOS animation of the same name */
+            dosgfx_anim_ctl((int)a, (int)b, 0); return; }
         if (sub >= 1 && sub <= 5) { anim_stream *st = &anim[p[1].val % 10][p[2].val & 31];
+            dosgfx_anim_ctl((int)(p[1].val % 10), (int)(p[2].val & 31), (int)sub);
             if (sub == 1) st->state = AN_RUN; else if (sub == 2) st->state = AN_STOPREQ; else if (sub == 3) st->state = AN_HALT;
             else { st->state = AN_RUN;         /* [EXE 0x40f730] play and wait; sub 5 can be cancelled with key 1 */
                 while (st->state != AN_HALT && !vm->quit && !(SYS16(vm, 2) & 8)) { if (sub == 5 && plat_key(1)) { st->state = AN_HALT; break; } if (!frame(vm)) vm->quit = true; vm->steps = 0; } }
             return; }
+        if (sub == 6 || sub == 7) dosgfx_anim_ctl(0, 0, (int)sub);
         if (sub == 6) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state != AN_HALT) anim[a][b].state = AN_STOPREQ; return; }
         if (sub == 7) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) anim[a][b].state = AN_HALT; return; }
         if (sub == 8) {                /* [EXE 0x40f6a0] pause all at their next wait: running -> 3, wait until none is left in 3 */
@@ -786,7 +831,10 @@ void sys_call(vm_t *vm, uint32_t fn) {
     case 8:
         if (sub == 0) {                /* [EXE 0x41e2b0 partly read] load a DATA.ARC file (LZSS) to the address in p2 */
             size_t n; uint8_t *buf = arc_load_lzss(&vm->arc_data, p[1].str, &n); if (!buf) { plat_log("missing data %s", p[1].str); return; }
-            { size_t l = strlen(p[1].str); if (l > 3 && !strcasecmp(p[1].str + l - 3, ".a6")) snprintf(cur_a6, sizeof cur_a6, "%s", p[1].str); }
+            { size_t l = strlen(p[1].str); if (l > 3 && !strcasecmp(p[1].str + l - 3, ".a6")) snprintf(cur_a6, sizeof cur_a6, "%s", p[1].str);
+              if (l > 3 && !strcasecmp(p[1].str + l - 3, ".ax")) { int k = 0; while (k < ax_n && ax_addr[k] != (p[2].val & (MEM_SIZE - 1))) k++;
+                  if (k == ax_n) { if (ax_n < 8) ax_n++; else k = 7; }
+                  ax_addr[k] = p[2].val & (MEM_SIZE - 1); snprintf(ax_names[k], sizeof ax_names[k], "%s", p[1].str); } }
             uint32_t addr = p[2].val & (MEM_SIZE - 1); if (addr + n <= MEM_SIZE) memcpy(vm->mem + addr, buf, n); free(buf); return; }
         if (sub == 2) {                /* [guess] load library script and run its top level (defines lib procs) */
             size_t n; uint8_t *buf = arc_load_lzss(&vm->arc_mes, p[1].str, &n); if (!buf) { plat_log("missing %s", p[1].str); return; }
