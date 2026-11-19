@@ -194,6 +194,7 @@ bool sys_bottom_map(int bx, int by, int *x, int *y) {
     }
     *x = bx * 2; *y = by * 2; return false;
 }
+bool sys_popup_active(void) { return pop.on || dlg.on; }   /* title menu / confirmation dialog open (single-screen ports overlay sys_bottom_rgb) */
 const uint8_t *sys_bottom_rgb(void) {
     if (!pop.on && !dlg.on) return menu_bottom();
     for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { const uint8_t *a = surf[0] + ((y * 2) * SW + x * 2) * 3; uint8_t *d = bottom_buf + (y * 320 + x) * 3;

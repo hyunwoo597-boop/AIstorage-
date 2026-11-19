@@ -24,15 +24,28 @@ jobs:
             nonoxp.3dsx
             nonoxp.smdh
             nonoxp.elf
+  switch:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Switch libraries
+        run: for i in 1 2 3; do dkp-pacman -Sy --noconfirm --needed switch-dev switch-sdl2 switch-libvorbis switch-libogg && break; sleep 20; done
+      - name: Build
+        run: make -f Makefile.switch
+      - uses: actions/upload-artifact@v4
+        with: { name: nonoxp-switch, path: nonoxp.nro }
   # installable version (.cia): the same program wrapped with makerom, the icon and the moving 3D banner (ctr/banner.cgfx,
   # made for the DOS port on branch main). Game files stay on the SD card (sdmc:/3ds/nonoxp/).
   cia:
-    needs: build
+    needs: [build, switch]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { name: nonoxp-3dsx, path: out }
+      - uses: actions/download-artifact@v4
+        with: { name: nonoxp-switch, path: out }
       - name: Get makerom
         run: |
           set -e
@@ -70,7 +83,7 @@ jobs:
           ls -l out
       - name: Publish binaries to branch nonoxp-3ds-bin
         run: |
-          mkdir pub && cp out/nonoxp.3dsx out/nonoxp.smdh out/nonoxp.cia out/nonoxp_cia_maker.html pub/ && cd pub
+          mkdir pub && cp out/nonoxp.3dsx out/nonoxp.smdh out/nonoxp.cia out/nonoxp_cia_maker.html out/nonoxp.nro pub/ && cd pub
           git init -q
           git config user.name "github-actions"
           git config user.email "actions@github.com"
