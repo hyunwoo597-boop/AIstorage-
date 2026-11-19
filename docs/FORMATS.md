@@ -305,3 +305,9 @@
 - NSP 만들기 HTML(tools/nsp_maker): hacbrewpack 과 같은 구성을 브라우저에서. Program NCA(ExeFS PFS0 + RomFS IVFC 6단계 0x4000), Control NCA(control.nacp + 언어별 icon_*.dat), Meta NCA(Application_<id>.cnmt), 표준 암호(키 세대 0, key_area_key_application_00, 헤더 AES-XTS header_key, 섹션 AES-CTR), 서명 0(sigpatch 필요). 모든 해시 단계는 블록 배수로 채워 기록(마지막 블록 해석 차이 없음). prod.keys 는 사용자가 넣음.
 - 검사: tools/nsp_maker/check_nsp.py (cryptography 로 독립 복호화·해시 검증). 시험 키로 실제 게임 파일 NSP 315MB 생성 5초, 모든 해시·NCA ID·CNMT 기록 일치.
 - 37-1: 브라우저 Blob 한도 — 내장 NSP 는 입력(메모리로 꺼낸 CD 파일 ~300MB) + 암호화 결과(300MB)가 동시에 있어 Chrome 이 "file could not be read" 로 실패. VBlob(조각을 복사하지 않고 읽을 때만 읽는 이어붙이기)으로 CD 이미지 속 파일을 꺼내지 않고 바로 암호화 → 헤드리스 Chrome 291MB NSP 10초 성공, check_nsp.py 전 항목 OK. "작은 NSP"(약 5MB, RomFS 없음, 게임 파일은 SD) 선택 추가.
+
+## 38단계: 한글 대사 편집기 (tools/text_editor)
+- HTML 한 파일(휴대폰 가능). mes.arc 의 123개 스크립트를 LZSS 해제 → 명령 단위 해석(mesdis.py 규칙) → TXT 대사 19,721줄을 한글로 표시(NonoKR 지도 + 표준 Shift-JIS, 전각 문장부호·영숫자는 반각으로 보여 주고 저장 때 되돌림). 검색·파일별 보기·고친 것만·모두 바꾸기·원래대로, 편집 내용은 브라우저에 자동 보관.
+- 저장: 길이가 바뀐 대사가 있는 스크립트는 다시 조립(라벨 표, JZ/JMP/MENUI/PROCD/LIBDEF 주소를 새 위치로) → LZSS 재압축 → MES.ARC. 지도에 없는 한글은 대본에 안 쓰인 빈 한자 코드(약 5,200자리)에 배정하고 font16.bin 의 그 칸에 미리 그린 글꼴(11,172자, mkhangul.py, 게임 글꼴과 같은 Noto 렌더링)을 넣음. 추가 표는 font16.bin 끝에 "KMAP" u32 n, (u16 sjis, u16 유니코드)×n 으로 붙임(엔진은 칸 수만 읽으므로 무시). 다시 고칠 때 mes.arc + font16.bin 을 함께 불러오면 이어서 편집.
+- 검증: 전 대사 해석→되돌리기 바이트 동일 19,721/19,721, 무편집 재조립 동일, 편집본 mesdis.py 로 123파일 모든 점프 정상, 헤드리스 엔진에서 새 글자(뷁, 똠) 포함 대사 정상 표시·진행.
+- PC판(NonoKR.dll)은 추가 글자를 모름 — 3DS·스위치 포트용.

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>노노무라 병원의 사람들 — 한글 대사 편집기</title>
+<style>
+:root { --bg:#f4f1ea; --card:#fffdf8; --ink:#1f2328; --sub:#667079; --line:#d9d3c5; --acc:#b3261e; --ok:#1d6b3a; --warn:#8a5a00; --chip:#ece7da; --edit:#fff4d6; }
+@media (prefers-color-scheme: dark) { :root { --bg:#15171a; --card:#1e2125; --ink:#e8e6e1; --sub:#9aa3ab; --line:#33383e; --acc:#e0574e; --ok:#6fcf8f; --warn:#e3b35a; --chip:#2a2e33; --edit:#3a3320; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; padding-bottom:84px; }
+main { max-width:720px; margin:0 auto; padding:16px 12px; }
+h1 { font-size:20px; margin:4px 0 2px; } .sub { color:var(--sub); font-size:13px; margin:0 0 12px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px; margin:10px 0; }
+.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+input[type=text], select { font:inherit; padding:9px 10px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--ink); }
+input[type=text] { flex:1; min-width:0; }
+button { font:inherit; padding:9px 14px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--ink); }
+button.pri { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600; }
+label.file { display:inline-block; padding:8px 12px; border:1px dashed var(--line); border-radius:10px; color:var(--sub); font-size:14px; cursor:pointer; }
+label.file input { display:none; }
+.item { border-top:1px solid var(--line); padding:10px 0; }
+.item:first-child { border-top:0; }
+.meta { font-size:12px; color:var(--sub); display:flex; justify-content:space-between; }
+.orig { font-size:13px; color:var(--sub); margin:2px 0 4px; white-space:pre-wrap; word-break:break-all; }
+textarea { width:100%; font:inherit; padding:8px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--ink); resize:vertical; min-height:44px; }
+textarea.edited { background:var(--edit); border-color:var(--warn); }
+.note { font-size:12px; margin-top:3px; } .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--acc); }
+mark { background:#ffe066; color:#000; border-radius:3px; }
+.bar { position:fixed; left:0; right:0; bottom:0; background:var(--card); border-top:1px solid var(--line); padding:10px 12px; }
+.bar .in { max-width:720px; margin:0 auto; display:flex; gap:8px; align-items:center; }
+.bar .count { flex:1; font-size:14px; color:var(--sub); }
+#dl a { display:block; margin:6px 0; padding:12px; border-radius:10px; background:var(--ok); color:#fff; text-decoration:none; text-align:center; font-weight:600; }
+small { color:var(--sub); }
+</style>
+</head>
+<body>
+<main>
+<h1>한글 대사 편집기</h1>
+<p class="sub">노노무라 병원의 사람들 XP 한글 패치(mes.arc)의 대사를 찾아 고치고, 고친 파일을 받습니다. 모든 처리는 이 기기 안에서만 합니다. · __INFO__</p>
+
+<div class="card">
+  <div id="src" class="sub" style="margin:0 0 6px"></div>
+  <div class="row">
+    <label class="file">다른 mes.arc 불러오기<input type="file" id="inMes"></label>
+    <label class="file">다른 font16.bin 불러오기<input type="file" id="inFont"></label>
+  </div>
+  <small>처음에는 도구에 들어 있는 한글 패치를 씁니다. 이 도구로 저장한 파일을 다시 고치려면 mes.arc 와 font16.bin 을 둘 다 불러오세요(새로 추가한 글자 정보가 font16.bin 에 들어 있습니다).</small>
+</div>
+
+<div class="card">
+  <div class="row"><input type="text" id="q" placeholder="찾을 말 (예: 사쿠지, 병원)"><select id="file"><option value="">모든 파일</option></select></div>
+  <div class="row" style="margin-top:8px"><label><input type="checkbox" id="onlyEdited"> 고친 것만</label><span id="hits" class="sub"></span></div>
+  <details style="margin-top:8px"><summary>모두 바꾸기</summary>
+    <div class="row" style="margin-top:8px"><input type="text" id="from" placeholder="바꿀 말"><input type="text" id="to" placeholder="새 말"></div>
+    <div class="row" style="margin-top:8px"><button id="replAll">위 검색 결과 안에서 모두 바꾸기</button><span id="replMsg" class="sub"></span></div>
+  </details>
+</div>
+
+<div class="card" id="list"></div>
+<div style="text-align:center"><button id="more" style="display:none">더 보기</button></div>
+
+<div class="card" id="dlCard" style="display:none"><b>저장된 파일</b><div id="dl"></div>
+  <small>3DS·스위치: SD 카드 게임 폴더(3ds/nonoxp/ 또는 switch/nonoxp/)에 MES.ARC 와 font16.bin 을 덮어쓰면 바로 적용됩니다(설치판도 SD 의 파일을 먼저 씁니다). 고친 장면에서 만든 예전 저장 파일은 그 장면 안에서 불러오면 위치가 어긋날 수 있으니 장면 처음부터 다시 보세요.</small></div>
+</main>
+<div class="bar"><div class="in"><span class="count" id="cnt">고친 대사 0개</span><button class="pri" id="save">저장하기</button></div></div>
+
+<script id="mesdata" type="application/octet-stream">__MES64__</script>
+<script id="fontdata" type="application/octet-stream">__FONT64__</script>
+<script id="mapdata" type="application/json">__MAPJSON__</script>
+<script id="hangul" type="application/octet-stream">__HANGUL64__</script>
+<script>
+/*__CORE__*/
+</script>
+<script>
+'use strict';
+var $ = function (id) { return document.getElementById(id); };
+function b64(s) { s = s.replace(/\s+/g, ''); var bin = atob(s), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+function esc(s) { return s.replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+var E = EditCore, files = [], lines = [], T = null, baseMap = JSON.parse($('mapdata').textContent), added = [], font = null, HANGUL = null;
+var edits = {};   /* key "파일#명령번호" → 새 글 */
+var LSKEY = 'nonoxp-edit-v1';
+
+function readKmap(f) {   /* font16.bin 뒤에 붙인 추가 글자 표: "KMAP" u32 n, (u16 sjis, u16 unicode) x n */
+    var cells = f[8] | (f[9] << 8) | (f[10] << 16) | (f[11] << 24), end = 12 + cells * 128, out = [];
+    if (f.length >= end + 8 && f[end] === 0x4B && f[end + 1] === 0x4D && f[end + 2] === 0x41 && f[end + 3] === 0x50) {
+        var n = f[end + 4] | (f[end + 5] << 8); for (var i = 0; i < n; i++) { var o = end + 8 + i * 4; out.push([f[o] | (f[o + 1] << 8), f[o + 2] | (f[o + 3] << 8)]); } }
+    return out;
+}
+var freeCodes = [];
+function load(mes, fnt, label) {
+    font = fnt; added = readKmap(fnt); T = E.makeTables(baseMap.concat(added));
+    files = E.arcRead(mes).map(function (e) { var d = E.lzssDecode(e.raw); return { name: e.name, raw: e.raw, d: d, pm: E.parseMes(d) }; });
+    lines = []; var usedCodes = new Set();
+    files.forEach(function (f, fi) { f.pm.st.forEach(function (r, si) { if (!r.text) return; var b = f.d.subarray(r.text[0], r.text[1]);
+        for (var i = 0; i + 1 < b.length; i++) if (b[i] >= 0x81) { usedCodes.add(b[i] << 8 | b[i + 1]); i++; }
+        if (r.op === 1) lines.push({ fi: fi, si: si, key: f.name + '#' + si, text: E.decodeText(b, T) }); }); });
+    /* 새 글자를 넣을 빈 자리: 한자 영역에서 한글 지도·추가 표·대본에 안 쓰인 코드 */
+    var taken = new Set(baseMap.map(function (m) { return m[0]; }).concat(added.map(function (m) { return m[0]; })));
+    freeCodes = [];
+    var leads = []; for (var l = 0x88; l <= 0x9F; l++) leads.push(l); for (l = 0xE0; l <= 0xEA; l++) leads.push(l);
+    leads.forEach(function (l) { for (var t = 0x40; t <= 0xFC; t++) { var c = l << 8 | t; if (t === 0x7F || taken.has(c) || usedCodes.has(c) || !T.dec.has(c)) continue; freeCodes.push(c); } });
+    var sel = $('file'); sel.innerHTML = '<option value="">모든 파일</option>' + files.filter(function (f) { return f.pm.st.some(function (r) { return r.op === 1; }); }).map(function (f) { return '<option>' + f.name + '</option>'; }).join('');
+    try { var saved = JSON.parse(localStorage.getItem(LSKEY) || '{}'); if (saved.src === label) edits = saved.edits || {}; else edits = {}; } catch (e) { edits = {}; }
+    $('src').textContent = '불러온 파일: ' + label + ' · 대사 ' + lines.length + '줄 · 새 글자를 넣을 수 있는 자리 ' + freeCodes.length + '개';
+    srcLabel = label; render(true); count();
+}
+var srcLabel = '';
+function persist() { try { localStorage.setItem(LSKEY, JSON.stringify({ src: srcLabel, edits: edits })); } catch (e) {} }
+function count() { $('cnt').textContent = '고친 대사 ' + Object.keys(edits).length + '개'; }
+
+/* 글 검사: 쓸 수 없는 글자 / 새로 추가될 한글 */
+function check(s) {
+    var bad = [], nw = [];
+    for (var i = 0; i < s.length; i++) { var ch = s[i]; if (ch === '{') { var e = s.indexOf('}', i); if (e > i) { i = e; continue; } }
+        var t = ch; if (t === ' ' || /[0-9A-Za-z.,?!()\[\]~:;\-+=%&\/_'"]/.test(t)) continue;
+        if (T.enc.has(t)) continue;
+        if (t >= '가' && t <= '힣') { if (nw.indexOf(t) < 0) nw.push(t); } else if (bad.indexOf(t) < 0) bad.push(t); }
+    return { bad: bad, nw: nw };
+}
+var shown = 0, PAGE = 60, filtered = [];
+function render(reset) {
+    var q = $('q').value.trim(), fsel = $('file').value, only = $('onlyEdited').checked;
+    if (reset) { filtered = lines.filter(function (L) { var cur = edits[L.key] !== undefined ? edits[L.key] : L.text;
+        if (fsel && files[L.fi].name !== fsel) return false; if (only && edits[L.key] === undefined) return false;
+        return !q || cur.indexOf(q) >= 0 || L.text.indexOf(q) >= 0; }); shown = 0; $('list').innerHTML = ''; }
+    $('hits').textContent = '  ' + filtered.length + '줄';
+    var frag = document.createDocumentFragment(), end = Math.min(filtered.length, shown + PAGE);
+    for (var i = shown; i < end; i++) frag.appendChild(itemEl(filtered[i], q));
+    $('list').appendChild(frag); shown = end; $('more').style.display = shown < filtered.length ? '' : 'none';
+    if (!filtered.length) $('list').innerHTML = '<div class="sub">찾은 대사가 없습니다.</div>';
+}
+function hl(s, q) { if (!q) return esc(s); return s.split(q).map(esc).join('<mark>' + esc(q) + '</mark>'); }
+function itemEl(L, q) {
+    var div = document.createElement('div'); div.className = 'item';
+    var cur = edits[L.key] !== undefined ? edits[L.key] : L.text;
+    div.innerHTML = '<div class="meta"><span>' + files[L.fi].name + ' · ' + L.si + '</span><span class="rv"></span></div><div class="orig">' + hl(L.text, q) + '</div><textarea rows="2"></textarea><div class="note"></div>';
+    var ta = div.querySelector('textarea'), note = div.querySelector('.note'), rv = div.querySelector('.rv'); ta.value = cur;
+    function upd() { var v = ta.value.replace(/\n/g, ' ');
+        if (v === L.text) delete edits[L.key]; else edits[L.key] = v;
+        ta.classList.toggle('edited', edits[L.key] !== undefined);
+        var c = check(v), m = [];
+        if (c.nw.length) m.push('<span class="warn">새 글자 추가: ' + esc(c.nw.join(' ')) + '</span>');
+        if (c.bad.length) m.push('<span class="bad">쓸 수 없는 글자(빠짐): ' + esc(c.bad.join(' ')) + '</span>');
+        note.innerHTML = m.join(' · ');
+        rv.innerHTML = edits[L.key] !== undefined ? '<a href="#" style="color:var(--acc)">원래대로</a>' : '';
+        var a = rv.querySelector('a'); if (a) a.onclick = function (ev) { ev.preventDefault(); ta.value = L.text; upd(); };
+        persist(); count(); }
+    ta.oninput = upd; upd();
+    ta.style.height = 'auto'; setTimeout(function () { ta.style.height = Math.max(44, ta.scrollHeight + 2) + 'px'; }, 0);
+    return div;
+}
+$('q').oninput = function () { clearTimeout(this._t); this._t = setTimeout(function () { render(true); }, 200); };
+$('file').onchange = $('onlyEdited').onchange = function () { render(true); };
+$('more').onclick = function () { render(false); };
+$('replAll').onclick = function () {
+    var a = $('from').value, b = $('to').value, n = 0; if (!a) return;
+    filtered.forEach(function (L) { var cur = edits[L.key] !== undefined ? edits[L.key] : L.text; if (cur.indexOf(a) < 0) return; var v = cur.split(a).join(b); if (v === L.text) delete edits[L.key]; else edits[L.key] = v; n++; });
+    $('replMsg').textContent = n + '줄 바꿈'; persist(); count(); render(true);
+};
+
+$('save').onclick = function () {
+    var keys = Object.keys(edits); if (!keys.length) { alert('고친 대사가 없습니다.'); return; }
+    if (!HANGUL) HANGUL = b64($('hangul').textContent);
+    var newAdds = [], fi = 0;
+    var alloc = function (ch) { if (fi >= freeCodes.length) return undefined; var c = freeCodes[fi++]; T.enc.set(ch, c); T.dec.set(c, ch); newAdds.push([c, ch.codePointAt(0)]); return c; };
+    var byFile = {}, bad = [];
+    lines.forEach(function (L) { if (edits[L.key] === undefined) return; (byFile[L.fi] = byFile[L.fi] || {})[L.si] = E.encodeText(edits[L.key], T, alloc, bad); });
+    var out = files.map(function (f, i) { if (!byFile[i]) return { name: f.name, raw: f.raw };
+        var nd = E.rebuildMes(f.d, f.pm, byFile[i]); return { name: f.name, raw: E.lzssEncode(nd) }; });
+    var mes = E.arcWrite(out);
+    freeCodes = freeCodes.slice(fi);   /* 쓴 자리는 다음 저장 때 다시 쓰지 않음 */
+    /* font16.bin: 새 글자 그리기 + 추가 표 */
+    var cells = font[8] | (font[9] << 8) | (font[10] << 16) | (font[11] << 24), all = added.concat(newAdds);
+    var nf = new Uint8Array(12 + cells * 128 + 8 + all.length * 4); nf.set(font.subarray(0, 12 + cells * 128));
+    nf[6] |= 1;
+    newAdds.forEach(function (m) { var idx = E.glyphIndex(m[0]); if (idx < cells) nf.set(HANGUL.subarray((m[1] - 0xAC00) * 128, (m[1] - 0xAC00) * 128 + 128), 12 + idx * 128); });
+    var o = 12 + cells * 128; nf.set([0x4B, 0x4D, 0x41, 0x50], o); nf[o + 4] = all.length & 255; nf[o + 5] = all.length >> 8;
+    all.forEach(function (m, i) { var p = o + 8 + i * 4; nf[p] = m[0] & 255; nf[p + 1] = m[0] >> 8; nf[p + 2] = m[1] & 255; nf[p + 3] = m[1] >> 8; });
+    added = all; font = nf;
+    $('dl').innerHTML = '<a download="MES.ARC" href="' + URL.createObjectURL(new Blob([mes])) + '">MES.ARC 받기</a><a download="font16.bin" href="' + URL.createObjectURL(new Blob([nf])) + '">font16.bin 받기</a>' +
+        '<div class="sub">고친 대사 ' + keys.length + '줄' + (newAdds.length ? ' · 새 글자 ' + newAdds.length + '개 추가' : '') + (bad.length ? ' · 빠진 글자: ' + esc(bad.join(' ')) : '') + '</div>';
+    $('dlCard').style.display = ''; $('dlCard').scrollIntoView({ behavior: 'smooth' });
+};
+async function pick(inp) { var f = inp.files[0]; return f ? { name: f.name, data: new Uint8Array(await f.arrayBuffer()) } : null; }
+var curMes = null, curFont = null;
+$('inMes').onchange = async function () { var p = await pick(this); if (!p) return; curMes = p; try { load(curMes.data, curFont ? curFont.data : font, p.name); } catch (e) { alert('mes.arc 를 읽을 수 없습니다: ' + e.message); } };
+$('inFont').onchange = async function () { var p = await pick(this); if (!p) return; curFont = p; try { load(curMes ? curMes.data : b64($('mesdata').textContent), curFont.data, (curMes ? curMes.name : '내장 한글 패치') + ' + ' + p.name); } catch (e) { alert('font16.bin 을 읽을 수 없습니다: ' + e.message); } };
+load(b64($('mesdata').textContent), b64($('fontdata').textContent), '내장 한글 패치');
+</script>
+</body>
+</html>
