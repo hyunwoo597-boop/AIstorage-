@@ -68,7 +68,7 @@ int vp_play(const char *name) {
     if (fseek(arc, (long)ents[e].off, SEEK_SET) || fread(clip, 1, ents[e].size, arc) != ents[e].size) { free(clip); clip = NULL; return 0; }
     clip_len = ents[e].size; clip_pos = 0;
     ov_callbacks cb = { m_read, m_seek, m_close, m_tell };
-    if (ov_open_callbacks(NULL, &vf, NULL, 0, cb) != 0) { free(clip); clip = NULL; return 0; }
+    if (ov_open_callbacks(&clip_pos, &vf, NULL, 0, cb) != 0)   /* the datasource must not be NULL: (Tremor) vorbisfile reads nothing from a NULL source */ { free(clip); clip = NULL; return 0; }
     vorbis_info *vi = ov_info(&vf, -1);
     channels = vi->channels; if (channels < 1 || channels > 2) { ov_clear(&vf); free(clip); clip = NULL; return 0; }
     ndspChnReset(VCH);

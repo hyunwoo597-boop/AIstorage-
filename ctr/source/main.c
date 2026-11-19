@@ -1140,7 +1140,7 @@ int main(void) {
             }
             static int logn;
             if (logn < 40 || (logn % 10) == 0)
-                LOG("speed=%.0f%% busy=%.0f%% maxfr=%.0fms adj=%+.2f%% exec=%.2f MIPS skip=%.0f%% aq=%dms lead=%d under=%u drop=%u ips=%u mouse=%d,%d unhandled=%u glyphs=%d tc=%d pc=%04X:%04X mode=%02X vdirty=%u", ratio * 100, busy * 100, stat_maxfr, pace_adj * 100.0, stat_mips, stat_skip * 100, (int)(audio_total_frames(m) * 1000ull / AUD_RATE), (int)(lead_s * 1000), aud_underruns, aud_dropped, m->ips, m->mouse_x, m->mouse_y, (unsigned)m->stat_unhandled, last_glyphs, textcap_active(m), m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, (unsigned)m->vga.dirty);
+                LOG("speed=%.0f%% busy=%.0f%% maxfr=%.0fms adj=%+.2f%% exec=%.2f MIPS skip=%.0f%% aq=%dms lead=%d under=%u drop=%u ips=%u mouse=%d,%d unhandled=%u glyphs=%d tc=%d pc=%04X:%04X mode=%02X vdirty=%u voice=%u/%u/%u", ratio * 100, busy * 100, stat_maxfr, pace_adj * 100.0, stat_mips, stat_skip * 100, (int)(audio_total_frames(m) * 1000ull / AUD_RATE), (int)(lead_s * 1000), aud_underruns, aud_dropped, m->ips, m->mouse_x, m->mouse_y, (unsigned)m->stat_unhandled, last_glyphs, textcap_active(m), m->cpu.seg[CS], m->cpu.ip, m->vga.bios_mode, (unsigned)m->vga.dirty, voice_fired(m), voice_ok, voice_fail);
             if (m->con_len) { static int lastcl; if (m->con_len != lastcl) { LOG("console: %s", m->con); lastcl = m->con_len; } }
             logn++;
             win_t0 = now; win_busy = 0; win_v0 = machine_vtime_ns(m); win_i0 = m->icount; win_s0 = m->skipped_total; win_frames = 0;
