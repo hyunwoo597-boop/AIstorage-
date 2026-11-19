@@ -60,6 +60,13 @@ code { font-family:ui-monospace, Menlo, Consolas, monospace; font-size:.92em; }
     <div class="picked" id="pickedKor" hidden></div>
   </section>
 
+  <section class="card">
+    <div class="step"><span class="num">3</span>음성 <span class="opt">선택 사항</span></div>
+    <p class="hint">윈도우판(노노무라 병원의 사람들 XP)의 <code>VOICE.ARC</code> 를 넣으면 대사에 음성이 나옵니다. <code>VOICE.ARC</code> 파일 하나, 또는 윈도우판 CD 이미지(<b>Disc.zip + Disc.z01</b> 둘 다, 또는 <b>.img / .iso / .bin</b>)를 고르세요. 약 120 MB 가 더해집니다.</p>
+    <label class="pick" id="dropVoice">여기를 눌러 VOICE.ARC 또는 CD 이미지 고르기<input type="file" id="inVoice" multiple></label>
+    <div class="picked" id="pickedVoice" hidden></div>
+  </section>
+
   <section class="card" id="listCard" hidden>
     <div class="step">CIA 에 들어갈 파일</div>
     <table id="list"></table>
@@ -78,7 +85,7 @@ code { font-family:ui-monospace, Menlo, Consolas, monospace; font-size:.92em; }
       <summary>설치와 실행</summary>
       <ol class="how">
         <li>만든 CIA 를 SD 카드에 넣고 FBI 등으로 설치합니다. (커스텀 펌웨어가 설치된 New 3DS)</li>
-        <li>처음 실행하면 들어 있는 게임 파일을 <code>SD:/3ds/nonomura/</code> 로 복사합니다. 몇 초 걸립니다.</li>
+        <li>처음 실행하면 들어 있는 게임 파일을 <code>SD:/3ds/nonomura/</code> 로 복사합니다. 몇 초 걸립니다. (음성 파일은 복사하지 않고 CIA 안에서 바로 읽습니다)</li>
         <li>세이브는 그 폴더에 저장됩니다. 이미 있는 파일은 덮어쓰지 않으므로 다시 설치해도 세이브는 남습니다.</li>
       </ol>
     </details>
@@ -98,11 +105,14 @@ code { font-family:ui-monospace, Menlo, Consolas, monospace; font-size:.92em; }
 /*__CORE__*/
 </script>
 <script>
+/*__XPCORE__*/
+</script>
+<script>
 (function () {
 'use strict';
 var $ = function (id) { return document.getElementById(id); };
 var MAX_FILES = 64;
-var sets = { game: null, kor: null }, customBase = null, merged = [], lastUrl = null;
+var sets = { game: null, kor: null }, customBase = null, merged = [], lastUrl = null, voice = null;
 $('baseInfo').textContent = '__BASEINFO__';
 
 function fmt(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B'; }
@@ -151,8 +161,13 @@ function refresh() {
         if (f.from === 'kor') { var s = document.createElement('span'); s.className = 'tag'; s.textContent = f.replaced ? '번역으로 교체' : '번역 추가'; a.appendChild(s); }
         b.textContent = fmt(f.data.length);
     });
+    if (voice) {
+        var tv = t.insertRow(), va = tv.insertCell(), vbx = tv.insertCell();
+        va.textContent = 'VOICE.ARC'; var sv = document.createElement('span'); sv.className = 'tag'; sv.textContent = '음성'; va.appendChild(sv);
+        vbx.textContent = fmt(voice.size); total += voice.size;
+    }
     $('listCard').hidden = !merged.length;
-    $('sum').textContent = '파일 ' + merged.length + '개 · ' + fmt(total);
+    $('sum').textContent = '파일 ' + (merged.length + (voice ? 1 : 0)) + '개 · ' + fmt(total);
     $('skip').hidden = !skipped.length;
     $('skip').textContent = skipped.length ? '넣지 않은 파일 ' + skipped.length + '개 (다른 폴더에 있거나 DOS 파일 이름이 아님): ' + skipped.slice(0, 8).join(', ') + (skipped.length > 8 ? ' …' : '') : '';
     var err = '';
@@ -189,6 +204,32 @@ function wire(key, inputId, pickedId, dropId) {
 wire('game', 'inGame', 'pickedGame', 'dropGame');
 wire('kor', 'inKor', 'pickedKor', 'dropKor');
 
+/* 음성: VOICE.ARC 하나, 또는 윈도우판 CD 이미지(분할 zip / img·iso·bin)에서 꺼낸다 (내용은 필요할 때 조금씩 읽는다) */
+function takeVoice(list) {
+    var fl = Array.prototype.slice.call(list || []), box = $('pickedVoice'), inp = $('inVoice');
+    if (!fl.length) return;
+    say('음성 파일을 찾는 중…');
+    XpCore.findGame(fl.map(function (f) { return { name: f.name, blob: f }; })).then(async function (found) {
+        var v = found['VOICE.ARC'];
+        if (!v) throw new Error('VOICE.ARC 를 찾지 못했습니다. 윈도우판 CD 이미지는 분할 zip 두 개(Disc.zip, Disc.z01)를 함께 고르세요.');
+        var h = new Uint8Array(await v.slice(0, 32).arrayBuffer());
+        if (!(h[4] === 0x4f && h[5] === 0x56)) {      /* 첫 항목 이름 OV1_01.OGG 확인 */
+            var n = h[0] | h[1] << 8; if (n < 1000) throw new Error('VOICE.ARC 내용이 예상과 다릅니다');
+        }
+        voice = v;
+        box.hidden = false; box.textContent = 'VOICE.ARC (' + fmt(v.size) + ') 넣음';
+        var c = document.createElement('button'); c.className = 'clear'; c.textContent = '지우기';
+        c.onclick = function (e) { e.preventDefault(); voice = null; box.hidden = true; inp.value = ''; refresh(); };
+        box.appendChild(c);
+        say(''); refresh();
+    }).catch(function (e) { voice = null; inp.value = ''; refresh(); say(e.message || String(e), 'err'); });
+}
+$('inVoice').addEventListener('change', function () { takeVoice(this.files); });
+(function () { var d = $('dropVoice');
+    d.addEventListener('dragover', function (e) { e.preventDefault(); d.classList.add('over'); });
+    d.addEventListener('dragleave', function () { d.classList.remove('over'); });
+    d.addEventListener('drop', function (e) { e.preventDefault(); d.classList.remove('over'); takeVoice(e.dataTransfer.files); }); })();
+
 $('inBase').addEventListener('change', function () {
     var f = this.files[0], box = $('pickedBase'), self = this;
     if (!f) return;
@@ -207,13 +248,18 @@ function embeddedBase() {
 $('go').addEventListener('click', function () {
     var btn = this; btn.disabled = true; $('save').hidden = true;
     say('CIA 를 만드는 중…');
-    setTimeout(function () {
+    setTimeout(async function () {
         try {
-            var out = CiaCore.buildCia(customBase || embeddedBase(), merged.map(function (f) { return { name: f.name, data: f.data }; }));
+            var files = merged.map(function (f) { return { name: f.name, data: f.data }; }), blob;
+            if (voice) {            /* 큰 파일: 조각(Blob) 단위로 만들어 메모리를 적게 쓴다 */
+                files.push({ name: 'VOICE.ARC', data: voice });
+                blob = await XpCore.buildCia(customBase || embeddedBase(), files, function (f, t) { say((t || 'CIA 를 만드는 중') + '… ' + Math.round(f * 100) + '%'); });
+            } else blob = new Blob([CiaCore.buildCia(customBase || embeddedBase(), files)], { type: 'application/octet-stream' });
             if (lastUrl) URL.revokeObjectURL(lastUrl);
-            lastUrl = URL.createObjectURL(new Blob([out], { type: 'application/octet-stream' }));
-            var a = $('save'); a.href = lastUrl; a.download = 'nonomura_게임포함.cia';
-            a.textContent = 'nonomura_게임포함.cia 저장 (' + fmt(out.length) + ')'; a.hidden = false;
+            lastUrl = URL.createObjectURL(blob);
+            var name = voice ? 'nonomura_게임포함_음성.cia' : 'nonomura_게임포함.cia';
+            var a = $('save'); a.href = lastUrl; a.download = name;
+            a.textContent = name + ' 저장 (' + fmt(blob.size) + ')'; a.hidden = false;
             say('완성했습니다. 아래 버튼을 눌러 저장하세요.', 'ok');
         } catch (e) { say('만들지 못했습니다: ' + (e.message || e), 'err'); }
         btn.disabled = false;

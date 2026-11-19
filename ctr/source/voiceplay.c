@@ -25,9 +25,9 @@ static int m_close(void *ds) { (void)ds; return 0; }
 static long m_tell(void *ds) { (void)ds; return (long)clip_pos; }
 
 int vp_init(const char *gdir) {
-    /* the game folder first, then the folder of the Windows-version 3DS port (it uses the very same VOICE.ARC) */
+    /* the game folder first, then the CIA's own RomFS, then the folder of the Windows-version 3DS port (it uses the very same VOICE.ARC) */
     char p[300]; const char *nm[] = { "VOICE.ARC", "voice.arc", "Voice.arc", NULL };
-    const char *dirs[] = { gdir, "sdmc:/3ds/nonoxp", NULL };
+    const char *dirs[] = { gdir, "romfs:", "sdmc:/3ds/nonoxp", NULL };      /* romfs: a CIA made with the voice file inside */
     for (int d = 0; dirs[d] && !arc; d++)
         for (int i = 0; nm[i] && !arc; i++) { snprintf(p, sizeof p, "%s/%s", dirs[d], nm[i]); arc = fopen(p, "rb"); }
     if (!arc) return 0;

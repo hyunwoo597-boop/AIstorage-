@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <math.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -875,6 +876,8 @@ static int copy_file(const char *from, const char *to) {
     if (rename(part, to) != 0) { remove(part); return -1; }
     return 0;
 }
+/* VOICE.ARC (Windows-version voice clips, 120 MB) is not copied: it is played straight from the RomFS, which then stays mounted */
+static int romfs_kept;
 static int install_embedded_files(const char *existing_dir) {
     if (R_FAILED(romfsInit())) return 0;
     int result = 0;
@@ -882,7 +885,11 @@ static int install_embedded_files(const char *existing_dir) {
     DIR *d = opendir(ROMFS_ROOT);
     if (d) {
         struct dirent *e;
-        while ((e = readdir(d)) && nn < 64) if (e->d_name[0] != '.' && strlen(e->d_name) < 64) snprintf(names[nn++], 64, "%s", e->d_name);
+        while ((e = readdir(d)) && nn < 64) {
+            if (e->d_name[0] == '.' || strlen(e->d_name) >= 64) continue;
+            if (!strcasecmp(e->d_name, "VOICE.ARC")) { romfs_kept = 1; continue; }
+            snprintf(names[nn++], 64, "%s", e->d_name);
+        }
         closedir(d);
     }
     const char *dir = existing_dir ? existing_dir : GAME_DIRS[0];
@@ -899,7 +906,7 @@ static int install_embedded_files(const char *existing_dir) {
             done++;
         }
     }
-    romfsExit();
+    if (!romfs_kept) romfsExit();
     return result;
 }
 

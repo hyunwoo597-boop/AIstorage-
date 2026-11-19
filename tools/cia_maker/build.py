@@ -12,9 +12,10 @@ cia = open(sys.argv[1], 'rb').read()
 info = sys.argv[3] if len(sys.argv) > 3 else '%d KB' % (len(cia) // 1024)
 html = open(os.path.join(here, 'template.html'), encoding='utf-8').read()
 core = open(os.path.join(here, 'ciacore.js'), encoding='utf-8').read()
-assert '</script' not in core
+xpcore = open(os.path.join(here, 'xpcore.js'), encoding='utf-8').read()   # Blob 단위 CIA 생성 + CD 이미지 읽기 (음성 파일용, XP 판 도구와 같은 코드)
+assert '</script' not in core and '</script' not in xpcore
 b64 = base64.b64encode(cia).decode()
 b64 = '\n'.join(b64[i:i + 120] for i in range(0, len(b64), 120))
-html = html.replace('/*__CORE__*/', core).replace('__BASEINFO__', info).replace('__BASE64__', b64)
+html = html.replace('/*__CORE__*/', core).replace('/*__XPCORE__*/', xpcore).replace('__BASEINFO__', info).replace('__BASE64__', b64)
 open(sys.argv[2], 'w', encoding='utf-8').write(html)
 print('%s: %d bytes' % (sys.argv[2], len(html.encode())))
