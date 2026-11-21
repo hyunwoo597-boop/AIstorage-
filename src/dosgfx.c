@@ -135,8 +135,8 @@ static void cv_put(void *ctx, int x, int y, const uint8_t *rgb) { Canvas *c = ct
     if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return; uint8_t *d = c->bgr + ((size_t)(c->ch - 1 - y) * c->cw + x) * 3; d[0] = rgb[2]; d[1] = rgb[1]; d[2] = rgb[0]; }
 static void cv_alpha(void *ctx, int x, int y, int a) { Canvas *c = ctx; x -= c->ox; y -= c->oy;
     if (!c->alpha || x < 0 || y < 0 || x >= c->cw || y >= c->ch) return; c->alpha[(size_t)(c->ch - 1 - y) * c->cw + x] = (uint8_t)a; }
-static void paint(const Gp4 *g, int key8, Canvas *cv) {
-    uint8_t *rgba = smooth(g, g->x, g->y, g->w, g->h, NULL, key8); if (!rgba) return;
+static void paint(const Gp4 *g, int key8, Canvas *cv, const uint8_t *transp) {
+    uint8_t *rgba = smooth(g, g->x, g->y, g->w, g->h, transp, key8); if (!rgba) return;
     put_scaled(rgba, g->w, g->h, g->x, g->y, cv_put, cv, cv->alpha ? cv_alpha : NULL);
     free(rgba);
 }
@@ -162,7 +162,7 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
         im->x = 0; im->y = 0; im->w = 640; im->h = 480;
         im->bgr = calloc(640 * 480, 3); if (!im->bgr) { free(g.idx); return -1; }
         Canvas cv = { im->bgr, NULL, 640, 480, 0, 0 };
-        paint(&g, 0, &cv);
+        paint(&g, 0, &cv, NULL);
         if (g.y >= 8 && g.y + g.h <= 300) clip_opening(&cv);
         if (xmask) { im->has_alpha = 1; im->ax = 0; im->ay = 0; im->aw = im->w; im->ah = im->h;
             im->alpha = malloc((size_t)im->aw * im->ah); if (im->alpha) memset(im->alpha, 255, (size_t)im->aw * im->ah); else im->has_alpha = 0; }
@@ -177,10 +177,27 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
         { int n8 = 0, nb = 0;            /* (also Windows pictures pasted with a key colour instead of a mask, like G23A) */
             for (int y = 8; y < g.h - 8; y++) { nb += 2; n8 += (g.idx[(size_t)y * g.W] & 15) == 8; n8 += (g.idx[(size_t)y * g.W + g.w - 1] & 15) == 8; }
             xmask = nb && n8 * 2 >= nb; }
-        if (xmask) { im->has_alpha = 1; im->ax = im->x; im->ay = im->y; im->aw = im->w; im->ah = im->h;
+        /* small variant patches (a face over a character) are rectangles whose corners are colour 8: the colour 8 joined to
+           the edge is left out, so the patch keeps the character's outline */
+        uint8_t *edge = NULL;
+        if (!xmask && g.w * g.h < 200 * 200) {
+            int c8 = ((g.idx[0] & 15) == 8) + ((g.idx[g.w - 1] & 15) == 8) + ((g.idx[(size_t)(g.h - 1) * g.W] & 15) == 8) + ((g.idx[(size_t)(g.h - 1) * g.W + g.w - 1] & 15) == 8);
+            int *q = c8 >= 2 ? malloc(sizeof(int) * 2 * (size_t)g.w * g.h) : NULL;
+            if (q && (edge = calloc((size_t)g.W * g.h, 1)) != NULL) {
+                int nq = 0;
+                #define PUSH(X, Y) do { size_t k_ = (size_t)(Y) * g.W + (X); if (!edge[k_] && (g.idx[k_] & 15) == 8) { edge[k_] = 1; q[nq * 2] = (X); q[nq * 2 + 1] = (Y); nq++; } } while (0)
+                for (int x = 0; x < g.w; x++) { PUSH(x, 0); PUSH(x, g.h - 1); }
+                for (int y = 0; y < g.h; y++) { PUSH(0, y); PUSH(g.w - 1, y); }
+                while (nq) { nq--; int x = q[nq * 2], y = q[nq * 2 + 1];
+                    if (x > 0) PUSH(x - 1, y); if (x < g.w - 1) PUSH(x + 1, y); if (y > 0) PUSH(x, y - 1); if (y < g.h - 1) PUSH(x, y + 1); }
+                #undef PUSH
+            }
+            free(q);
+        }
+        if (xmask || edge) { im->has_alpha = 1; im->ax = im->x; im->ay = im->y; im->aw = im->w; im->ah = im->h;
             im->alpha = calloc((size_t)im->aw * im->ah, 1); if (!im->alpha) im->has_alpha = 0; }
         Canvas cv = { im->bgr, im->has_alpha ? im->alpha : NULL, im->w, im->h, im->x, im->y };
-        paint(&g, xmask, &cv);
+        paint(&g, xmask, &cv, edge); free(edge);
         if (g.y >= 8 && g.y + g.h <= 300) clip_opening(&cv);
     }
     free(g.idx);
@@ -215,7 +232,9 @@ void dosgfx_anim_slot(int a, const char *axname) {
     if (!s || !g || s->size < 21 || gp4_decode(g->data, g->size, &da[a].sheet)) return;
     da[a].s4 = s->data; da[a].n4 = s->size; da[a].ok = 1; plat_log("DOS animation %s in slot %d", base, a);
 }
+static int da_paused;   /* SYS 3 sub 8 (menus) .. sub 9 */
 void dosgfx_anim_ctl(int a, int b, int sub) {
+    if (sub == 8 || sub == 9) { da_paused = sub == 8; return; }
     if (sub == 6) { for (int i = 0; i < DA_SLOTS; i++) for (int j = 1; j < DA_STREAMS; j++) if (da[i].st[j].state) da[i].st[j].state = 1; return; }
     if (sub == 7) { dosgfx_anim_reset(); return; }
     if (a < 0 || a >= DA_SLOTS || b < 0 || b >= DA_STREAMS || !da[a].ok) return;
@@ -231,6 +250,7 @@ typedef void (*da_put_fn)(int x, int y, const uint8_t rgb[3]);
 typedef int (*da_get_fn)(int x, int y, uint8_t rgb[3]);
 static void da_put_wrap(void *ctx, int x, int y, const uint8_t *rgb) { ((da_put_fn)ctx)(x, y, rgb); }
 static void da_draw(int a, int e, da_put_fn put) {
+    if (!put) return;                                                /* Windows pictures on: the streams only keep time */
     const uint8_t *d = da[a].s4; uint32_t off = 1 + 2u * d[0] + 33u * (uint32_t)e; if (off + 10 > da[a].n4) return;
     const uint8_t *r = d + off; int type = r[0] & 0xF0, fl = r[0] & 15;
     if (type != 0x10 && type != 0x20 && type != 0x30) return;      /* palette changes and the rest are not reproduced */
@@ -264,6 +284,7 @@ static void da_tick_one(int a, DaStream *s, da_put_fn put) {
 }
 /* one host frame of dt seconds */
 void dosgfx_anim_frame(double dt, da_put_fn put) {
+    if (da_paused) return;
     da_acc += dt * 36.0; if (da_acc > 8) da_acc = 8;
     while (da_acc >= 1) { da_acc -= 1;
         for (int a = 0; a < DA_SLOTS; a++) if (da[a].ok) for (int b = 0; b < DA_STREAMS; b++) da_tick_one(a, &da[a].st[b], put); }

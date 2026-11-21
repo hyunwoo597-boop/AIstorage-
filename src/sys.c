@@ -311,11 +311,11 @@ void dosgfx_anim_reset(void); void dosgfx_anim_slot(int a, const char *axname); 
 void dosgfx_anim_frame(double dt, void (*put)(int x, int y, const uint8_t rgb[3]));
 static int dos_mode;
 /* where the pieces drawn into each surface came from: a Windows rectangle and (for a DOS picture) the DOS rectangle */
-typedef struct { int xr[4], dr[4]; bool isdos, masked; } PartLoad;
+typedef struct { int xr[4], dr[4]; bool isdos, masked; int ms, mx, my; } PartLoad;   /* ms/mx/my: where the piece's own mask is (its sheet) */
 static PartLoad parts[NSURF][8]; static int nparts[NSURF]; static bool base_dos[NSURF];
-static void part_add(int s, const int xr[4], const int dr[4], bool isdos, bool masked) {
+static void part_add(int s, const int xr[4], const int dr[4], bool isdos, bool masked, int ms, int mx, int my) {
     if (nparts[s] == 8) { memmove(parts[s], parts[s] + 1, sizeof parts[s][0] * 7); nparts[s]--; }
-    PartLoad *p = &parts[s][nparts[s]++]; memcpy(p->xr, xr, sizeof p->xr); memcpy(p->dr, dr, sizeof p->dr); p->isdos = isdos; p->masked = masked;
+    PartLoad *p = &parts[s][nparts[s]++]; memcpy(p->xr, xr, sizeof p->xr); memcpy(p->dr, dr, sizeof p->dr); p->isdos = isdos; p->masked = masked; p->ms = ms; p->mx = mx; p->my = my;
 }
 /* DOS look: a partial copy out of a piece is redirected to the DOS piece's own rectangle (the DOS variants/sprites are drawn
    where they belong on the DOS screen); a piece of Windows art is not pasted over a DOS picture. Returns 1 to skip the copy. */
@@ -327,20 +327,38 @@ static void urec_add(int s, const int u[4], const int x[4]) {
     if (nurec == 16) { memmove(urec, urec + 1, sizeof urec[0] * 15); nurec--; }
     urec[nurec].s = s; memcpy(urec[nurec].u, u, sizeof urec[nurec].u); memcpy(urec[nurec].x, x, sizeof urec[nurec].x); nurec++;
 }
+static int cover_pct(const int xr[4], int x0, int y0, int w, int h);
+static int remap_more[8][10], remap_n, remap_ms, remap_mx, remap_my, prot[8][7], nprot;   /* + mask surface, mask x, y */   /* further DOS pieces of the last dos_remap: x0 y0 w h dx dy rm */
+/* DOS look: a rectangle the script got while the Windows pictures were on (exactly a DOS piece's Windows rectangle) is
+   widened to the union the DOS piece reports, as if the script had loaded it with the DOS pictures on */
+static void dos_widen(int *x0, int *y0, int *w, int *h, int *dx, int *dy) {
+    if (!dos_mode) return;
+    for (int i = nurec - 1; i >= 0; i--) if (urec[i].x[0] == *x0 && urec[i].x[1] == *y0 && urec[i].x[2] == *w && urec[i].x[3] == *h) {
+        *dx += urec[i].u[0] - *x0; *dy += urec[i].u[1] - *y0; *x0 = urec[i].u[0]; *y0 = urec[i].u[1]; *w = urec[i].u[2]; *h = urec[i].u[3]; return; }
+}
 static int dos_remap(int *x0, int *y0, int *w, int *h, int ss, int *dx, int *dy, int ds) {
-    ss %= NSURF; ds %= NSURF;
+    ss %= NSURF; ds %= NSURF; remap_n = 0; nprot = 0;
     if (!dos_mode) for (int i = nurec - 1; i >= 0; i--) if (urec[i].s == ss && urec[i].u[0] == *x0 && urec[i].u[1] == *y0 && urec[i].u[2] == *w && urec[i].u[3] == *h) {
         *dx += urec[i].x[0] - *x0; *dy += urec[i].x[1] - *y0; *x0 = urec[i].x[0]; *y0 = urec[i].x[1]; *w = urec[i].x[2]; *h = urec[i].x[3]; break; }
     if (*w * *h >= SW * SH * 9 / 10) { base_dos[ds] = base_dos[ss]; nparts[ds] = nparts[ss]; memcpy(parts[ds], parts[ss], sizeof parts[ss]); return 0; }
     for (int i = nparts[ss] - 1; i >= 0; i--) { const PartLoad *p = &parts[ss][i];
         if (*x0 >= p->xr[0] + p->xr[2] || *x0 + *w <= p->xr[0] || *y0 >= p->xr[1] + p->xr[3] || *y0 + *h <= p->xr[1]) continue;
-        if (!p->isdos) { if (dos_mode && base_dos[ds]) return 1; int r[4] = { *dx, *dy, *w, *h }; part_add(ds, r, r, false, false); return 0; }
+        if (!p->isdos) { if (dos_mode && base_dos[ds]) return 1; int r[4] = { *dx, *dy, *w, *h }; part_add(ds, r, r, false, false, 0, 0, 0); return 0; }
         if (!dos_mode) return 0;
-        int ddx = *dx - *x0, ddy = *dy - *y0;
-        int xr[4] = { *dx, *dy, *w, *h };
-        *x0 = p->dr[0]; *y0 = p->dr[1]; *w = p->dr[2]; *h = p->dr[3]; *dx = *x0 + ddx; *dy = *y0 + ddy;
-        int dr[4] = { *dx, *dy, *w, *h }; part_add(ds, xr, dr, true, p->masked);
-        return p->masked ? 3 : 2; }
+        /* the DOS pieces standing in the rectangle (most of their Windows rectangle inside it) are all copied: a character and
+           its face variant are separate pieces; a character only touching the rectangle is left out */
+        int ddx = *dx - *x0, ddy = *dy - *y0, cx0 = *x0, cy0 = *y0, cw = *w, ch = *h, n = 0, sel[8], ns = 0;
+        for (int j = 0; j <= i && ns < 8; j++) { const PartLoad *q = &parts[ss][j];   /* oldest first, so later pieces land on top */
+            if (q->isdos && cover_pct(q->xr, cx0, cy0, cw, ch) >= 60) sel[ns++] = j; }
+        if (!ns) sel[ns++] = i;
+        for (int t = 0; t < ns; t++) { const PartLoad *q = &parts[ss][sel[t]];
+            int *e = remap_more[n++]; e[0] = q->dr[0]; e[1] = q->dr[1]; e[2] = q->dr[2]; e[3] = q->dr[3]; e[4] = q->dr[0] + ddx; e[5] = q->dr[1] + ddy; e[6] = q->masked ? 3 : 2;
+            e[7] = q->ms; e[8] = q->mx; e[9] = q->my; }
+        for (int t = 0; t < n; t++) { const int *e = remap_more[t]; const PartLoad *q = &parts[ss][sel[t]];
+            int xr[4] = { q->xr[0] + ddx, q->xr[1] + ddy, q->xr[2], q->xr[3] }, dr[4] = { e[4], e[5], e[2], e[3] };
+            part_add(ds, xr, dr, true, e[6] == 3, e[7], e[8], e[9]); }
+        int *e = remap_more[n - 1]; *x0 = e[0]; *y0 = e[1]; *w = e[2]; *h = e[3]; *dx = e[4]; *dy = e[5]; remap_n = n - 1; remap_ms = e[7]; remap_mx = e[8]; remap_my = e[9];   /* last one returned, the others in remap_more */
+        return e[6]; }
     return 0;
 }
 static char ax_names[8][16]; static uint32_t ax_addr[8]; static int ax_n;   /* .ax animation files loaded, by address */
@@ -422,33 +440,119 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
         if (im.w * im.h >= SW * SH * 9 / 10) { nparts[dst] = 0; base_dos[dst] = isdos; }
         else { int x1[4] = { xr[0] + (ox != -1 ? ox : 0), xr[1] + (oy != -1 ? oy : 0), xr[2], xr[3] }, d1[4] = { cx, cy, im.w, im.h };
             if (!isdos) memcpy(x1, d1, sizeof x1);
-            part_add(dst, x1, d1, isdos, im.has_alpha); }
+            part_add(dst, x1, d1, isdos, im.has_alpha, dst % NSURF, cx, cy); }
     }
 }
 #define EACH(body) for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int sx = x0 + x, sy = y0 + y, tx = dx + x, ty = dy + y; if (!INS(ss, sx, sy) || !INS(ds, tx, ty)) continue; body }
 /* [EXE 0x41ae60] colour copy; with_mask adds [EXE 0x41b130] mask-plane copy */
+static void gfx_copy_raw(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, int with_mask, const int *mk);
+static bool dos_protected(int x, int y);
+/* DOS look, a plain copy of a Windows rectangle R. The Windows game uses it to replace what stands in R (background and the
+   character there); the DOS pieces sit elsewhere and overlap other characters. So a DOS piece counts as being in R when most
+   of its Windows rectangle is: those pieces of the source are copied with their own pixels wherever they are, those of the
+   destination are replaced; other characters' DOS pixels, in the source or the destination, are left alone; the rest of R
+   is copied as it is. Returns false where the Windows pieces decide (a Windows piece is the newest thing in R). */
+static int cover_pct(const int xr[4], int x0, int y0, int w, int h) {
+    int ix0 = xr[0] > x0 ? xr[0] : x0, iy0 = xr[1] > y0 ? xr[1] : y0, ix1 = xr[0] + xr[2] < x0 + w ? xr[0] + xr[2] : x0 + w, iy1 = xr[1] + xr[3] < y0 + h ? xr[1] + xr[3] : y0 + h;
+    if (ix1 <= ix0 || iy1 <= iy0 || xr[2] <= 0 || xr[3] <= 0) return 0;
+    return (int)((long long)(ix1 - ix0) * (iy1 - iy0) * 100 / ((long long)xr[2] * xr[3]));
+}
+static bool in_mask(const PartLoad *q, int x, int y) {   /* (x, y) in the surface that holds q: one of q's own pixels? */
+    if (x < q->dr[0] || y < q->dr[1] || x >= q->dr[0] + q->dr[2] || y >= q->dr[1] + q->dr[3]) return false;
+    if (!q->masked) return true;
+    int mx = q->mx + x - q->dr[0], my = q->my + y - q->dr[1]; return INS(q->ms, mx, my) && MSK(q->ms, mx, my) >= 128;
+}
+static bool dos_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, int with_mask) {
+    ss %= NSURF; ds %= NSURF; int ddx = dx - x0, ddy = dy - y0;
+    for (int i = nparts[ss] - 1; i >= 0; i--) { const PartLoad *q = &parts[ss][i];   /* the newest piece in R decides */
+        if (x0 >= q->xr[0] + q->xr[2] || x0 + w <= q->xr[0] || y0 >= q->xr[1] + q->xr[3] || y0 + h <= q->xr[1]) continue;
+        if (!q->isdos) return false;
+        break; }
+    PartLoad cp[8], ex[8], pr[8], rp[8]; int nc = 0, ne = 0, np = 0, nr = 0;
+    for (int i = 0; i < nparts[ss]; i++) { const PartLoad *q = &parts[ss][i]; if (!q->isdos) continue;
+        if (cover_pct(q->xr, x0, y0, w, h) >= 60) { if (nc < 8) cp[nc++] = *q; }
+        else if (q->masked && ne < 8) ex[ne++] = *q; }
+    { int k = 0; for (int i = 0; i < nparts[ds]; i++) { PartLoad o = parts[ds][i];
+          if (cover_pct(o.xr, dx, dy, w, h) >= 60) { if (o.isdos && nr < 8) rp[nr++] = o; continue; }   /* replaced: its DOS pixels go too */
+          if (o.isdos && o.masked && np < 8) pr[np++] = o;
+          parts[ds][k++] = o; }
+      nparts[ds] = k; }
+    if (!nc && !ne && !np && !nr) return false;   /* nothing of the DOS pictures here: an ordinary copy */
+    int ux0 = dx, uy0 = dy, ux1 = dx + w, uy1 = dy + h;
+    for (int i = 0; i < nc; i++) { const PartLoad *q = &cp[i];
+        if (q->dr[0] + ddx < ux0) ux0 = q->dr[0] + ddx; if (q->dr[1] + ddy < uy0) uy0 = q->dr[1] + ddy;
+        if (q->dr[0] + q->dr[2] + ddx > ux1) ux1 = q->dr[0] + q->dr[2] + ddx; if (q->dr[1] + q->dr[3] + ddy > uy1) uy1 = q->dr[1] + q->dr[3] + ddy; }
+    for (int i = 0; i < nr; i++) { const PartLoad *q = &rp[i];
+        if (q->dr[0] < ux0) ux0 = q->dr[0]; if (q->dr[1] < uy0) uy0 = q->dr[1];
+        if (q->dr[0] + q->dr[2] > ux1) ux1 = q->dr[0] + q->dr[2]; if (q->dr[1] + q->dr[3] > uy1) uy1 = q->dr[1] + q->dr[3]; }
+    for (int ty = uy0; ty < uy1; ty++) for (int tx = ux0; tx < ux1; tx++) { int sx = tx - ddx, sy = ty - ddy;
+        if (!INS(ss, sx, sy) || !INS(ds, tx, ty)) continue;
+        bool own = false, keep = false;
+        for (int i = nc - 1; i >= 0 && !own; i--) own = in_mask(&cp[i], sx, sy);
+        if (!own) {
+            if (tx < dx || ty < dy || tx >= dx + w || ty >= dy + h) {   /* outside R: only a replaced piece's pixels are cleared */
+                bool gone = false; for (int i = 0; i < nr && !gone; i++) gone = in_mask(&rp[i], tx, ty);
+                if (!gone) continue; }
+            for (int i = 0; i < ne && !keep; i++) keep = in_mask(&ex[i], sx, sy);
+            for (int i = 0; i < np && !keep; i++) keep = in_mask(&pr[i], tx, ty);
+            if (keep) continue; }
+        memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy);
+        if (with_mask != 2) DEP(ds, tx, ty) = DEP(ss, sx, sy); }
+    for (int i = 0; i < nc; i++) { const PartLoad *q = &cp[i];
+        int xr[4] = { q->xr[0] + ddx, q->xr[1] + ddy, q->xr[2], q->xr[3] }, dr[4] = { q->dr[0] + ddx, q->dr[1] + ddy, q->dr[2], q->dr[3] };
+        part_add(ds, xr, dr, true, q->masked, q->ms, q->mx, q->my); }
+    return true;
+}
 static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, int with_mask) {   /* with_mask 2: keep the destination's 3D layer */
     { int a[9] = { x0, y0, w, h, ss, dx, dy, ds, with_mask }; oplog(OP_COPY, ds, a, 9, NULL, w * h >= SW * SH * 9 / 10, ss); }
-    if (dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds) == 1) return;
+    dos_widen(&x0, &y0, &w, &h, &dx, &dy);
+    if (dos_mode && w * h < SW * SH * 9 / 10 && dos_copy(x0, y0, w, h, ss, dx, dy, ds, with_mask)) return;
+    int rm = dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds); if (rm == 1) return;
+    int n = remap_n, more[8][10]; memcpy(more, remap_more, sizeof more); int mk[3] = { remap_ms, remap_mx, remap_my };
+    for (int i = 0; i < n; i++) gfx_copy_raw(more[i][0], more[i][1], more[i][2], more[i][3], ss, more[i][4], more[i][5], ds, with_mask, more[i][6] == 3 ? more[i] + 7 : NULL);
+    gfx_copy_raw(x0, y0, w, h, ss, dx, dy, ds, with_mask, rm == 3 ? mk : NULL);
+}
+static bool dos_protected(int x, int y) {   /* a pixel of another character's DOS piece in the destination (see dos_remap) */
+    for (int i = 0; i < nprot; i++) { const int *r = prot[i]; if (x < r[0] || y < r[1] || x >= r[0] + r[2] || y >= r[1] + r[3]) continue;
+        int mx = r[5] + x - r[0], my = r[6] + y - r[1]; if (INS(r[4], mx, my) && MSK(r[4], mx, my) >= 128) return true; }
+    return false;
+}
+/* mk: a masked DOS piece's own mask {surface, x, y}: only its pixels are copied (pieces overlap on the DOS screen) */
+static void gfx_copy_raw(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, int with_mask, const int *mk) {
     ss %= NSURF; ds %= NSURF;
     bool patch = w * h < SW * SH * 9 / 10;          /* unmapped patch (animation frame) over a mapped picture keeps its depth */
-    EACH(memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy);
+    EACH(if (mk && !(INS(mk[0], mk[1] + sx - x0, mk[2] + sy - y0) && MSK(mk[0], mk[1] + sx - x0, mk[2] + sy - y0) >= 128) && dos_protected(tx, ty)) continue;
+         memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy);
          if (with_mask != 2) { uint8_t z = DEP(ss, sx, sy); if (!(patch && z < 2 && DEP(ds, tx, ty) >= 2)) DEP(ds, tx, ty) = z; })
 }
 /* [EXE 0x41af20] copy skipping the key colour (COLORREF); exact compare is assumed */
+static void gfx_copy_key_raw(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer, int rm, const int *mk);
 static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer) {
     { int a[10] = { x0, y0, w, h, ss, dx, dy, ds, (int)key, keep_layer }; oplog(OP_KEY, ds, a, 10, NULL, false, ss); }
+    dos_widen(&x0, &y0, &w, &h, &dx, &dy);
     int rm = dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds); if (rm == 1) return;
+    int n = remap_n, more[8][10]; memcpy(more, remap_more, sizeof more); int mk[3] = { remap_ms, remap_mx, remap_my };
+    for (int i = 0; i < n; i++) gfx_copy_key_raw(more[i][0], more[i][1], more[i][2], more[i][3], ss, more[i][4], more[i][5], ds, key, keep_layer, more[i][6], more[i] + 7);
+    gfx_copy_key_raw(x0, y0, w, h, ss, dx, dy, ds, key, keep_layer, rm, mk);
+}
+static void gfx_copy_key_raw(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer, int rm, const int *mk) {
     ss %= NSURF; ds %= NSURF; uint8_t kr = key, kg = key >> 8, kb = key >> 16;
     if (rm >= 2) {   /* a DOS piece has no key colour: copied whole, or through its mask (sprites: colour 8 left out) */
-        EACH(if (rm == 3 && MSK(ss, sx, sy) < 128) continue; memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (!keep_layer) DEP(ds, tx, ty) = dep_key(DEP(ss, sx, sy), DEP(ds, tx, ty));)
+        EACH(if (rm == 3 && (!INS(mk[0], mk[1] + sx - x0, mk[2] + sy - y0) || MSK(mk[0], mk[1] + sx - x0, mk[2] + sy - y0) < 128)) continue; memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (!keep_layer) DEP(ds, tx, ty) = dep_key(DEP(ss, sx, sy), DEP(ds, tx, ty));)
         return; }
     EACH(const uint8_t *s = PIX(ss, sx, sy); if (s[0] == kr && s[1] == kg && s[2] == kb) continue; memcpy(PIX(ds, tx, ty), s, 3); if (!keep_layer) DEP(ds, tx, ty) = dep_key(DEP(ss, sx, sy), DEP(ds, tx, ty));)
 }
 /* [EXE 0x41b640/0x41b310] blend src over dst through the source mask plane (0 = skip, 255 = copy) */
+static void gfx_blend_raw(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds);
 static void gfx_blend(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds) {
     { int a[8] = { x0, y0, w, h, ss, dx, dy, ds }; oplog(OP_BLEND, ds, a, 8, NULL, false, ss); }
+    dos_widen(&x0, &y0, &w, &h, &dx, &dy);
     if (dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds) == 1) return;
+    int n = remap_n, more[8][10]; memcpy(more, remap_more, sizeof more); int mk[3] = { remap_ms, remap_mx, remap_my };
+    for (int i = 0; i < n; i++) gfx_blend_raw(more[i][0], more[i][1], more[i][2], more[i][3], ss, more[i][4], more[i][5], ds);
+    gfx_blend_raw(x0, y0, w, h, ss, dx, dy, ds);
+}
+static void gfx_blend_raw(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds) {
     ss %= NSURF; ds %= NSURF;
     EACH(int a = MSK(ss, sx, sy); if (!a) continue; const uint8_t *s = PIX(ss, sx, sy); uint8_t *d = PIX(ds, tx, ty); if (a >= 128) DEP(ds, tx, ty) = dep_sprite(DEP(ss, sx, sy), DEP(ds, tx, ty));
         if (a == 255) { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; } else for (int c = 0; c < 3; c++) d[c] = (s[c] * a + d[c] * (255 - a)) / 255;)
@@ -686,9 +790,9 @@ static void anim_tick_one(vm_t *vm, anim_stream *s) {
     default: anim_draw(vm, ARG()); break;
     }
 }
-static void dos_put(int x, int y, const uint8_t rgb[3]) { if (!INS(0, x, y)) return; uint8_t *d = PIX(0, x, y); d[0] = rgb[0]; d[1] = rgb[1]; d[2] = rgb[2]; }
+static void dos_put(int x, int y, const uint8_t rgb[3]) { if (!dos_mode || !INS(0, x, y)) return; uint8_t *d = PIX(0, x, y); d[0] = rgb[0]; d[1] = rgb[1]; d[2] = rgb[2]; }
 static void anim_tick(vm_t *vm) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state != AN_HALT) anim_tick_one(vm, &anim[a][b]);
-    if (dos_mode) dosgfx_anim_frame(1.0 / 60.0, dos_put); }
+    dosgfx_anim_frame(1.0 / 60.0, dos_mode ? dos_put : NULL); }   /* the DOS animations keep time (and finish their stops) with the Windows pictures on too */
 static bool frame(vm_t *vm) { if (snap_pending && !fx_left && (cur_loop < 0 || cur_loop == 100)) snap_on = snap_pending = false;
     anim_tick(vm);
     if (!plat_wants_composite()) { if (fx_left) fx_left--; return plat_frame(surf[0], SW, SH); }   /* 3DS draws from sys_scene_rgb / UI */
@@ -873,12 +977,13 @@ void sys_call(vm_t *vm, uint32_t fn) {
         if (sub == 6) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state != AN_HALT) anim[a][b].state = AN_STOPREQ; return; }
         if (sub == 7) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) anim[a][b].state = AN_HALT; return; }
         if (sub == 8) {                /* [EXE 0x40f6a0] pause all at their next wait: running -> 3, wait until none is left in 3 */
+            dosgfx_anim_ctl(0, 0, 8);
             for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state == AN_RUN) anim[a][b].state = 3;
             for (int k = 0; k < 600 && !vm->quit; k++) { int busy = 0;
                 for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) busy |= anim[a][b].state == 3;
                 if (!busy) break; if (!frame(vm)) vm->quit = true; vm->steps = 0; }
             return; }
-        if (sub == 9) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state == 4) anim[a][b].state = AN_RUN; return; }   /* [EXE 0x40f590] */
+        if (sub == 9) { dosgfx_anim_ctl(0, 0, 9); for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (anim[a][b].state == 4) anim[a][b].state = AN_RUN; return; }   /* [EXE 0x40f590] */
         break; }
     case 8:
         if (sub == 0) {                /* [EXE 0x41e2b0 partly read] load a DATA.ARC file (LZSS) to the address in p2 */
@@ -1020,6 +1125,22 @@ void sys_call(vm_t *vm, uint32_t fn) {
 static void crossfade(vm_t *vm, int src, int x0, int y0, int w, int h) {
     src %= NSURF; if (w <= 0 || h <= 0) return;
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x0 + w > SW) w = SW - x0; if (y0 + h > SH) h = SH - y0; if (w <= 0 || h <= 0) return;
+    if (dos_mode) {   /* DOS look: the copy places DOS pieces (also outside the rectangle, some pixels kept): fade to its result */
+        size_t n = (size_t)SW * SH * 3; uint8_t *from = malloc(n), *to = malloc(n);
+        if (from && to) {
+            for (int y = 0; y < SH; y++) memcpy(from + (size_t)y * SW * 3, PIX(0, 0, y), SW * 3);
+            gfx_copy(x0, y0, w, h, src, x0, y0, 0, 0);
+            for (int y = 0; y < SH; y++) { memcpy(to + (size_t)y * SW * 3, PIX(0, 0, y), SW * 3); memcpy(PIX(0, 0, y), from + (size_t)y * SW * 3, SW * 3); }
+            for (int a = 16; a < 256 && !vm->quit; a += 16) {
+                if (plat_key(6)) break;
+                for (int y = 0; y < SH; y++) { const uint8_t *o = from + (size_t)y * SW * 3, *t = to + (size_t)y * SW * 3; uint8_t *d = PIX(0, 0, y);
+                    for (int i = 0; i < SW * 3; i++) d[i] = (o[i] * (256 - a) + t[i] * a) >> 8; }
+                if (!frame(vm)) vm->quit = true; vm->steps = 0;
+            }
+            for (int y = 0; y < SH; y++) memcpy(PIX(0, 0, y), to + (size_t)y * SW * 3, SW * 3);
+            free(from); free(to); return; }
+        free(from); free(to);
+    }
     uint8_t *bak = malloc((size_t)w * h * 3);
     for (int y = 0; y < h; y++) memcpy(bak + (size_t)y * w * 3, PIX(0, x0, y0 + y), w * 3);
     for (int a = 16; a < 256 && !vm->quit; a += 16) {

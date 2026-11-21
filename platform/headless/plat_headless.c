@@ -69,7 +69,7 @@ bool plat_frame(const uint8_t *rgb, int w, int h) {
             FILE *f = fopen(n, "wb"); if (f) { fprintf(f, "loop=%d dlg=%d menu=%d hover=%d\n", u->loop, u->dialogue_visible, u->menu_visible, u->hover);
                 for (int i = 0; i < u->nlines; i++) fprintf(f, "%3d|%s\n", u->line[i].item, u->line[i].sjis); fclose(f); } } }
     if (getenv("AI5_POPFULL") && sys_popup_active()) { sys_set_popup_full(true); rgb = sys_popup_full_rgb(); }   /* the Switch build's title menu / dialogs */
-    if (g_dump_every && g_frame % g_dump_every == 0) { char n[64]; snprintf(n, sizeof n, "/tmp/fr_%05ld.ppm", g_frame);
+    if (g_dump_every && g_frame % g_dump_every == 0) { char n[256]; snprintf(n, sizeof n, "%s/fr_%05ld.ppm", getenv("AI5_FRDIR") ? getenv("AI5_FRDIR") : "/tmp", g_frame);
         FILE *f = fopen(n, "wb"); if (f) { fprintf(f, "P6 %d %d 255\n", w, h); fwrite(rgb, 1, w * h * 3, f); fclose(f); } }
     if (g_dump_every && g_frame % g_dump_every == 0 && getenv("AI5_SPLIT")) {   /* 3DS-style: top = sys_scene_rgb, bottom = engine UI or menu mirror */
         extern vm_t *g_vm; char n[64]; const uint8_t *t = sys_scene_rgb(); snprintf(n, sizeof n, "/tmp/tp_%05ld.ppm", g_frame);
