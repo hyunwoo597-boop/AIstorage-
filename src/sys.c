@@ -51,13 +51,17 @@ static void dlg_draw(uint8_t *out, int OW, int OH) {
             int tx = dx + x, ty = dy + y; if (tx < 0 || ty < 0 || tx >= OW || ty >= OH) continue; uint8_t *d = out + (ty * OW + tx) * 3; d[0] = c[2]; d[1] = c[1]; d[2] = c[0]; } }
     #undef SRC
 }
+static bool pop_full; static int pop_ox, pop_oy;   /* single-screen ports: drawn 1:1 on the 640x480 picture, moved by (pop_ox, pop_oy) */
 static void pop_draw(uint8_t *out, int OW, int OH) {   /* item i, state st (0 normal, 1 highlight, 2 pressed) = rows (i*3+st)*36 of the sheet */
-    if (dlg.on) dlg_draw(out, OW, OH);
+    int ox = OW > 320 ? pop_ox : 0, oy = OW > 320 ? pop_oy : 0;
+    if (dlg.on) { dlg.x += ox; dlg.y += oy; dlg_draw(out, OW, OH); dlg.x -= ox; dlg.y -= oy; }
     if (!pop.on) return;
+    pop.x += ox; pop.y += oy;
     for (int i = 0; i < pop.n; i++) { int st = i == pop.pressed ? 2 : i == pop.hl ? 1 : 0, sy = (i * 3 + st) * 36;
         for (int y = 0; y < 36; y++) for (int x = 0; x < pop.w; x++) { int tx = pop.x + x, ty = pop.y + i * 36 + y; if (tx < 0 || ty < 0 || tx >= OW || ty >= OH) continue;
             int a = pop.a[(sy + y) * pop.w + x]; if (!a) continue; const uint8_t *c = pop.rgb + ((sy + y) * pop.w + x) * 3; uint8_t *d = out + (ty * OW + tx) * 3;
             for (int k = 0; k < 3; k++) d[k] = (d[k] * (255 - a) + c[k] * a) / 255; } }
+    pop.x -= ox; pop.y -= oy;
 }
 /* Port: selection UIs live on the 3DS bottom screen. The title menu and the confirmation dialogs are drawn 1:1 onto a
    320x240 picture of the (dimmed) screen; full-screen menus (MENUS loops other than 100: system menu, save/load) are
@@ -194,7 +198,13 @@ bool sys_bottom_map(int bx, int by, int *x, int *y) {
     }
     *x = bx * 2; *y = by * 2; return false;
 }
-bool sys_popup_active(void) { return pop.on || dlg.on; }   /* title menu / confirmation dialog open (single-screen ports overlay sys_bottom_rgb) */
+bool sys_popup_active(void) { return pop.on || dlg.on; }
+void sys_set_popup_full(bool on) { pop_full = on; }
+const uint8_t *sys_popup_full_rgb(void) {   /* 640x480: the screen darkened, the title menu / dialog sprites at their own size */
+    static uint8_t *b; if (!b) b = malloc((size_t)SW * SH * 3); if (!b) return NULL;
+    for (size_t i = 0; i < (size_t)SW * SH * 3; i++) b[i] = surf[0][i] * 3 / 5;
+    pop_draw(b, SW, SH); return b;
+}   /* title menu / confirmation dialog open (single-screen ports overlay sys_bottom_rgb) */
 const uint8_t *sys_bottom_rgb(void) {
     if (!pop.on && !dlg.on) return menu_bottom();
     for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { const uint8_t *a = surf[0] + ((y * 2) * SW + x * 2) * 3; uint8_t *d = bottom_buf + (y * 320 + x) * 3;
@@ -1051,15 +1061,16 @@ static int title_menu(vm_t *vm) {
     int src = 4, w = sw[src] < 408 ? sw[src] : 408, n = sh[src] / 108; if (n > 6) n = 6; if (n <= 0) return 1;
     pop.w = w; pop.n = n; pop.rgb = malloc((size_t)w * n * 108 * 3); pop.a = malloc((size_t)w * n * 108);
     for (int y = 0; y < n * 108; y++) for (int x = 0; x < w; x++) { memcpy(pop.rgb + (y * w + x) * 3, PIX(src, x, y), 3); pop.a[y * w + x] = MSK(src, x, y); }
-    pop.x = (320 - w) / 2; pop.y = (240 - n * 36) / 2; pop.hl = 0;   /* bottom-screen coordinates */ pop.pressed = -1; pop.on = true;
+    pop.x = (320 - w) / 2; pop.y = (240 - n * 36) / 2; pop.hl = 0;
+    pop_ox = 160; pop_oy = 120 + (SH - 24 - n * 36) - (SH - n * 36) / 2;   /* 1:1 on the picture: centred, under the title logo */   /* bottom-screen coordinates */ pop.pressed = -1; pop.on = true;
     int held[6] = {0}, result = -1, cx0 = -1, cy0 = -1; bool armed = false;
     while (!vm->quit && result < 0) {
         if (!frame(vm)) { vm->quit = true; break; }
         bool k[6]; bool any = false; for (int i = 0; i < 6; i++) { k[i] = plat_key(i); any |= k[i]; }
         if (!armed) { armed = !any; continue; }
         bool fire[6]; for (int i = 0; i < 6; i++) { held[i] = k[i] ? held[i] + 1 : 0; fire[i] = held[i] == 1 || (i >= 2 && held[i] > 24 && (held[i] - 24) % 6 == 0); }
-        int cx, cy; plat_cursor(&cx, &cy, false); int bx = cx / 2, by = cy / 2;   /* pointer in 640x480 space = bottom screen x2 */
-        if ((cx != cx0 || cy != cy0) && cx0 >= 0 && bx >= 0 && bx < 320 && by >= pop.y && by < pop.y + n * 36) pop.hl = (by - pop.y) / 36;   /* touch */
+        int cx, cy; plat_cursor(&cx, &cy, false); int bx = pop_full ? cx - pop_ox : cx / 2, by = pop_full ? cy - pop_oy : cy / 2;   /* pointer in 640x480 space = bottom screen x2 */
+        if ((cx != cx0 || cy != cy0) && cx0 >= 0 && bx >= pop.x && bx < pop.x + w && by >= pop.y && by < pop.y + n * 36) pop.hl = (by - pop.y) / 36;   /* touch */
         cx0 = cx; cy0 = cy;
         if (fire[2]) pop.hl = (pop.hl + n - 1) % n;
         if (fire[3]) pop.hl = (pop.hl + 1) % n;
@@ -1075,7 +1086,7 @@ static int title_menu(vm_t *vm) {
 static bool confirm_dialog(vm_t *vm, const char *sheet) {
     size_t n; uint8_t *raw = arc_load(&vm->arc_bg, sheet, &n); if (!raw) return true;
     int rc = gcc_decode(raw, n, &dlg.im); free(raw); if (rc || dlg.im.w < 272 || dlg.im.h < 184) { if (!rc) { free(dlg.im.bgr); free(dlg.im.alpha); } return true; }
-    dlg.x = (320 - 272) / 2; dlg.y = (240 - 112) / 2;   /* bottom-screen coordinates */ dlg.sel = 0; dlg.on = true;
+    dlg.x = (320 - 272) / 2; dlg.y = (240 - 112) / 2; pop_ox = 160; pop_oy = 120;   /* bottom-screen coordinates */ dlg.sel = 0; dlg.on = true;
     int held[6] = {0}, result = -1, cx0 = -1, cy0 = -1; bool armed = false;
     while (!vm->quit && result < 0) {
         if (!frame(vm)) { vm->quit = true; break; }
@@ -1083,7 +1094,7 @@ static bool confirm_dialog(vm_t *vm, const char *sheet) {
         if (!armed) { armed = !any; continue; }
         bool fire[6]; for (int i = 0; i < 6; i++) { held[i] = k[i] ? held[i] + 1 : 0; fire[i] = held[i] == 1; }
         int cx, cy; plat_cursor(&cx, &cy, false);
-        int bx = cx / 2, by = cy / 2;
+        int bx = pop_full ? cx - pop_ox : cx / 2, by = pop_full ? cy - pop_oy : cy / 2;
         if ((cx != cx0 || cy != cy0) && cx0 >= 0 && by >= dlg.y + 58 && by < dlg.y + 80) { if (bx >= dlg.x + 29 && bx < dlg.x + 125) dlg.sel = 0; if (bx >= dlg.x + 149 && bx < dlg.x + 245) dlg.sel = 1; }
         cx0 = cx; cy0 = cy;
         if (fire[2] || fire[3] || fire[4] || fire[5]) dlg.sel ^= 1;

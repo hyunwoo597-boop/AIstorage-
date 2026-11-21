@@ -163,7 +163,7 @@ bool plat_frame(const uint8_t *rgb, int w, int h) {
     if (!appletMainLoop() || g_quit) return false;
     pump();
     const ui_text *u = sys_ui_text(g_vm);
-    if (sys_popup_active()) up2(g_frame_buf, sys_bottom_rgb());
+    if (sys_popup_active()) { const uint8_t *pp = sys_popup_full_rgb(); if (pp) memcpy(g_frame_buf, pp, sizeof g_frame_buf); else up2(g_frame_buf, sys_bottom_rgb()); }
     else if (u->backlog) { static uint8_t page[320 * 240 * 3]; backlog_page(page, sys_scene_rgb()); up2(g_frame_buf, page); }
     else memcpy(g_frame_buf, rgb, sizeof g_frame_buf);
     minus_toggle();
@@ -205,7 +205,7 @@ int main(int argc, char **argv) {
     g_joy = SDL_JoystickOpen(0);
     snd_init();
     if (!vm_init(&vm)) plat_log("Archives not found");
-    else if (vm_load_mes(&vm, "MAIN.MES")) vm_run(&vm);
+    else if (sys_set_popup_full(true), vm_load_mes(&vm, "MAIN.MES")) vm_run(&vm);
     snd_exit();
     if (g_joy) SDL_JoystickClose(g_joy);
     SDL_DestroyTexture(g_tex); SDL_DestroyRenderer(g_ren); SDL_DestroyWindow(g_win); SDL_Quit();

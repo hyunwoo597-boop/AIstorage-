@@ -108,6 +108,7 @@ const uint8_t *sys_scene_depth(void);     /* 640x480 layer map for stereoscopic 
 const uint8_t *sys_bottom_rgb(void);       /* 320x240 RGB the engine wants on the bottom screen (title menu, confirm dialogs), else NULL */
 const uint8_t *sys_live_rgb(void);
 bool sys_popup_active(void);
+void sys_set_popup_full(bool on); const uint8_t *sys_popup_full_rgb(void);   /* single-screen ports */
 bool sys_bottom_map(int bx, int by, int *x, int *y);
 bool sys_bottom_viewport(void);            /* galleries: bottom = 1:1 window over the screen */
 const uint8_t *sys_viewport_rgb(bool follow);
