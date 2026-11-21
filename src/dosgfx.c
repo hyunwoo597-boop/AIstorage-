@@ -140,6 +140,14 @@ static void paint(const Gp4 *g, int key8, Canvas *cv) {
     put_scaled(rgba, g->w, g->h, g->x, g->y, cv_put, cv, cv->alpha ? cv_alpha : NULL);
     free(rgba);
 }
+/* Pictures of the framed picture area run on under the DOS frame (WAKU1). The frame is not drawn here, so they are cut to
+   the frame's opening: the largest rectangle inside WAKU1's hole, x 40..599, y 21..273 on the 640x400 screen. */
+static void clip_opening(Canvas *c) {
+    int x0 = 40, x1 = 600, y0 = 21 * 6 / 5 + 1, y1 = 274 * 6 / 5;
+    for (int y = 0; y < c->ch; y++) for (int x = 0; x < c->cw; x++) { int sx = x + c->ox, sy = y + c->oy;
+        if (sx >= x0 && sx < x1 && sy >= y0 && sy < y1) continue;
+        size_t i = (size_t)(c->ch - 1 - y) * c->cw + x; memset(c->bgr + i * 3, 0, 3); if (c->alpha) c->alpha[i] = 0; }
+}
 /* Build the DOS version of a Windows picture.  xw, xh, xmask: the Windows picture's size and whether it has a mask. */
 int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
     load_all(); if (!nents) return -1;
@@ -154,8 +162,8 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
         im->x = 0; im->y = 0; im->w = 640; im->h = 480;
         im->bgr = calloc(640 * 480, 3); if (!im->bgr) { free(g.idx); return -1; }
         Canvas cv = { im->bgr, NULL, 640, 480, 0, 0 };
-        /* (the DOS frame WAKU1 around a picture-area image is left out: it covered the picture's edges) */
         paint(&g, 0, &cv);
+        if (g.y >= 8 && g.y + g.h <= 300) clip_opening(&cv);
         if (xmask) { im->has_alpha = 1; im->ax = 0; im->ay = 0; im->aw = im->w; im->ah = im->h;
             im->alpha = malloc((size_t)im->aw * im->ah); if (im->alpha) memset(im->alpha, 255, (size_t)im->aw * im->ah); else im->has_alpha = 0; }
     } else {
@@ -173,6 +181,7 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
             im->alpha = calloc((size_t)im->aw * im->ah, 1); if (!im->alpha) im->has_alpha = 0; }
         Canvas cv = { im->bgr, im->has_alpha ? im->alpha : NULL, im->w, im->h, im->x, im->y };
         paint(&g, xmask, &cv);
+        if (g.y >= 8 && g.y + g.h <= 300) clip_opening(&cv);
     }
     free(g.idx);
     return 0;
