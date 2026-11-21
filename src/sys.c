@@ -319,8 +319,18 @@ static void part_add(int s, const int xr[4], const int dr[4], bool isdos, bool m
 }
 /* DOS look: a partial copy out of a piece is redirected to the DOS piece's own rectangle (the DOS variants/sprites are drawn
    where they belong on the DOS screen); a piece of Windows art is not pasted over a DOS picture. Returns 1 to skip the copy. */
+/* rectangles reported for DOS pieces (union with the Windows piece) -> the Windows piece's own rectangle: with the Windows
+   pictures on, a copy of such a union is cut back to the Windows piece (the rest of the source surface is unrelated) */
+static struct { int s, u[4], x[4]; } urec[16]; static int nurec;
+static void urec_add(int s, const int u[4], const int x[4]) {
+    for (int i = 0; i < nurec; i++) if (urec[i].s == s && !memcmp(urec[i].u, u, sizeof urec[i].u)) { memcpy(urec[i].x, x, sizeof urec[i].x); return; }
+    if (nurec == 16) { memmove(urec, urec + 1, sizeof urec[0] * 15); nurec--; }
+    urec[nurec].s = s; memcpy(urec[nurec].u, u, sizeof urec[nurec].u); memcpy(urec[nurec].x, x, sizeof urec[nurec].x); nurec++;
+}
 static int dos_remap(int *x0, int *y0, int *w, int *h, int ss, int *dx, int *dy, int ds) {
     ss %= NSURF; ds %= NSURF;
+    if (!dos_mode) for (int i = nurec - 1; i >= 0; i--) if (urec[i].s == ss && urec[i].u[0] == *x0 && urec[i].u[1] == *y0 && urec[i].u[2] == *w && urec[i].u[3] == *h) {
+        *dx += urec[i].x[0] - *x0; *dy += urec[i].x[1] - *y0; *x0 = urec[i].x[0]; *y0 = urec[i].x[1]; *w = urec[i].x[2]; *h = urec[i].x[3]; break; }
     if (*w * *h >= SW * SH * 9 / 10) { base_dos[ds] = base_dos[ss]; nparts[ds] = nparts[ss]; memcpy(parts[ds], parts[ss], sizeof parts[ss]); return 0; }
     for (int i = nparts[ss] - 1; i >= 0; i--) { const PartLoad *p = &parts[ss][i];
         if (*x0 >= p->xr[0] + p->xr[2] || *x0 + *w <= p->xr[0] || *y0 >= p->xr[1] + p->xr[3] || *y0 + *h <= p->xr[1]) continue;
@@ -406,7 +416,8 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
                  Windows rectangle so both versions fit in it (a switch back to the Windows pictures redraws with it) */
               int ax0 = xr[0] + (ox != -1 ? ox : 0), ay0 = xr[1] + (oy != -1 ? oy : 0);
               int x1 = rx + rw > ax0 + xr[2] ? rx + rw : ax0 + xr[2], y1 = ry + rh > ay0 + xr[3] ? ry + rh : ay0 + xr[3];
-              if (ax0 < rx) rx = ax0; if (ay0 < ry) ry = ay0; rw = x1 - rx; rh = y1 - ry; }
+              if (ax0 < rx) rx = ax0; if (ay0 < ry) ry = ay0; rw = x1 - rx; rh = y1 - ry;
+              { int u[4] = { rx, ry, rw, rh }, wr[4] = { ax0, ay0, xr[2], xr[3] }; urec_add(dst % NSURF, u, wr); } }
           SET_SYS16(vm, 17, rx); SET_SYS16(vm, 18, ry); SET_SYS16(vm, 19, rw > 0 ? rw : 0); SET_SYS16(vm, 20, rh > 0 ? rh : 0); }
         if (im.w * im.h >= SW * SH * 9 / 10) { nparts[dst] = 0; base_dos[dst] = isdos; }
         else { int x1[4] = { xr[0] + (ox != -1 ? ox : 0), xr[1] + (oy != -1 ? oy : 0), xr[2], xr[3] }, d1[4] = { cx, cy, im.w, im.h };
