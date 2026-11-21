@@ -169,13 +169,11 @@ bool plat_frame(const uint8_t *rgb, int w, int h) {
     minus_toggle();
     { static bool restored; if (!restored) { restored = true; FILE *f = fopen(DATA_DIR "dosgfx.cfg", "r"); if (f) { if (fgetc(f) == '1') sys_set_dos_gfx(g_vm, 1); fclose(f); } } }
     if (SDL_GetTicks() < g_toast_until) {        /* a small label at the top left for 2 s */
-        const char *t = g_toast_kind == 1 ? "DOS GRAPHICS" : g_toast_kind == 2 ? "WINDOWS GRAPHICS" : "NO DOS FILES (SILK0-4.DAT)";
-        int w = (int)strlen(t) * 8 + 12;
-        for (int y = 8; y < 30; y++) for (int x = 8; x < 8 + w * 2 && x < 640; x++) { uint8_t *p = g_frame_buf + (y * 640 + x) * 3; p[0] = p[0] / 4; p[1] = p[1] / 4; p[2] = p[2] / 4; }
-        static uint8_t lab[320 * 240 * 3]; memset(lab, 0, sizeof lab);
-        int x = 8; for (const uint8_t *p = (const uint8_t *)t; *p; p++) { glyph(lab, x, 0, *p - 0x20, 8, 255, 220, 80); x += 8; }
-        for (int y = 0; y < 16; y++) for (int xx = 0; xx < x && xx < 320; xx++) { const uint8_t *q = lab + (y * 320 + xx) * 3; if (!(q[0] | q[1] | q[2])) continue;
-            for (int k = 0; k < 2; k++) { uint8_t *d = g_frame_buf + ((10 + y) * 640 + 8 + xx * 2 + k) * 3; d[0] = q[0]; d[1] = q[1]; d[2] = q[2]; } }
+        extern const int swtoast_h, swtoast_w[3]; extern const uint8_t *const swtoast_px[3];   /* tools/mkswtoast.py */
+        int k = g_toast_kind - 1, w = swtoast_w[k], h = swtoast_h; const uint8_t *a = swtoast_px[k];
+        for (int y = 8; y < 8 + h + 4 && y < 480; y++) for (int x = 8; x < 8 + w + 12 && x < 640; x++) { uint8_t *p = g_frame_buf + (y * 640 + x) * 3; p[0] = p[0] / 4; p[1] = p[1] / 4; p[2] = p[2] / 4; }
+        for (int y = 0; y < h; y++) for (int x = 0; x < w && 14 + x < 640; x++) { int v = a[y * w + x]; if (!v) continue;
+            uint8_t *d = g_frame_buf + ((10 + y) * 640 + 14 + x) * 3; d[0] = (d[0] * (255 - v) + 255 * v) / 255; d[1] = (d[1] * (255 - v) + 220 * v) / 255; d[2] = (d[2] * (255 - v) + 80 * v) / 255; }
     }
     draw_pointer(g_frame_buf);
     SDL_UpdateTexture(g_tex, NULL, g_frame_buf, 640 * 3);
