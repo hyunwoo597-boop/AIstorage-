@@ -2,8 +2,8 @@
  *
  * 308 of the DOS pictures have the same name as a Windows one (G05.GP4 <-> G05.GCC).  With the DOS look switched on, a
  * picture that has a DOS twin is drawn from the DOS file instead: the DOS screen is 640x400 and was shown on a 4:3 monitor,
- * so it is stretched to 640x480 (rows x1.2).  Where the Windows picture fills the whole screen, the DOS frame (WAKU1) is drawn
- * around the DOS picture, which then sits where it was on the DOS screen.  Character sprites are opaque on the DOS release
+ * so it is stretched to 640x480 (rows x1.2).  Where the Windows picture fills the whole screen, the DOS picture sits where it was
+ * on the DOS screen, on black (the DOS frame WAKU1 is not drawn).  Character sprites are opaque on the DOS release
  * (black around them), so the DOS version of a masked Windows sprite gets a full mask.
  *
  * SILK*.DAT: text header, u32 table size at 0x1F4, table at 0x1F8 coded as a XOR chain (plain[i] = enc[i] ^ enc[i-1], the byte
@@ -154,10 +154,7 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
         im->x = 0; im->y = 0; im->w = 640; im->h = 480;
         im->bgr = calloc(640 * 480, 3); if (!im->bgr) { free(g.idx); return -1; }
         Canvas cv = { im->bgr, NULL, 640, 480, 0, 0 };
-        if (g.y >= 8 && g.y + g.h <= 300) {          /* a picture of the framed picture area (not a full-screen one like the title) */
-            const DosEnt *w = find("WAKU1.GCC"); Gp4 f;
-            if (w && !gp4_decode(w->data, w->size, &f)) { paint(&f, 0, &cv); free(f.idx); }
-        }
+        /* (the DOS frame WAKU1 around a picture-area image is left out: it covered the picture's edges) */
         paint(&g, 0, &cv);
         if (xmask) { im->has_alpha = 1; im->ax = 0; im->ay = 0; im->aw = im->w; im->ah = im->h;
             im->alpha = malloc((size_t)im->aw * im->ah); if (im->alpha) memset(im->alpha, 255, (size_t)im->aw * im->ah); else im->has_alpha = 0; }
