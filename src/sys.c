@@ -786,7 +786,17 @@ typedef struct { uint16_t type; char name[20]; uint16_t v[6]; } scene_rec;
 static scene_rec scene_log[30]; static int scene_n;
 /* [EXE 0x411eb0] every MSGID takes the save snapshot: script name, message number (sys32[8], used by JMPLBL on load) and a copy of the scene log */
 static scene_rec snap_log[30]; static int snap_n;
+/* port change: seen flags (CG / scene / music / ending galleries read them from FLAG00) are merged into FLAG00 as soon as
+   one is newly set, not only on a slot save or a return to the title, so the galleries fill even if the game is never saved */
+static void autosave_flags(vm_t *vm) {
+    static uint8_t merged[0x1000]; static bool init;
+    if (!init) { static uint8_t t[SAVE_SIZE]; init = true; if (plat_save_read("FLAG00.dat", t, SAVE_SIZE)) memcpy(merged, t + OFF_FLAG, sizeof merged); }
+    const uint8_t *f = vm->mem + OFF_FLAG; bool more = false;
+    for (int i = 0; i < 0x1000; i++) if (f[i] > merged[i]) { merged[i] = f[i]; more = true; }
+    if (more) save_cmd(vm, 2, 0, 0, 0);
+}
 void sys_msgid(vm_t *vm, uint32_t id) {
+    autosave_flags(vm);
     strncpy(snap_name, (const char *)vm->mem, OFF_FLAG - 1); SET_SYS32(vm, 8, id);
     memcpy(snap_log, scene_log, sizeof scene_log); snap_n = scene_n;
 }
