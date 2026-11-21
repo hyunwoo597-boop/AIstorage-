@@ -135,26 +135,11 @@ static void cv_put(void *ctx, int x, int y, const uint8_t *rgb) { Canvas *c = ct
     if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return; uint8_t *d = c->bgr + ((size_t)(c->ch - 1 - y) * c->cw + x) * 3; d[0] = rgb[2]; d[1] = rgb[1]; d[2] = rgb[0]; }
 static void cv_alpha(void *ctx, int x, int y, int a) { Canvas *c = ctx; x -= c->ox; y -= c->oy;
     if (!c->alpha || x < 0 || y < 0 || x >= c->cw || y >= c->ch) return; c->alpha[(size_t)(c->ch - 1 - y) * c->cw + x] = (uint8_t)a; }
-static void paint(const Gp4 *g, const uint8_t *transp, Canvas *cv) {
-    uint8_t *rgba = smooth(g, g->x, g->y, g->w, g->h, transp, 0); if (!rgba) return;
+static void paint(const Gp4 *g, int key8, Canvas *cv) {
+    uint8_t *rgba = smooth(g, g->x, g->y, g->w, g->h, NULL, key8); if (!rgba) return;
     put_scaled(rgba, g->w, g->h, g->x, g->y, cv_put, cv, cv->alpha ? cv_alpha : NULL);
     free(rgba);
 }
-/* black connected to the edge of a sprite (the DOS sprites are drawn opaque on black) */
-static uint8_t *edge_black(const Gp4 *g) {
-    int W = g->W, H = g->h; uint8_t *vis = calloc((size_t)W * H, 1); int *st = malloc(sizeof(int) * (size_t)W * H);
-    if (!vis || !st) { free(vis); free(st); return NULL; }
-    #define BLACK(i) (g->pal[g->idx[i] & 15][0] + g->pal[g->idx[i] & 15][1] + g->pal[g->idx[i] & 15][2] == 0)
-    int sp = 0;
-    for (int x = 0; x < g->w; x++) { int a = x, b2 = (H - 1) * W + x; if (BLACK(a) && !vis[a]) { vis[a] = 1; st[sp++] = a; } if (BLACK(b2) && !vis[b2]) { vis[b2] = 1; st[sp++] = b2; } }
-    for (int y = 0; y < H; y++) { int a = y * W, b2 = y * W + g->w - 1; if (BLACK(a) && !vis[a]) { vis[a] = 1; st[sp++] = a; } if (BLACK(b2) && !vis[b2]) { vis[b2] = 1; st[sp++] = b2; } }
-    while (sp) { int i = st[--sp], x = i % W, y = i / W;
-        int nb[4] = { x > 0 ? i - 1 : -1, x + 1 < g->w ? i + 1 : -1, y > 0 ? i - W : -1, y + 1 < H ? i + W : -1 };
-        for (int k = 0; k < 4; k++) { int j = nb[k]; if (j >= 0 && !vis[j] && BLACK(j)) { vis[j] = 1; st[sp++] = j; } } }
-    #undef BLACK
-    free(st); return vis;
-}
-
 /* Build the DOS version of a Windows picture.  xw, xh, xmask: the Windows picture's size and whether it has a mask. */
 int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
     load_all(); if (!nents) return -1;
@@ -171,21 +156,21 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
         Canvas cv = { im->bgr, NULL, 640, 480, 0, 0 };
         if (g.y >= 8 && g.y + g.h <= 300) {          /* a picture of the framed picture area (not a full-screen one like the title) */
             const DosEnt *w = find("WAKU1.GCC"); Gp4 f;
-            if (w && !gp4_decode(w->data, w->size, &f)) { paint(&f, NULL, &cv); free(f.idx); }
+            if (w && !gp4_decode(w->data, w->size, &f)) { paint(&f, 0, &cv); free(f.idx); }
         }
-        paint(&g, NULL, &cv);
+        paint(&g, 0, &cv);
         if (xmask) { im->has_alpha = 1; im->ax = 0; im->ay = 0; im->aw = im->w; im->ah = im->h;
             im->alpha = malloc((size_t)im->aw * im->ah); if (im->alpha) memset(im->alpha, 255, (size_t)im->aw * im->ah); else im->has_alpha = 0; }
     } else {
         int y0 = g.y * 6 / 5, y1 = (g.y + g.h) * 6 / 5;
         im->x = g.x; im->y = y0; im->w = g.w; im->h = y1 - y0;
         im->bgr = calloc((size_t)im->w * im->h, 3); if (!im->bgr) { free(g.idx); return -1; }
-        uint8_t *vis = xmask ? edge_black(&g) : NULL;
-        if (xmask && vis) { im->has_alpha = 1; im->ax = im->x; im->ay = im->y; im->aw = im->w; im->ah = im->h;
+        /* The DOS sprites use colour 8 (black) as the see-through colour, the same key the DOS engine's keyed copy uses;
+           the other black (colour 0) is part of the drawing. */
+        if (xmask) { im->has_alpha = 1; im->ax = im->x; im->ay = im->y; im->aw = im->w; im->ah = im->h;
             im->alpha = calloc((size_t)im->aw * im->ah, 1); if (!im->alpha) im->has_alpha = 0; }
         Canvas cv = { im->bgr, im->has_alpha ? im->alpha : NULL, im->w, im->h, im->x, im->y };
-        paint(&g, vis, &cv);
-        free(vis);
+        paint(&g, xmask, &cv);
     }
     free(g.idx);
     return 0;
