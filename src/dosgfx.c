@@ -169,9 +169,9 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
            the other black (colour 0) is part of the drawing. */
         /* Some masked Windows pictures (G26: characters cut out to sit on G23) are complete scenes on the DOS release,
            where colour 8 is just black: only a picture whose left and right edges are mostly colour 8 is a sprite. */
-        if (xmask) { int n8 = 0, nb = 0;
+        { int n8 = 0, nb = 0;            /* (also Windows pictures pasted with a key colour instead of a mask, like G23A) */
             for (int y = 8; y < g.h - 8; y++) { nb += 2; n8 += (g.idx[(size_t)y * g.W] & 15) == 8; n8 += (g.idx[(size_t)y * g.W + g.w - 1] & 15) == 8; }
-            if (nb && n8 * 2 < nb) xmask = 0; }
+            xmask = nb && n8 * 2 >= nb; }
         if (xmask) { im->has_alpha = 1; im->ax = im->x; im->ay = im->y; im->aw = im->w; im->ah = im->h;
             im->alpha = calloc((size_t)im->aw * im->ah, 1); if (!im->alpha) im->has_alpha = 0; }
         Canvas cv = { im->bgr, im->has_alpha ? im->alpha : NULL, im->w, im->h, im->x, im->y };

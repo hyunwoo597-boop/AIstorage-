@@ -301,11 +301,11 @@ void dosgfx_anim_reset(void); void dosgfx_anim_slot(int a, const char *axname); 
 void dosgfx_anim_frame(double dt, void (*put)(int x, int y, const uint8_t rgb[3]));
 static int dos_mode;
 /* where the pieces drawn into each surface came from: a Windows rectangle and (for a DOS picture) the DOS rectangle */
-typedef struct { int xr[4], dr[4]; bool isdos; } PartLoad;
+typedef struct { int xr[4], dr[4]; bool isdos, masked; } PartLoad;
 static PartLoad parts[NSURF][8]; static int nparts[NSURF]; static bool base_dos[NSURF];
-static void part_add(int s, const int xr[4], const int dr[4], bool isdos) {
+static void part_add(int s, const int xr[4], const int dr[4], bool isdos, bool masked) {
     if (nparts[s] == 8) { memmove(parts[s], parts[s] + 1, sizeof parts[s][0] * 7); nparts[s]--; }
-    PartLoad *p = &parts[s][nparts[s]++]; memcpy(p->xr, xr, sizeof p->xr); memcpy(p->dr, dr, sizeof p->dr); p->isdos = isdos;
+    PartLoad *p = &parts[s][nparts[s]++]; memcpy(p->xr, xr, sizeof p->xr); memcpy(p->dr, dr, sizeof p->dr); p->isdos = isdos; p->masked = masked;
 }
 /* DOS look: a partial copy out of a piece is redirected to the DOS piece's own rectangle (the DOS variants/sprites are drawn
    where they belong on the DOS screen); a piece of Windows art is not pasted over a DOS picture. Returns 1 to skip the copy. */
@@ -314,13 +314,13 @@ static int dos_remap(int *x0, int *y0, int *w, int *h, int ss, int *dx, int *dy,
     if (*w * *h >= SW * SH * 9 / 10) { base_dos[ds] = base_dos[ss]; nparts[ds] = nparts[ss]; memcpy(parts[ds], parts[ss], sizeof parts[ss]); return 0; }
     for (int i = nparts[ss] - 1; i >= 0; i--) { const PartLoad *p = &parts[ss][i];
         if (*x0 >= p->xr[0] + p->xr[2] || *x0 + *w <= p->xr[0] || *y0 >= p->xr[1] + p->xr[3] || *y0 + *h <= p->xr[1]) continue;
-        if (!p->isdos) { if (dos_mode && base_dos[ds]) return 1; int r[4] = { *dx, *dy, *w, *h }; part_add(ds, r, r, false); return 0; }
+        if (!p->isdos) { if (dos_mode && base_dos[ds]) return 1; int r[4] = { *dx, *dy, *w, *h }; part_add(ds, r, r, false, false); return 0; }
         if (!dos_mode) return 0;
         int ddx = *dx - *x0, ddy = *dy - *y0;
         int xr[4] = { *dx, *dy, *w, *h };
         *x0 = p->dr[0]; *y0 = p->dr[1]; *w = p->dr[2]; *h = p->dr[3]; *dx = *x0 + ddx; *dy = *y0 + ddy;
-        int dr[4] = { *dx, *dy, *w, *h }; part_add(ds, xr, dr, true);
-        return 2; }
+        int dr[4] = { *dx, *dy, *w, *h }; part_add(ds, xr, dr, true, p->masked);
+        return p->masked ? 3 : 2; }
     return 0;
 }
 static char ax_names[8][16]; static uint32_t ax_addr[8]; static int ax_n;   /* .ax animation files loaded, by address */
@@ -390,7 +390,7 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
         if (im.w * im.h >= SW * SH * 9 / 10) { nparts[dst] = 0; base_dos[dst] = isdos; }
         else { int x1[4] = { xr[0] + (ox != -1 ? ox : 0), xr[1] + (oy != -1 ? oy : 0), xr[2], xr[3] }, d1[4] = { cx, cy, im.w, im.h };
             if (!isdos) memcpy(x1, d1, sizeof x1);
-            part_add(dst, x1, d1, isdos); }
+            part_add(dst, x1, d1, isdos, im.has_alpha); }
     }
 }
 #define EACH(body) for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int sx = x0 + x, sy = y0 + y, tx = dx + x, ty = dy + y; if (!INS(ss, sx, sy) || !INS(ds, tx, ty)) continue; body }
@@ -406,8 +406,11 @@ static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int d
 /* [EXE 0x41af20] copy skipping the key colour (COLORREF); exact compare is assumed */
 static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer) {
     { int a[10] = { x0, y0, w, h, ss, dx, dy, ds, (int)key, keep_layer }; oplog(OP_KEY, ds, a, 10, NULL, false); }
-    { int r = dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds); if (r == 1) return; if (r == 2) key = 0x01000000; }   /* DOS pieces have no key colour */
+    int rm = dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds); if (rm == 1) return;
     ss %= NSURF; ds %= NSURF; uint8_t kr = key, kg = key >> 8, kb = key >> 16;
+    if (rm >= 2) {   /* a DOS piece has no key colour: copied whole, or through its mask (sprites: colour 8 left out) */
+        EACH(if (rm == 3 && MSK(ss, sx, sy) < 128) continue; memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (!keep_layer) DEP(ds, tx, ty) = dep_key(DEP(ss, sx, sy), DEP(ds, tx, ty));)
+        return; }
     EACH(const uint8_t *s = PIX(ss, sx, sy); if (s[0] == kr && s[1] == kg && s[2] == kb) continue; memcpy(PIX(ds, tx, ty), s, 3); if (!keep_layer) DEP(ds, tx, ty) = dep_key(DEP(ss, sx, sy), DEP(ds, tx, ty));)
 }
 /* [EXE 0x41b640/0x41b310] blend src over dst through the source mask plane (0 = skip, 255 = copy) */
