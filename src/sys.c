@@ -326,13 +326,24 @@ static int dos_remap(int *x0, int *y0, int *w, int *h, int ss, int *dx, int *dy,
 static char ax_names[8][16]; static uint32_t ax_addr[8]; static int ax_n;   /* .ax animation files loaded, by address */
 int dosgfx_available(void);
 static int dos_mode, img_replaying, img_nolog;
-enum { NLOG = 96, OP_LOAD = 0, OP_COPY, OP_KEY, OP_BLEND, OP_FILL };
+enum { NLOG = 192, OP_LOAD = 0, OP_COPY, OP_KEY, OP_BLEND, OP_FILL };
 typedef struct { uint32_t seq; uint8_t op; int a[10]; char name[24]; } ImgOp;
 static ImgOp img_log[NSURF][NLOG]; static int img_nlog[NSURF]; static uint32_t img_seq;
-static void oplog(int op, int dst, const int *a, int na, const char *name, bool covers) {   /* what was drawn into each surface since it was last fully covered */
+/* What was drawn into each surface since it was last fully covered, for an instant DOS/Windows switch.
+   A copy also takes over the source's own list (merged by sequence number), so a screen saved to another
+   surface and copied back later (the B-button menu does this) can still be redrawn from the pictures. */
+static void oplog(int op, int dst, const int *a, int na, const char *name, bool covers, int src) {
     if (img_replaying || img_nolog) return;
     dst %= NSURF; if (dst == 6) return;          /* surface 6 is the text strip: the text on it stays as it is */
     if (covers) img_nlog[dst] = 0;
+    if (src >= 0 && (src %= NSURF) != dst && img_nlog[src]) {
+        static ImgOp m[2 * NLOG]; int n = 0, i = 0, j = 0, nd = img_nlog[dst], ns = img_nlog[src];
+        while (i < nd || j < ns) {
+            const ImgOp *e = (j >= ns || (i < nd && img_log[dst][i].seq <= img_log[src][j].seq)) ? &img_log[dst][i++] : &img_log[src][j++];
+            if (n && m[n - 1].seq == e->seq) continue;
+            m[n++] = *e; }
+        int k = n > NLOG - 1 ? n - (NLOG - 1) : 0;   /* keep the newest, with room for this op */
+        memcpy(img_log[dst], m + k, sizeof m[0] * (n - k)); img_nlog[dst] = n - k; }
     if (img_nlog[dst] == NLOG) { memmove(img_log[dst], img_log[dst] + 1, sizeof img_log[dst][0] * (NLOG - 1)); img_nlog[dst]--; }
     ImgOp *e = &img_log[dst][img_nlog[dst]++]; memset(e, 0, sizeof *e); e->seq = ++img_seq; e->op = (uint8_t)op;
     for (int i = 0; i < na; i++) e->a[i] = a[i];
@@ -364,7 +375,7 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
         cache[hit].im = im; cache[hit].bytes = need; cache[hit].dos = isdos; memcpy(cache[hit].xr, xr, sizeof xr); snprintf(cache[hit].name, sizeof cache[hit].name, "%s", key);
     }
     cache[hit].use = ++tick; im = cache[hit].im; isdos = cache[hit].dos; memcpy(xr, cache[hit].xr, sizeof xr);
-    { int a[3] = { dst, ox, oy }; oplog(OP_LOAD, dst, a, 3, name, im.w * im.h >= SW * SH * 9 / 10); }   /* (for an instant DOS/Windows switch) */
+    { int a[3] = { dst, ox, oy }; oplog(OP_LOAD, dst, a, 3, name, im.w * im.h >= SW * SH * 9 / 10, -1); }   /* (for an instant DOS/Windows switch) */
     {
         int cx = im.x + (ox != -1 ? ox : 0), cy = im.y + (oy != -1 ? oy : 0);
         int ax = ox != -1 ? ox : im.ax, ay = oy != -1 ? oy : im.ay;
@@ -396,7 +407,7 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
 #define EACH(body) for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int sx = x0 + x, sy = y0 + y, tx = dx + x, ty = dy + y; if (!INS(ss, sx, sy) || !INS(ds, tx, ty)) continue; body }
 /* [EXE 0x41ae60] colour copy; with_mask adds [EXE 0x41b130] mask-plane copy */
 static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, int with_mask) {   /* with_mask 2: keep the destination's 3D layer */
-    { int a[9] = { x0, y0, w, h, ss, dx, dy, ds, with_mask }; oplog(OP_COPY, ds, a, 9, NULL, w * h >= SW * SH * 9 / 10); }
+    { int a[9] = { x0, y0, w, h, ss, dx, dy, ds, with_mask }; oplog(OP_COPY, ds, a, 9, NULL, w * h >= SW * SH * 9 / 10, ss); }
     if (dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds) == 1) return;
     ss %= NSURF; ds %= NSURF;
     bool patch = w * h < SW * SH * 9 / 10;          /* unmapped patch (animation frame) over a mapped picture keeps its depth */
@@ -405,7 +416,7 @@ static void gfx_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int d
 }
 /* [EXE 0x41af20] copy skipping the key colour (COLORREF); exact compare is assumed */
 static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer) {
-    { int a[10] = { x0, y0, w, h, ss, dx, dy, ds, (int)key, keep_layer }; oplog(OP_KEY, ds, a, 10, NULL, false); }
+    { int a[10] = { x0, y0, w, h, ss, dx, dy, ds, (int)key, keep_layer }; oplog(OP_KEY, ds, a, 10, NULL, false, ss); }
     int rm = dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds); if (rm == 1) return;
     ss %= NSURF; ds %= NSURF; uint8_t kr = key, kg = key >> 8, kb = key >> 16;
     if (rm >= 2) {   /* a DOS piece has no key colour: copied whole, or through its mask (sprites: colour 8 left out) */
@@ -415,7 +426,7 @@ static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, i
 }
 /* [EXE 0x41b640/0x41b310] blend src over dst through the source mask plane (0 = skip, 255 = copy) */
 static void gfx_blend(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds) {
-    { int a[8] = { x0, y0, w, h, ss, dx, dy, ds }; oplog(OP_BLEND, ds, a, 8, NULL, false); }
+    { int a[8] = { x0, y0, w, h, ss, dx, dy, ds }; oplog(OP_BLEND, ds, a, 8, NULL, false, ss); }
     if (dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds) == 1) return;
     ss %= NSURF; ds %= NSURF;
     EACH(int a = MSK(ss, sx, sy); if (!a) continue; const uint8_t *s = PIX(ss, sx, sy); uint8_t *d = PIX(ds, tx, ty); if (a >= 128) DEP(ds, tx, ty) = dep_sprite(DEP(ss, sx, sy), DEP(ds, tx, ty));
@@ -423,7 +434,7 @@ static void gfx_blend(int x0, int y0, int w, int h, int ss, int dx, int dy, int 
 }
 /* [EXE 0x41b390] fill; clear_mask adds [EXE 0x41b040] */
 static void gfx_fill(int x0, int y0, int w, int h, int s, uint32_t c, int clear_mask) {
-    { int a[7] = { x0, y0, w, h, s, (int)c, clear_mask }; oplog(OP_FILL, s, a, 7, NULL, w * h >= SW * SH * 9 / 10); }
+    { int a[7] = { x0, y0, w, h, s, (int)c, clear_mask }; oplog(OP_FILL, s, a, 7, NULL, w * h >= SW * SH * 9 / 10, -1); }
     if (w * h >= SW * SH * 9 / 10) { nparts[s % NSURF] = 0; base_dos[s % NSURF] = false; }
     s %= NSURF;
     for (int y = y0; y < y0 + h; y++) for (int x = x0; x < x0 + w; x++) { if (!INS(s, x, y)) continue;
@@ -1162,6 +1173,7 @@ int sys_set_dos_gfx(vm_t *vm, int on) {
     static ImgOp all[NSURF * NLOG]; int na = 0;
     for (int sfc = 0; sfc < NSURF; sfc++) for (int i = 0; i < img_nlog[sfc]; i++) all[na++] = img_log[sfc][i];
     for (int i = 1; i < na; i++) { ImgOp t = all[i]; int j = i - 1; while (j >= 0 && all[j].seq > t.seq) { all[j + 1] = all[j]; j--; } all[j + 1] = t; }
+    { int k = 0; for (int i = 0; i < na; i++) if (!k || all[k - 1].seq != all[i].seq) all[k++] = all[i]; na = k; }   /* copied lists share entries */
     img_replaying = 1;
     for (int i = 0; i < na; i++) { const int *q = all[i].a;
         if (getenv("AI5_DOSLOG")) plat_log("replay op%d %s %d %d %d %d %d %d %d %d", all[i].op, all[i].name, q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]);
