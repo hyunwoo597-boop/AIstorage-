@@ -827,7 +827,12 @@ static const char *snd_name(vm_t *vm, vm_param *p) {
 static void snd_cmd(vm_t *vm, int kind, int nslots, uint32_t sub, const char *name, uint32_t ch) {
     int slot = kind + (int)(ch % (uint32_t)nslots); uint32_t r = 0;
     switch (sub) {
-    case 0: if (kind == SND_MUSIC && !strcasecmp(snd_cur[slot], name) && plat_snd_playing(slot)) break;   /* [EXE 0x407378] same track keeps playing */
+    case 0: if (kind == SND_MUSIC) {   /* [EXE 0x407414..] a track from the music room's list marks itself heard: f[2000 + i]; also f[4015] */
+                static const char *const tracks[16] = { "ayac_op.wav", "kowai.wav", "jazz_op.wav", "ryouko.wav", "kana.wav", "momoko.wav", "think.wav", "akiko.wav",
+                    "semi_2.wav", "junmon.wav", "ext_02.wav", "ext_01.wav", "semi_1.wav", "lie.wav", "end_3.wav", "ido2.wav" };
+                FLAG(vm, 4015) = 1;
+                for (int i = 0; i < 16; i++) if (!strcasecmp(name, tracks[i])) { FLAG(vm, 2000 + i) = 1; break; } }
+            if (kind == SND_MUSIC && !strcasecmp(snd_cur[slot], name) && plat_snd_playing(slot)) break;   /* [EXE 0x407378] same track keeps playing */
             snd_start(vm, kind, slot, name); break;
     case 1: plat_snd_stop(slot); snd_cur[slot][0] = 0; break;
     case 2: if (kind == SND_VOICE) { strncpy(snd_pend[slot], name, 23); snd_has_pend[slot] = 1; break; }   /* voice: reserve */
