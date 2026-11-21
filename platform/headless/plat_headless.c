@@ -62,7 +62,7 @@ static bool scripted(int key) {
 bool plat_key(int key) { if (scripted(key)) return true; if (getenv("AI5_KEYS_ONLY")) return false; if (getenv("AI5_AUTO_UNTIL") && g_frame >= atol(getenv("AI5_AUTO_UNTIL")) && !(getenv("AI5_AUTO_RESUME") && g_frame >= atol(getenv("AI5_AUTO_RESUME")))) return false; if (!g_every) return false; long ph = g_frame % g_every; return (key == 0 && ph == g_every - 1) || (key == 3 && ph == g_every / 2 && !getenv("AI5_NODOWN")); }
 bool plat_frame(const uint8_t *rgb, int w, int h) {
     g_frame++;
-    if (getenv("AI5_DOS")) { extern vm_t *g_vm; long t = atol(getenv("AI5_DOS")); if (g_frame == t) printf("dos gfx -> %d\n", sys_set_dos_gfx(g_vm, 1)); }
+    if (getenv("AI5_DOS")) { extern vm_t *g_vm; static int on1, off1; if (!on1 && g_frame >= atol(getenv("AI5_DOS"))) { on1 = 1; printf("dos gfx -> %d\n", sys_set_dos_gfx(g_vm, 1)); } if (getenv("AI5_DOSOFF") && !off1 && g_frame >= atol(getenv("AI5_DOSOFF"))) { off1 = 1; printf("dos gfx -> %d\n", sys_set_dos_gfx(g_vm, 0)); } }
     if (getenv("AI5_UI") && g_frame % 400 == 0) { extern vm_t *g_vm; const ui_text *u = sys_ui_text(g_vm); printf("ui@%ld: lines=%d dlg=%d menu=%d hover=%d len0=%zu\n", g_frame, u->nlines, u->dialogue_visible, u->menu_visible, u->hover, u->nlines ? strlen(u->line[0].sjis) : 0); }
     if (getenv("AI5_UIAT")) { char k[16]; snprintf(k, sizeof k, ",%ld,", g_frame); char e[512]; snprintf(e, sizeof e, ",%s,", getenv("AI5_UIAT"));
         if (strstr(e, k)) { extern vm_t *g_vm; const ui_text *u = sys_ui_text(g_vm); char n[64]; snprintf(n, sizeof n, "/tmp/ui_%05ld.txt", g_frame);

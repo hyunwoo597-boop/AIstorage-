@@ -379,7 +379,14 @@ static void load_image(vm_t *vm, const char *name, int dst, int ox, int oy) {
         if (im.has_alpha) for (int y = 0; y < im.ah; y++) { int dy = ay + y; const uint8_t *s = im.alpha + (size_t)(im.ah - 1 - y) * im.aw;
             for (int x = 0; x < im.aw; x++) { int dx = ax + x; if (INS(dst, dx, dy)) MSK(dst, dx, dy) = s[x]; } }
         int w = im.w, h = im.h; if (cx + w > sw[dst]) w = sw[dst] - cx; if (cy + h > sh[dst]) h = sh[dst] - cy;
-        SET_SYS16(vm, 17, cx); SET_SYS16(vm, 18, cy); SET_SYS16(vm, 19, w > 0 ? w : 0); SET_SYS16(vm, 20, h > 0 ? h : 0);
+        { int rx = cx, ry = cy, rw = w, rh = h;
+          if (isdos && xr[2] > 0 && im.w * im.h < SW * SH * 9 / 10) {
+              /* DOS piece: the script keeps this rectangle to copy/crossfade the character later; report the union with the
+                 Windows rectangle so both versions fit in it (a switch back to the Windows pictures redraws with it) */
+              int ax0 = xr[0] + (ox != -1 ? ox : 0), ay0 = xr[1] + (oy != -1 ? oy : 0);
+              int x1 = rx + rw > ax0 + xr[2] ? rx + rw : ax0 + xr[2], y1 = ry + rh > ay0 + xr[3] ? ry + rh : ay0 + xr[3];
+              if (ax0 < rx) rx = ax0; if (ay0 < ry) ry = ay0; rw = x1 - rx; rh = y1 - ry; }
+          SET_SYS16(vm, 17, rx); SET_SYS16(vm, 18, ry); SET_SYS16(vm, 19, rw > 0 ? rw : 0); SET_SYS16(vm, 20, rh > 0 ? rh : 0); }
         if (im.w * im.h >= SW * SH * 9 / 10) { nparts[dst] = 0; base_dos[dst] = isdos; }
         else { int x1[4] = { xr[0] + (ox != -1 ? ox : 0), xr[1] + (oy != -1 ? oy : 0), xr[2], xr[3] }, d1[4] = { cx, cy, im.w, im.h };
             if (!isdos) memcpy(x1, d1, sizeof x1);
