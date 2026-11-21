@@ -91,16 +91,68 @@ static int gp4_decode(const uint8_t *d, uint32_t n, Gp4 *g) {
     return 0;
 }
 
-/* paint a decoded GP4 into a bottom-up BGR canvas cw x ch (rows x1.2) */
-static void paint(const Gp4 *g, uint8_t *bgr, int cw, int ch, int ox, int oy) {
-    int y0 = g->y * 6 / 5 - oy, y1 = (g->y + g->h) * 6 / 5 - oy;
-    for (int ty = y0; ty < y1; ty++) {
-        if (ty < 0 || ty >= ch) continue;
-        int sy = (ty + oy) * 5 / 6 - g->y; if (sy < 0) sy = 0; if (sy >= g->h) sy = g->h - 1;
-        const uint8_t *s = g->idx + (size_t)sy * g->W; uint8_t *d = bgr + (size_t)(ch - 1 - ty) * cw * 3;
-        for (int x = 0; x < g->w; x++) { int tx = g->x + x - ox; if (tx < 0 || tx >= cw) continue;
-            const uint8_t *c = g->pal[s[x] & 15]; d[tx * 3] = c[2]; d[tx * 3 + 1] = c[1]; d[tx * 3 + 2] = c[0]; }
+/* The DOS pictures are dithered 16-colour art made for a 400-line screen on a CRT.  Shown pixel-sharp and stretched by
+ * repeating every fifth row, the dither patterns turn into stripes and odd colours.  So the picture is first softened the
+ * way a CRT blends neighbouring dots (3x3 [1 2 1] filter, transparent dots left out), then stretched to 480 rows with
+ * linear interpolation. */
+static uint8_t *smooth(const Gp4 *g, int sx, int sy, int w, int h, const uint8_t *transp, int key8) {
+    uint8_t *o = malloc((size_t)w * h * 4); if (!o) return NULL;
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+        int r = 0, gg = 0, b = 0, wsum = 0, gy0 = sy + y - g->y, gx0 = sx + x - g->x; uint8_t *d = o + ((size_t)y * w + x) * 4;
+        int opaque = 0;
+        if (gy0 >= 0 && gy0 < g->h && gx0 >= 0 && gx0 < g->W) { size_t i = (size_t)gy0 * g->W + gx0;
+            opaque = !(transp && transp[i]) && !(key8 && (g->idx[i] & 15) == 8); }
+        if (!opaque) { d[0] = d[1] = d[2] = d[3] = 0; continue; }
+        for (int ky = -1; ky <= 1; ky++) for (int kx = -1; kx <= 1; kx++) {
+            int yy = gy0 + ky, xx = gx0 + kx; if (yy < 0 || yy >= g->h || xx < 0 || xx >= g->w) continue;
+            if (y + ky < 0 || y + ky >= h || x + kx < 0 || x + kx >= w) continue;     /* stay inside the block (animation cells sit side by side) */
+            size_t i = (size_t)yy * g->W + xx; if ((transp && transp[i]) || (key8 && (g->idx[i] & 15) == 8)) continue;
+            int wt = (ky ? 1 : 2) * (kx ? 1 : 2); const uint8_t *c = g->pal[g->idx[i] & 15];
+            r += c[0] * wt; gg += c[1] * wt; b += c[2] * wt; wsum += wt; }
+        d[0] = (uint8_t)(r / wsum); d[1] = (uint8_t)(gg / wsum); d[2] = (uint8_t)(b / wsum); d[3] = 255;
     }
+    return o;
+}
+/* rows x1.2: source row position for target row ty (DOS y = dy at the top of the block) */
+static void put_scaled(const uint8_t *rgba, int w, int h, int dx, int dy, void (*put)(void *ctx, int x, int y, const uint8_t *rgb), void *ctx, void (*putalpha)(void *ctx, int x, int y, int a)) {
+    int y0 = dy * 6 / 5, y1 = (dy + h) * 6 / 5;
+    for (int ty = y0; ty < y1; ty++) {
+        float fy = (ty + 0.5f) * 5.0f / 6.0f - 0.5f - (float)dy; int i0 = (int)(fy < 0 ? 0 : fy); float t = fy - (float)i0;
+        if (i0 >= h - 1) { i0 = h - 1; t = 0; } if (t < 0) t = 0;
+        const uint8_t *a = rgba + (size_t)i0 * w * 4, *b = rgba + (size_t)(i0 + (i0 < h - 1)) * w * 4;
+        for (int x = 0; x < w; x++) {
+            const uint8_t *p = a + x * 4, *q = b + x * 4; uint8_t c[3]; int ap = p[3], aq = q[3];
+            if (!ap && !aq) { if (putalpha) putalpha(ctx, dx + x, ty, 0); continue; }
+            float u = ap && aq ? t : ap ? 0.0f : 1.0f;
+            for (int k = 0; k < 3; k++) c[k] = (uint8_t)(p[k] + (q[k] - p[k]) * u + 0.5f);
+            put(ctx, dx + x, ty, c);
+            if (putalpha) putalpha(ctx, dx + x, ty, (t < 0.5f ? ap : aq) ? 255 : 0);
+        }
+    }
+}
+typedef struct { uint8_t *bgr, *alpha; int cw, ch, ox, oy; } Canvas;
+static void cv_put(void *ctx, int x, int y, const uint8_t *rgb) { Canvas *c = ctx; x -= c->ox; y -= c->oy;
+    if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return; uint8_t *d = c->bgr + ((size_t)(c->ch - 1 - y) * c->cw + x) * 3; d[0] = rgb[2]; d[1] = rgb[1]; d[2] = rgb[0]; }
+static void cv_alpha(void *ctx, int x, int y, int a) { Canvas *c = ctx; x -= c->ox; y -= c->oy;
+    if (!c->alpha || x < 0 || y < 0 || x >= c->cw || y >= c->ch) return; c->alpha[(size_t)(c->ch - 1 - y) * c->cw + x] = (uint8_t)a; }
+static void paint(const Gp4 *g, const uint8_t *transp, Canvas *cv) {
+    uint8_t *rgba = smooth(g, g->x, g->y, g->w, g->h, transp, 0); if (!rgba) return;
+    put_scaled(rgba, g->w, g->h, g->x, g->y, cv_put, cv, cv->alpha ? cv_alpha : NULL);
+    free(rgba);
+}
+/* black connected to the edge of a sprite (the DOS sprites are drawn opaque on black) */
+static uint8_t *edge_black(const Gp4 *g) {
+    int W = g->W, H = g->h; uint8_t *vis = calloc((size_t)W * H, 1); int *st = malloc(sizeof(int) * (size_t)W * H);
+    if (!vis || !st) { free(vis); free(st); return NULL; }
+    #define BLACK(i) (g->pal[g->idx[i] & 15][0] + g->pal[g->idx[i] & 15][1] + g->pal[g->idx[i] & 15][2] == 0)
+    int sp = 0;
+    for (int x = 0; x < g->w; x++) { int a = x, b2 = (H - 1) * W + x; if (BLACK(a) && !vis[a]) { vis[a] = 1; st[sp++] = a; } if (BLACK(b2) && !vis[b2]) { vis[b2] = 1; st[sp++] = b2; } }
+    for (int y = 0; y < H; y++) { int a = y * W, b2 = y * W + g->w - 1; if (BLACK(a) && !vis[a]) { vis[a] = 1; st[sp++] = a; } if (BLACK(b2) && !vis[b2]) { vis[b2] = 1; st[sp++] = b2; } }
+    while (sp) { int i = st[--sp], x = i % W, y = i / W;
+        int nb[4] = { x > 0 ? i - 1 : -1, x + 1 < g->w ? i + 1 : -1, y > 0 ? i - W : -1, y + 1 < H ? i + W : -1 };
+        for (int k = 0; k < 4; k++) { int j = nb[k]; if (j >= 0 && !vis[j] && BLACK(j)) { vis[j] = 1; st[sp++] = j; } } }
+    #undef BLACK
+    free(st); return vis;
 }
 
 /* Build the DOS version of a Windows picture.  xw, xh, xmask: the Windows picture's size and whether it has a mask. */
@@ -116,43 +168,24 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
     if (full) {
         im->x = 0; im->y = 0; im->w = 640; im->h = 480;
         im->bgr = calloc(640 * 480, 3); if (!im->bgr) { free(g.idx); return -1; }
+        Canvas cv = { im->bgr, NULL, 640, 480, 0, 0 };
         if (g.y >= 8 && g.y + g.h <= 300) {          /* a picture of the framed picture area (not a full-screen one like the title) */
             const DosEnt *w = find("WAKU1.GCC"); Gp4 f;
-            if (w && !gp4_decode(w->data, w->size, &f)) { paint(&f, im->bgr, 640, 480, 0, 0); free(f.idx); }
+            if (w && !gp4_decode(w->data, w->size, &f)) { paint(&f, NULL, &cv); free(f.idx); }
         }
-        paint(&g, im->bgr, 640, 480, 0, 0);
+        paint(&g, NULL, &cv);
+        if (xmask) { im->has_alpha = 1; im->ax = 0; im->ay = 0; im->aw = im->w; im->ah = im->h;
+            im->alpha = malloc((size_t)im->aw * im->ah); if (im->alpha) memset(im->alpha, 255, (size_t)im->aw * im->ah); else im->has_alpha = 0; }
     } else {
         int y0 = g.y * 6 / 5, y1 = (g.y + g.h) * 6 / 5;
         im->x = g.x; im->y = y0; im->w = g.w; im->h = y1 - y0;
         im->bgr = calloc((size_t)im->w * im->h, 3); if (!im->bgr) { free(g.idx); return -1; }
-        paint(&g, im->bgr, im->w, im->h, im->x, im->y);
-    }
-    if (xmask && !full) {
-        /* The DOS sprites are drawn opaque, on black.  The black that is connected to the edge of the sprite is made
-           transparent, so the character stands on the (DOS) picture behind it like the Windows sprite does. */
-        int W = g.W, H = g.h; uint8_t *vis = calloc((size_t)W * H, 1); int *st = malloc(sizeof(int) * (size_t)W * H);
-        im->has_alpha = 1; im->ax = im->x; im->ay = im->y; im->aw = im->w; im->ah = im->h;
-        im->alpha = malloc((size_t)im->aw * im->ah);
-        if (!vis || !st || !im->alpha) { free(vis); free(st); free(im->alpha); im->alpha = NULL; im->has_alpha = 0; }
-        else {
-            #define BLACK(i) (g.pal[g.idx[i] & 15][0] + g.pal[g.idx[i] & 15][1] + g.pal[g.idx[i] & 15][2] == 0)
-            int sp = 0;
-            for (int x = 0; x < g.w; x++) { int a = x, b2 = (H - 1) * W + x; if (BLACK(a) && !vis[a]) { vis[a] = 1; st[sp++] = a; } if (BLACK(b2) && !vis[b2]) { vis[b2] = 1; st[sp++] = b2; } }
-            for (int y = 0; y < H; y++) { int a = y * W, b2 = y * W + g.w - 1; if (BLACK(a) && !vis[a]) { vis[a] = 1; st[sp++] = a; } if (BLACK(b2) && !vis[b2]) { vis[b2] = 1; st[sp++] = b2; } }
-            while (sp) { int i = st[--sp], x = i % W, y = i / W;
-                int nb[4] = { x > 0 ? i - 1 : -1, x + 1 < g.w ? i + 1 : -1, y > 0 ? i - W : -1, y + 1 < H ? i + W : -1 };
-                for (int k = 0; k < 4; k++) { int j = nb[k]; if (j >= 0 && !vis[j] && BLACK(j)) { vis[j] = 1; st[sp++] = j; } } }
-            #undef BLACK
-            for (int ty = 0; ty < im->ah; ty++) {            /* the mask is stored bottom-up like the colours */
-                int sy = (ty + im->y) * 5 / 6 - g.y; if (sy < 0) sy = 0; if (sy >= H) sy = H - 1;
-                uint8_t *d = im->alpha + (size_t)(im->ah - 1 - ty) * im->aw;
-                for (int x = 0; x < im->aw; x++) d[x] = vis[sy * W + x] ? 0 : 255;
-            }
-            free(vis); free(st);
-        }
-    } else if (xmask) {                  /* a full-screen masked picture: opaque */
-        im->has_alpha = 1; im->ax = 0; im->ay = 0; im->aw = im->w; im->ah = im->h;
-        im->alpha = malloc((size_t)im->aw * im->ah); if (im->alpha) memset(im->alpha, 255, (size_t)im->aw * im->ah); else im->has_alpha = 0;
+        uint8_t *vis = xmask ? edge_black(&g) : NULL;
+        if (xmask && vis) { im->has_alpha = 1; im->ax = im->x; im->ay = im->y; im->aw = im->w; im->ah = im->h;
+            im->alpha = calloc((size_t)im->aw * im->ah, 1); if (!im->alpha) im->has_alpha = 0; }
+        Canvas cv = { im->bgr, im->has_alpha ? im->alpha : NULL, im->w, im->h, im->x, im->y };
+        paint(&g, vis, &cv);
+        free(vis);
     }
     free(g.idx);
     return 0;
@@ -200,6 +233,7 @@ void dosgfx_anim_ctl(int a, int b, int sub) {
 }
 typedef void (*da_put_fn)(int x, int y, const uint8_t rgb[3]);
 typedef int (*da_get_fn)(int x, int y, uint8_t rgb[3]);
+static void da_put_wrap(void *ctx, int x, int y, const uint8_t *rgb) { ((da_put_fn)ctx)(x, y, rgb); }
 static void da_draw(int a, int e, da_put_fn put) {
     const uint8_t *d = da[a].s4; uint32_t off = 1 + 2u * d[0] + 33u * (uint32_t)e; if (off + 10 > da[a].n4) return;
     const uint8_t *r = d + off; int type = r[0] & 0xF0, fl = r[0] & 15;
@@ -208,14 +242,9 @@ static void da_draw(int a, int e, da_put_fn put) {
     int sx = r[1] * 8, sy = r[2] | r[3] << 8, w = (r[4] - r[1] + 1) * 8, h = (r[5] | r[6] << 8) - sy + 1, dx = r[7] * 8, dy = r[8] | r[9] << 8;
     const Gp4 *g = &da[a].sheet; if (w <= 0 || h <= 0) return;
     if (getenv("AI5_ANIMLOG")) plat_log("dos draw %d e%d %d,%d %dx%d -> %d,%d", a, e, sx, sy, w, h, dx, dy);
-    /* destination rows in the stretched (x1.2) screen */
-    for (int ty = dy * 6 / 5; ty < (dy + h) * 6 / 5; ty++) {
-        int yy = ty * 5 / 6 - dy; if (yy < 0) yy = 0; if (yy >= h) yy = h - 1;
-        int gy = sy + yy - g->y; if (gy < 0 || gy >= g->h) continue;
-        for (int x = 0; x < w; x++) { int gx = sx + x - g->x; if (gx < 0 || gx >= g->W) continue;
-            uint8_t c = g->idx[(size_t)gy * g->W + gx] & 15; if (type == 0x20 && c == 8) continue;
-            put(dx + x, ty, g->pal[c]); }
-    }
+    uint8_t *rgba = smooth(g, sx, sy, w, h, NULL, type == 0x20); if (!rgba) return;
+    put_scaled(rgba, w, h, dx, dy, da_put_wrap, (void *)put, NULL);
+    free(rgba);
 }
 static void da_tick_one(int a, DaStream *s, da_put_fn put) {
     const uint8_t *d = da[a].s4; uint32_t n = da[a].n4;
