@@ -79,6 +79,8 @@ void __libnx_initheap(void)''')
     rep("    rc = fsdevMountSdmc();\n", "    if (g_fromRomfs) { g_fromRomfs = 0; g_nextNroPath[0] = '\\0'; readRomfsNro(nrobuf); if (header->magic != NROHEADER_MAGIC) fwdAbort(MAKERESULT(Module_HomebrewLoader, 5)); goto nro_loaded; }\n    rc = fsdevMountSdmc();\n")
     rep("    close(fd);\n    fsdevUnmountAll();\n", "    close(fd);\n    fsdevUnmountAll();\nnro_loaded:\n")
     s = s.replace('diagAbortWithResult(MAKERESULT', 'fwdAbort(MAKERESULT')
+    # leave 512MB of the application memory out of the game's heap (the GPU driver and system services take theirs from what is left)
+    rep('    Result rc = svcSetHeapSize(&addr, size);', '    if (size > 0x40000000) size -= 0x20000000;\n    Result rc = svcSetHeapSize(&addr, size);')
     rep('    nroEntrypointTrampoline(&entries[0], -1, g_nroAddr);', '    flog("jump to NRO, heap MB", nro_heap_size >> 20);\n    nroEntrypointTrampoline(&entries[0], -1, g_nroAddr);')
     open(p, 'w').write(s); print('patched (romfs)', p)
 elif sys.argv[1] == 'npdm':

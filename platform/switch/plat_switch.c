@@ -255,8 +255,17 @@ int main(int argc, char **argv) {
     plat_log("SDL ok");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
     g_win = SDL_CreateWindow("nonoxp", 0, 0, 1280, 720, SDL_WINDOW_FULLSCREEN);
-    g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    g_tex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, 640, 480);
+    if (!g_win) plat_log("window: %s", SDL_GetError());
+    g_ren = g_win ? SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC) : NULL;
+    if (!g_ren && g_win) {   /* GPU (OpenGL ES) renderer refused: the installed (NSP) build hit this; fall back to the CPU renderer */
+        plat_log("GPU renderer: %s", SDL_GetError());
+        SDL_DestroyWindow(g_win); g_win = SDL_CreateWindow("nonoxp", 0, 0, 1280, 720, SDL_WINDOW_FULLSCREEN);
+        if (g_win) g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_SOFTWARE);
+        plat_log("CPU renderer: %s", g_ren ? "ok" : SDL_GetError());
+    }
+    { SDL_RendererInfo ri; if (g_ren && !SDL_GetRendererInfo(g_ren, &ri)) plat_log("renderer: %s", ri.name); }
+    g_tex = g_ren ? SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, 640, 480) : NULL;
+    if (g_ren && !g_tex) plat_log("texture: %s", SDL_GetError());
     g_joy = SDL_JoystickOpen(0);
     if (!g_win || !g_ren || !g_tex) { char m[200]; snprintf(m, sizeof m, "Video init failed: %s", SDL_GetError()); SDL_Quit(); fatal(m); if (g_romfs) romfsExit(); return 0; }
     plat_log("video ok");
