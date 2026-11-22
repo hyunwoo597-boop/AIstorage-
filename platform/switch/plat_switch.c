@@ -224,16 +224,24 @@ int main(int argc, char **argv) {
     if (R_SUCCEEDED(romfsInit())) { FILE *t = fopen("romfs:/MES.ARC", "rb"); if (t) { fclose(t); g_romfs = true; } }
     static vm_t vm; g_vm = &vm;
     FILE *chk = open_data("MES.ARC"); if (!chk) { fatal("Game files not found (MES.ARC DATA.ARC BG.ARC)."); if (g_romfs) romfsExit(); return 0; } fclose(chk);
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK) < 0) return 1;
+    plat_log("start: %s, romfs %d", appletGetAppletType() == AppletType_Application ? "application" : "applet", g_romfs);
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK) < 0) { char m[200]; snprintf(m, sizeof m, "SDL_Init failed: %s", SDL_GetError()); fatal(m); if (g_romfs) romfsExit(); return 0; }
+    plat_log("SDL ok");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
     g_win = SDL_CreateWindow("nonoxp", 0, 0, 1280, 720, SDL_WINDOW_FULLSCREEN);
     g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     g_tex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, 640, 480);
     g_joy = SDL_JoystickOpen(0);
-    if (!splash()) { if (g_joy) SDL_JoystickClose(g_joy); SDL_DestroyTexture(g_tex); SDL_DestroyRenderer(g_ren); SDL_DestroyWindow(g_win); SDL_Quit(); if (g_romfs) romfsExit(); return 0; }
+    if (!g_win || !g_ren || !g_tex) { char m[200]; snprintf(m, sizeof m, "Video init failed: %s", SDL_GetError()); SDL_Quit(); fatal(m); if (g_romfs) romfsExit(); return 0; }
+    plat_log("video ok");
+    if (!splash()) { plat_log("splash: quit"); if (g_joy) SDL_JoystickClose(g_joy); SDL_DestroyTexture(g_tex); SDL_DestroyRenderer(g_ren); SDL_DestroyWindow(g_win); SDL_Quit(); if (g_romfs) romfsExit(); return 0; }
     snd_init();
-    if (!vm_init(&vm)) plat_log("Archives not found");
-    else if (sys_set_popup_full(true), vm_load_mes(&vm, "MAIN.MES")) vm_run(&vm);
+    plat_log("splash done");
+    if (!vm_init(&vm)) { plat_log("Archives not found"); snd_exit(); SDL_DestroyTexture(g_tex); SDL_DestroyRenderer(g_ren); SDL_DestroyWindow(g_win); SDL_Quit(); g_tex = NULL;
+        fatal(g_romfs ? "Cannot open the game archives inside the NSP (MES.ARC DATA.ARC BG.ARC)." : "Cannot open the game archives (MES.ARC DATA.ARC BG.ARC)."); if (g_romfs) romfsExit(); return 0; }
+    plat_log("archives ok");
+    if (sys_set_popup_full(true), vm_load_mes(&vm, "MAIN.MES")) vm_run(&vm); else plat_log("MAIN.MES missing");
+    plat_log("game ended (quit=%d)", vm.quit);
     snd_exit();
     if (g_joy) SDL_JoystickClose(g_joy);
     SDL_DestroyTexture(g_tex); SDL_DestroyRenderer(g_ren); SDL_DestroyWindow(g_win); SDL_Quit();
