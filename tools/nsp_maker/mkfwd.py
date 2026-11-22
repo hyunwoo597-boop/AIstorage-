@@ -23,7 +23,7 @@ static void flog(const char *fmt, ...)
         if (R_SUCCEEDED(fsFileWrite(&f, g_flogOff, b, n, FsWriteOption_Flush))) g_flogOff += n; fsFileClose(&f); }
     fsFsClose(&sd);
 }
-static void NORETURN fwdAbort(Result rc) { flog("ABORT 2%03u-%04u (0x%x)", R_MODULE(rc), R_DESCRIPTION(rc), rc); diagAbortWithResult(rc); }
+static void __attribute__((noreturn)) fwdAbort(Result rc) { flog("ABORT 2%03u-%04u (0x%x)", R_MODULE(rc), R_DESCRIPTION(rc), rc); diagAbortWithResult(rc); }
 
 void __libnx_initheap(void)''')
     rep('#include <unistd.h>', '#include <unistd.h>\n#include <stdio.h>\n#include <stdarg.h>\n#include <errno.h>')
