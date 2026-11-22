@@ -32,8 +32,7 @@ LOOP = 8.0                                          # 초
 STEP = 0.1                                          # 키 간격(초) — 직선 보간
 # 이름: 움직임.  yaw/roll 은 도(°), bob 은 단위 길이, period 는 초(LOOP 의 약수여야 이음매가 없다)
 ANIM = {
-    '_root':   dict(yaw=9.0, period=8.0),
-    'logo':    dict(bob=0.22, period=4.0),
+    'logo':    dict(bob=0.22, yaw=35.0, period=4.0),   # 무대·인물은 고정, 글자(로고)만 좌우로 돈다
     'orange':  dict(roll=1.0, period=4.0, phase=0.00),
     'blue':    dict(roll=1.2, period=4.0, phase=0.35),
     'pink':    dict(roll=1.0, period=4.0, phase=0.70),
@@ -87,6 +86,7 @@ def build(atlas_png, layout):
             wave = [math.sin(2 * math.pi * (tm / a['period'] + ph)) for tm in times]
             if 'bob' in a: animate(nid, 'translation', [[base[0], base[1] + a['bob'] * s, base[2]] for s in wave])
             if 'roll' in a: animate(nid, 'rotation', [quat('z', a['roll'] * s) for s in wave])
+            if 'yaw' in a: animate(nid, 'rotation', [quat('y', a['yaw'] * s) for s in wave])
     nodes.append(N(name='turntable', children=kids)); turn = len(nodes) - 1
     a = ANIM.get('_root')
     if a: animate(turn, 'rotation', [quat('y', a['yaw'] * math.sin(2 * math.pi * tm / a['period'])) for tm in times])
@@ -110,13 +110,13 @@ def build(atlas_png, layout):
 def patch(cgfx, pieces):
     """glTF 로는 적을 수 없는 CGFX 설정.
     홈 메뉴는 배너 모델을 스스로 세로축으로 돌린다. 조각은 앞면만 있는 납작한 판이라 옆·뒤를 향하면 사라지므로
-    - 무대 전체(diorama)에 Y축 빌보드(5): 무대가 통째로 늘 보는 사람 쪽을 향한다 (조각은 무대와 함께 움직인다)
+    - 무대 전체(diorama)와 로고를 뺀 조각마다 Y축 빌보드(5): 늘 보는 사람 쪽을 향해 옆·뒤로 돌아 사라지지 않는다
     - 재질은 양면 그리기(면 제거 끔): 혹시 돌아가도 사라지지 않게
     """
     from cgfx.sobj import BillboardMode
     from cgfx.mtob import CullMode
     cmdl = cgfx.data.models['COMMON']
-    names = {'diorama'}     # 무대 전체만: 조각마다 걸면 무대가 좌우로 돌 때 조각이 제각각 돌아 보인다(인물·배경이 따로 돎)
+    names = (set(pieces) - {'logo'}) | {'diorama'}   # 로고는 스스로 돌아야 하므로 빼고 (무대는 돌지 않는다)
     hit = set()
     for b in cmdl.skeleton.bones:
         if b in names:
