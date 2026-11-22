@@ -16,6 +16,7 @@
 #include <dirent.h>
 #include <time.h>
 #include <math.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include "ai5.h"
 
@@ -221,10 +222,12 @@ static bool splash(void) {
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     mkdir("sdmc:/switch", 0777); mkdir(DATA_DIR, 0777);
-    if (R_SUCCEEDED(romfsInit())) { FILE *t = fopen("romfs:/MES.ARC", "rb"); if (t) { fclose(t); g_romfs = true; } }
+    Result rfs = romfsInit(); int rfe = 0;
+    if (R_SUCCEEDED(rfs)) { FILE *t = fopen("romfs:/MES.ARC", "rb"); if (t) { fclose(t); g_romfs = true; } else rfe = errno; }
     static vm_t vm; g_vm = &vm;
     FILE *chk = open_data("MES.ARC"); if (!chk) { fatal("Game files not found (MES.ARC DATA.ARC BG.ARC)."); if (g_romfs) romfsExit(); return 0; } fclose(chk);
-    plat_log("start: %s, romfs %d", appletGetAppletType() == AppletType_Application ? "application" : "applet", g_romfs);
+    plat_log("start: %s, romfs %d (romfsInit 0x%x, MES.ARC errno %d), SD MES.ARC %s", appletGetAppletType() == AppletType_Application ? "application" : "applet", g_romfs, rfs, rfe, ({ FILE *q = fopen(DATA_DIR "MES.ARC", "rb"); if (q) fclose(q); q ? "yes" : "no"; }));
+    if (R_SUCCEEDED(rfs)) { DIR *rd = opendir("romfs:/"); struct dirent *de; int k = 0; if (rd) { while ((de = readdir(rd)) && k < 12) { plat_log("  romfs: %s", de->d_name); k++; } closedir(rd); } else plat_log("  romfs: cannot list (errno %d)", errno); }
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK) < 0) { char m[200]; snprintf(m, sizeof m, "SDL_Init failed: %s", SDL_GetError()); fatal(m); if (g_romfs) romfsExit(); return 0; }
     plat_log("SDL ok");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
