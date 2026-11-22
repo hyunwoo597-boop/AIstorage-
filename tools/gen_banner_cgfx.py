@@ -110,13 +110,13 @@ def build(atlas_png, layout):
 def patch(cgfx, pieces):
     """glTF 로는 적을 수 없는 CGFX 설정.
     홈 메뉴는 배너 모델을 스스로 세로축으로 돌린다. 조각은 앞면만 있는 납작한 판이라 옆·뒤를 향하면 사라지므로
-    - 무대 전체(diorama)와 조각마다 Y축 빌보드(5): 늘 보는 사람 쪽을 향한다
+    - 무대 전체(diorama)에 Y축 빌보드(5): 무대가 통째로 늘 보는 사람 쪽을 향한다 (조각은 무대와 함께 움직인다)
     - 재질은 양면 그리기(면 제거 끔): 혹시 돌아가도 사라지지 않게
     """
     from cgfx.sobj import BillboardMode
     from cgfx.mtob import CullMode
     cmdl = cgfx.data.models['COMMON']
-    names = set(pieces) | {'diorama'}
+    names = {'diorama'}     # 무대 전체만: 조각마다 걸면 무대가 좌우로 돌 때 조각이 제각각 돌아 보인다(인물·배경이 따로 돎)
     hit = set()
     for b in cmdl.skeleton.bones:
         if b in names:
