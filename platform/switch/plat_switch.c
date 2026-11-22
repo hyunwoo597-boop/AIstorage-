@@ -223,6 +223,9 @@ static bool splash(void) {
 /* libnx start-up done here (instead of libnx's default __appInit) so a failure is written to sdmc:/switch/nonoxp/boot.txt
    instead of an abort with nothing left behind: the installed (NSP) build closed before main() */
 extern void __libnx_init_time(void) __attribute__((weak));
+extern void __libnx_init_cwd(void) __attribute__((weak));
+extern void __nx_win_init(void) __attribute__((weak));   /* the default window (libnx's own __appInit makes it; SDL draws to it) */
+extern void __nx_win_exit(void) __attribute__((weak));
 static Result g_boot_rc[8];
 static void boot_note(const char *what, Result rc) {
     FILE *f = fopen(DATA_DIR "boot.txt", "a"); if (f) { fprintf(f, "%s: 0x%x (%04d-%04d)\n", what, rc, 2000 + R_MODULE(rc), R_DESCRIPTION(rc)); fclose(f); }
@@ -236,9 +239,11 @@ void __appInit(void) {
     g_boot_rc[1] = appletInitialize(); boot_note("applet", g_boot_rc[1]);
     g_boot_rc[2] = hidInitialize(); boot_note("hid", g_boot_rc[2]);
     g_boot_rc[3] = timeInitialize(); boot_note("time", g_boot_rc[3]); if (R_SUCCEEDED(g_boot_rc[3]) && __libnx_init_time) __libnx_init_time();
+    if (__libnx_init_cwd) __libnx_init_cwd();
+    if (__nx_win_init) __nx_win_init(); boot_note("window", 0);
     boot_note("init done", 0);
 }
-void __appExit(void) { timeExit(); hidExit(); appletExit(); fsdevUnmountAll(); fsExit(); smExit(); }
+void __appExit(void) { if (__nx_win_exit) __nx_win_exit(); timeExit(); hidExit(); appletExit(); fsdevUnmountAll(); fsExit(); smExit(); }
 int main(int argc, char **argv) {
     boot_note("main", 0);
     mkdir("sdmc:/switch", 0777); mkdir(DATA_DIR, 0777);
