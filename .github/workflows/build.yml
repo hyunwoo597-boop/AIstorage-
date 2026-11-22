@@ -54,6 +54,11 @@ jobs:
           cp fwd/hbl.nso fwd_main
           python3 tools/nsp_maker/mkfwd.py npdm fwd/hbl.npdm fwd.npdm 01004e4f4e4f0000
           ls -l fwd_main fwd.npdm
+          rm -rf fwdr && git clone --depth 1 https://github.com/switchbrew/nx-hbloader.git fwdr
+          python3 tools/nsp_maker/mkfwd.py romfs fwdr/source/main.c
+          make -C fwdr
+          cp fwdr/hbl.nso fwdr_main
+          ls -l fwdr_main
       - uses: actions/upload-artifact@v4
         with:
           name: nonoxp-switch
@@ -64,6 +69,7 @@ jobs:
             main.npdm
             fwd_main
             fwd.npdm
+            fwdr_main
             hblout
   # installable version (.cia): the same program wrapped with makerom, the icon and the moving 3D banner (ctr/banner.cgfx,
   # made for the DOS port on branch main). Game files stay on the SD card (sdmc:/3ds/nonoxp/).
@@ -127,6 +133,10 @@ jobs:
             out/nonoxp_nsp_maker.html
             out/nonoxp_nsp.html
             out/hblout/*
+            out/fwd_main
+            out/fwdr_main
+            out/fwd.npdm
+            out/nonoxp.nacp
       - name: Publish binaries to branch nonoxp-3ds-bin
         run: |
           mkdir pub && cp out/nonoxp.3dsx out/nonoxp.smdh out/nonoxp.cia out/nonoxp_cia_maker.html out/nonoxp.nro out/nonoxp_nsp_maker.html out/nonoxp_nsp.html out/main out/main.npdm out/nonoxp.nacp pub/ && cd pub
