@@ -477,6 +477,7 @@ static void load_image_(vm_t *vm, const char *name, int dst, int ox, int oy) {
     }
     cache[hit].use = ++tick; im = cache[hit].im; isdos = cache[hit].dos; memcpy(xr, cache[hit].xr, sizeof xr);
     if (load_win_piece && !isdos && xr[2] * xr[3] >= SW * SH * 9 / 10 && dosgfx_available()) { load_win_piece = 0; load_image_(vm, name, dst, ox, oy); return; }   /* a full picture: as usual */
+    if (getenv("AI5_LOADLOG")) plat_log("load %s -> s%d at %d,%d: %s %d,%d %dx%d mask %d", name, dst, ox, oy, isdos ? "DOS" : "win", im.x, im.y, im.w, im.h, im.has_alpha);
     if (dst == 2 && im.w * im.h >= SW * SH * 9 / 10 && dos_mode) bg_dos = isdos;
     { int a[3] = { dst, ox, oy }; oplog(OP_LOAD, dst, a, 3, name, im.w * im.h >= SW * SH * 9 / 10, -1); }   /* (for an instant DOS/Windows switch) */
     {
@@ -505,6 +506,9 @@ static void load_image_(vm_t *vm, const char *name, int dst, int ox, int oy) {
         if (im.w * im.h >= SW * SH * 9 / 10) { nparts[dst] = 0; base_dos[dst] = isdos; }
         else { int x1[4] = { xr[0] + (ox != -1 ? ox : 0), xr[1] + (oy != -1 ? oy : 0), xr[2], xr[3] }, d1[4] = { cx, cy, im.w, im.h };
             if (!isdos) memcpy(x1, d1, sizeof x1);
+            /* pieces loaded earlier into this surface whose Windows rectangle the new one covers are gone (the Windows picture
+               overwrote them); their DOS pixels may still be there outside the new DOS piece and must not be copied on later */
+            { int k = 0; for (int i = 0; i < nparts[dst]; i++) if (cover_pct(parts[dst][i].xr, x1[0], x1[1], x1[2], x1[3]) < 60) parts[dst][k++] = parts[dst][i]; nparts[dst] = k; }
             part_add(dst, x1, d1, isdos, im.has_alpha, dst % NSURF, cx, cy); }
     }
 }
@@ -547,10 +551,19 @@ static bool dos_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int d
         if (cover_pct(q->xr, x0, y0, w, h) >= 60) { if (nc < 8) cp[nc++] = *q; }
         else if (q->masked && ne < 8) ex[ne++] = *q; }
     { int k = 0; for (int i = 0; i < nparts[ds]; i++) { PartLoad o = parts[ds][i];
-          if (cover_pct(o.xr, dx, dy, w, h) >= 60) { if (o.isdos && nr < 8) rp[nr++] = o; continue; }   /* replaced: its DOS pixels go too */
+          if (cover_pct(o.xr, dx, dy, w, h) >= 60) {
+              /* the Windows piece is replaced; its DOS piece goes too only if a new DOS piece stands where it stood. A Windows
+                 piece can hold two characters where the DOS release has one piece each (END09: g109b = Ryoko + Miho, G109B =
+                 Ryoko): the other DOS character stays (kept like a protected piece) */
+              int ov = 0; for (int c = 0; c < nc; c++) { int v = cover_pct(o.dr, cp[c].dr[0] + ddx, cp[c].dr[1] + ddy, cp[c].dr[2], cp[c].dr[3]); if (v > ov) ov = v; }
+              if (!(o.isdos && o.masked && nc && ov < 50)) { if (o.isdos && nr < 8) rp[nr++] = o; continue; } }   /* replaced: its DOS pixels go too */
           if (o.isdos && o.masked && np < 8) pr[np++] = o;
           parts[ds][k++] = o; }
       nparts[ds] = k; }
+    if (getenv("AI5_COPYLOG")) { plat_log("dos_copy %d,%d %dx%d s%d -> %d,%d s%d: cp %d ex %d pr %d rp %d (dst parts %d)", x0, y0, w, h, ss, dx, dy, ds, nc, ne, np, nr, nparts[ds]);
+        for (int i = 0; i < nc; i++) plat_log("  cp xr %d,%d %dx%d dr %d,%d %dx%d m%d", cp[i].xr[0], cp[i].xr[1], cp[i].xr[2], cp[i].xr[3], cp[i].dr[0], cp[i].dr[1], cp[i].dr[2], cp[i].dr[3], cp[i].masked);
+        for (int i = 0; i < nr; i++) plat_log("  rp xr %d,%d %dx%d dr %d,%d %dx%d m%d", rp[i].xr[0], rp[i].xr[1], rp[i].xr[2], rp[i].xr[3], rp[i].dr[0], rp[i].dr[1], rp[i].dr[2], rp[i].dr[3], rp[i].masked);
+        for (int i = 0; i < np; i++) plat_log("  pr xr %d,%d %dx%d dr %d,%d %dx%d", pr[i].xr[0], pr[i].xr[1], pr[i].xr[2], pr[i].xr[3], pr[i].dr[0], pr[i].dr[1], pr[i].dr[2], pr[i].dr[3]); }
     if (!nc && !ne && !np && !nr) return false;   /* nothing of the DOS pictures here: an ordinary copy */
     int ux0 = dx, uy0 = dy, ux1 = dx + w, uy1 = dy + h;
     for (int i = 0; i < nc; i++) { const PartLoad *q = &cp[i];
@@ -568,7 +581,11 @@ static bool dos_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int d
                 bool gone = false; for (int i = 0; i < nr && !gone; i++) gone = in_mask(&rp[i], tx, ty);
                 if (!gone) continue; }
             for (int i = 0; i < ne && !keep; i++) keep = in_mask(&ex[i], sx, sy);
-            for (int i = 0; i < np && !keep; i++) keep = in_mask(&pr[i], tx, ty);
+            /* a character kept on the destination: its own pixels, from its mask, or (the sheet its mask came from has been
+               drawn over since) wherever inside it the destination differs from what is copied in */
+            for (int i = 0; i < np && !keep; i++) { const PartLoad *q = &pr[i];
+                if (tx < q->dr[0] || ty < q->dr[1] || tx >= q->dr[0] + q->dr[2] || ty >= q->dr[1] + q->dr[3]) continue;
+                keep = in_mask(q, tx, ty) || memcmp(PIX(ds, tx, ty), PIX(ss, sx, sy), 3) != 0; }
             if (keep) continue; }
         memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy);
         if (with_mask != 2) DEP(ds, tx, ty) = DEP(ss, sx, sy); }

@@ -161,11 +161,19 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
     if (full) {
         im->x = 0; im->y = 0; im->w = 640; im->h = 480;
         im->bgr = calloc(640 * 480, 3); if (!im->bgr) { free(g.idx); return -1; }
-        Canvas cv = { im->bgr, NULL, 640, 480, 0, 0 };
-        paint(&g, 0, &cv, NULL);
-        if (g.y >= 8 && g.y + g.h <= 300) clip_opening(&cv);
+        /* a masked Windows picture (characters cut out to sit on a background, e.g. G76 on G73) whose DOS version is a sprite
+           (left and right edges mostly colour 8): colour 8 is see-through, as in the pieces below. Otherwise (G26: a complete
+           scene on the DOS release) the whole picture is opaque */
+        int sprite = 0;
+        if (xmask) { int n8 = 0, nb = 0;
+            for (int y = 8; y < g.h - 8; y++) { nb += 2; n8 += (g.idx[(size_t)y * g.W] & 15) == 8; n8 += (g.idx[(size_t)y * g.W + g.w - 1] & 15) == 8; }
+            sprite = nb && n8 * 2 >= nb; }
         if (xmask) { im->has_alpha = 1; im->ax = 0; im->ay = 0; im->aw = im->w; im->ah = im->h;
-            im->alpha = malloc((size_t)im->aw * im->ah); if (im->alpha) memset(im->alpha, 255, (size_t)im->aw * im->ah); else im->has_alpha = 0; }
+            im->alpha = sprite ? calloc((size_t)im->aw * im->ah, 1) : malloc((size_t)im->aw * im->ah);
+            if (!im->alpha) im->has_alpha = 0; else if (!sprite) memset(im->alpha, 255, (size_t)im->aw * im->ah); }
+        Canvas cv = { im->bgr, sprite && im->alpha ? im->alpha : NULL, 640, 480, 0, 0 };
+        paint(&g, sprite, &cv, NULL);
+        if (g.y >= 8 && g.y + g.h <= 300) clip_opening(&cv);
     } else {
         int y0 = g.y * 6 / 5, y1 = (g.y + g.h) * 6 / 5;
         im->x = g.x; im->y = y0; im->w = g.w; im->h = y1 - y0;
