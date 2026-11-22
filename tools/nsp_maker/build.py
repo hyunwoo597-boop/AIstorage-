@@ -6,7 +6,7 @@ No game files and no keys go in."""
 import base64, json, os, sys
 here = os.path.dirname(os.path.abspath(__file__)); top = os.path.join(here, '..', '..')
 args = sys.argv[1:]; opt = {}
-for k in ('--kr-mes', '--kr-bg'):
+for k in ('--kr-mes', '--kr-bg', '--nro'):
     if k in args: i = args.index(k); opt[k] = args[i + 1]; del args[i:i + 2]
 nso, npdm, nacp, icon, out = args[:5]; info = args[5] if len(args) > 5 else ''
 def b64(b): s = base64.b64encode(b).decode(); return '\n'.join(s[i:i + 120] for i in range(0, len(s), 120))
@@ -18,7 +18,7 @@ html = open(os.path.join(here, 'template.html'), encoding='utf-8').read()
 html = (html.replace('/*__CORE__*/', core).replace('/*__NSPCORE__*/', nspc).replace('__BASEINFO__', info)
         .replace('__NSO64__', b64(rb(nso))).replace('__NPDM64__', b64(rb(npdm))).replace('__NACP64__', b64(rb(nacp))).replace('__ICON64__', b64(rb(icon)))
         .replace('__FONT64__', b64(rb(os.path.join(top, 'assets', 'kr', 'font16.bin')))).replace('__FONTJP64__', b64(rb(os.path.join(top, 'assets', 'font16.bin'))))
-        .replace('__PATCHJSON__', json.dumps(patch))
+        .replace('__PATCHJSON__', json.dumps(patch)).replace('__NRO64__', b64(rb(opt['--nro'])) if '--nro' in opt else '')
         .replace('__KRMES64__', b64(rb(opt['--kr-mes'])) if '--kr-mes' in opt else '')
         .replace('__KRBGJSON__', json.dumps({n: base64.b64encode(rb(os.path.join(opt['--kr-bg'], n))).decode() for n in sorted(os.listdir(opt['--kr-bg']))}) if '--kr-bg' in opt else '{}'))
 open(out, 'w', encoding='utf-8').write(html); print('%s: %d bytes' % (out, len(html.encode())))
