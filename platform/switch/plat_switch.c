@@ -219,8 +219,28 @@ static bool splash(void) {
     if (pic) SDL_DestroyTexture(pic); if (pr) SDL_DestroyTexture(pr);
     return go;
 }
+/* libnx start-up done here (instead of libnx's default __appInit) so a failure is written to sdmc:/switch/nonoxp/boot.txt
+   instead of an abort with nothing left behind: the installed (NSP) build closed before main() */
+extern void __libnx_init_time(void) __attribute__((weak));
+static Result g_boot_rc[8];
+static void boot_note(const char *what, Result rc) {
+    FILE *f = fopen(DATA_DIR "boot.txt", "a"); if (f) { fprintf(f, "%s: 0x%x (%04d-%04d)\n", what, rc, 2000 + R_MODULE(rc), R_DESCRIPTION(rc)); fclose(f); }
+}
+void __appInit(void) {
+    Result rc = smInitialize(); if (R_FAILED(rc)) diagAbortWithResult(rc);
+    if (R_SUCCEEDED(setsysInitialize())) { SetSysFirmwareVersion fw; if (R_SUCCEEDED(setsysGetFirmwareVersion(&fw))) hosversionSet(MAKEHOSVERSION(fw.major, fw.minor, fw.micro)); setsysExit(); }
+    g_boot_rc[0] = fsInitialize(); if (R_SUCCEEDED(g_boot_rc[0])) fsdevMountSdmc();
+    mkdir("sdmc:/switch", 0777); mkdir(DATA_DIR, 0777); remove(DATA_DIR "boot.txt");
+    boot_note("fs", g_boot_rc[0]);
+    g_boot_rc[1] = appletInitialize(); boot_note("applet", g_boot_rc[1]);
+    g_boot_rc[2] = hidInitialize(); boot_note("hid", g_boot_rc[2]);
+    g_boot_rc[3] = timeInitialize(); boot_note("time", g_boot_rc[3]); if (R_SUCCEEDED(g_boot_rc[3]) && __libnx_init_time) __libnx_init_time();
+    boot_note("init done", 0);
+}
+void __appExit(void) { timeExit(); hidExit(); appletExit(); fsdevUnmountAll(); fsExit(); smExit(); }
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
+    boot_note("main", 0);
     mkdir("sdmc:/switch", 0777); mkdir(DATA_DIR, 0777);
     Result rfs = romfsInit(); int rfe = 0;
     if (R_SUCCEEDED(rfs)) { FILE *t = fopen("romfs:/MES.ARC", "rb"); if (t) { fclose(t); g_romfs = true; } else rfe = errno; }
