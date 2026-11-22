@@ -140,6 +140,7 @@ bool vm_load_mes(vm_t *vm, const char *name) {
     if (name != vm->mes_name) { strncpy(vm->mes_name, name, sizeof vm->mes_name - 1); vm->mes_name[sizeof vm->mes_name - 1] = 0; }
     /* [EXE 0x4296e0] the current script's name lives at the start of VM memory, so it travels with save files */
     if ((const uint8_t *)name != vm->mem) { memset(vm->mem, 0, OFF_FLAG); strncpy((char *)vm->mem, name, OFF_FLAG - 1); }
+    sys_on_script(vm);
     return true;
 }
 bool vm_init(vm_t *vm) {

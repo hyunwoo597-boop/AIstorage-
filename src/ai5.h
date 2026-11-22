@@ -131,5 +131,6 @@ void sys_menu_define(vm_t *vm, uint32_t body_ip);
 void sys_menu_exec(vm_t *vm);
 void sys_op1b(vm_t *vm);
 void sys_line(vm_t *vm, int arg);
+void sys_on_script(vm_t *vm);   /* every script load */
 void sys_msgid(vm_t *vm, uint32_t id);
 #endif

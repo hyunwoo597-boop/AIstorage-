@@ -849,6 +849,22 @@ static void snd_cmd(vm_t *vm, int kind, int nslots, uint32_t sub, const char *na
 /* ---- saves [EXE SYS 4 -> 0x406160 -> 0x41dc30]. A file is VM memory 0x0000..0x1FFF (script name, flags, variables).
    FLAG00 holds global data (seen flags, save-list info); FLAG01.. are slots. ---- */
 #define SAVE_SIZE 0x2000
+/* Port addition: everything is open in the CG / scene / music / ending rooms (the user's request). Only while those scripts
+   run: the flags are set there and put back when the game goes on (END09 uses f[2033] as a counter, saves keep the rest). */
+static const int gal_ranges[4][2] = { { 2000, 16 }, { 2020, 16 }, { 2050, 9 }, { 3000, 120 } };   /* music, endings, scenes, CG */
+static uint8_t gal_backup[4][120]; static bool gal_on;
+static void gallery_force(vm_t *vm) {
+    for (int r = 0; r < 4; r++) for (int i = 0; i < gal_ranges[r][1]; i++) { gal_backup[r][i] = FLAG(vm, gal_ranges[r][0] + i); FLAG(vm, gal_ranges[r][0] + i) = 1; }
+    gal_on = true;
+}
+void sys_on_script(vm_t *vm) {
+    static const char *const rooms[4] = { "CGMODE.MES", "SCENE.MES", "MUSIC.MES", "ENDING.MES" };
+    bool room = false; for (int i = 0; i < 4; i++) room |= !strcasecmp(vm->mes_name, rooms[i]);
+    if (room && !gal_on) gallery_force(vm);
+    else if (!room && gal_on) {
+        for (int r = 0; r < 4; r++) for (int i = 0; i < gal_ranges[r][1]; i++) FLAG(vm, gal_ranges[r][0] + i) = gal_backup[r][i];
+        gal_on = false; }
+}
 static void save_name(char *b, uint32_t slot) { snprintf(b, 16, "FLAG%02u.dat", slot % 100); }
 static char snap_name[OFF_FLAG];      /* filled at MSGID (see sys_msgid) */
 static void save_cmd(vm_t *vm, uint32_t sub, uint32_t slot, uint32_t start, uint32_t count) {
@@ -871,7 +887,9 @@ static void save_cmd(vm_t *vm, uint32_t sub, uint32_t slot, uint32_t start, uint
         if (!plat_save_read(name, tmp, SAVE_SIZE)) memset(tmp, 0, SAVE_SIZE);
         for (int i = 0; i < 0x1000; i++) if (tmp[OFF_FLAG + i] < m[OFF_FLAG + i]) tmp[OFF_FLAG + i] = m[OFF_FLAG + i];
         plat_save_write(name, tmp, SAVE_SIZE); return;
-    case 3: if (plat_save_read(name, tmp, SAVE_SIZE)) memcpy(m + OFF_FLAG, tmp + OFF_FLAG, 0x1000); FLAG(vm, 4016) = 1; return;   /* load flags only */
+    case 3: if (plat_save_read(name, tmp, SAVE_SIZE)) memcpy(m + OFF_FLAG, tmp + OFF_FLAG, 0x1000); FLAG(vm, 4016) = 1;   /* load flags only */
+        if (gal_on) gallery_force(vm);
+        return;
     case 4: memset(m + OFF_FLAG, 0, 0x1000); memset(m + 0x1180, 0, 0x190); memset(m + 0x1310, 0, 0xCF0); FLAG(vm, 4016) = 1; return;  /* clear */
     case 5: case 7: {                  /* load part: 5 = u16 array at 0x1180, 7 = bytes at 0x1310 */
         uint32_t base = sub == 5 ? 0x1180 : 0x1310, unit = sub == 5 ? 2 : 1;
@@ -898,6 +916,7 @@ static scene_rec snap_log[30]; static int snap_n;
 /* port change: seen flags (CG / scene / music / ending galleries read them from FLAG00) are merged into FLAG00 as soon as
    one is newly set, not only on a slot save or a return to the title, so the galleries fill even if the game is never saved */
 static void autosave_flags(vm_t *vm) {
+    if (gal_on) return;
     static uint8_t merged[0x1000]; static bool init;
     if (!init) { static uint8_t t[SAVE_SIZE]; init = true; if (plat_save_read("FLAG00.dat", t, SAVE_SIZE)) memcpy(merged, t + OFF_FLAG, sizeof merged); }
     const uint8_t *f = vm->mem + OFF_FLAG; bool more = false;
