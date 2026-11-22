@@ -135,7 +135,9 @@ async function hashBlocks(blob, bs, prog) {     /* blob(크기는 bs 의 배수)
 function padTo(blob, a) { var s = sizeOf(blob), t = align(Math.max(s, 1), a); return cat(t > s ? [blob, new Uint8Array(t - s)] : [blob]); }
 /* PFS0 섹션: [해시 표][PFS0] — 블록 0x1000, 데이터는 블록 배수로 채움 */
 async function pfsSection(pfs) {
-    var bs = 0x1000, data = padTo(pfs, bs), table = await hashBlocks(data, bs);
+    /* 해시 표가 블록 하나에 들어가야 한다(FS 가 표 전체를 블록 하나로 읽어 확인). 큰 main(수 MB)은 블록을 키운다 */
+    var bs = 0x1000; while (Math.ceil(sizeOf(pfs) / bs) * 32 > bs) bs *= 2;
+    var data = padTo(pfs, bs), table = await hashBlocks(data, bs);
     var tsize = table.length, dataOff = align(tsize, 0x200), sec = cat([table, new Uint8Array(dataOff - tsize), data]);
     var hd = new Uint8Array(0xF8); hd.set(sha256(table), 0); w32(hd, 0x20, bs); w32(hd, 0x24, 2);
     w64(hd, 0x28, 0); w64(hd, 0x30, tsize); w64(hd, 0x38, dataOff); w64(hd, 0x40, data.size);
