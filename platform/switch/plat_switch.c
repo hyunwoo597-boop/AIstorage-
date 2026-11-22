@@ -4,7 +4,7 @@
  *            selection picture shown at 2x over the dimmed scene (same layout and touch areas as on the 3DS).
  * Controls : A = confirm, B = cancel, + = system menu, L = message log, R/ZR (hold) = skip, D-pad / left stick = move,
  *            right stick = pointer, touch screen = point and tap.
- * Files    : sdmc:/switch/nonoxp/ (MES.ARC DATA.ARC BG.ARC font16.bin SOUND.ARC/MUSIC.ARC VOICE.ARC DEPTH.PAK patch/),
+ * Files    : sdmc:/switch/NonomuraHospitalHD/ (MES.ARC DATA.ARC BG.ARC font16.bin SOUND.ARC/MUSIC.ARC VOICE.ARC DEPTH.PAK patch/),
  *            else the NRO/NSP RomFS ("patch/x" stored as "patch_x"). Saves and log always on the SD card. */
 #include <switch.h>
 #include <SDL2/SDL.h>
@@ -20,7 +20,7 @@
 #include <sys/stat.h>
 #include "ai5.h"
 
-#define DATA_DIR "sdmc:/switch/nonoxp/"
+#define DATA_DIR "sdmc:/switch/NonomuraHospitalHD/"
 static vm_t *g_vm;
 static bool g_romfs;
 static SDL_Window *g_win; static SDL_Renderer *g_ren; static SDL_Texture *g_tex; static SDL_Joystick *g_joy;
@@ -187,7 +187,7 @@ bool plat_frame(const uint8_t *rgb, int w, int h) {
 
 static void fatal(const char *msg) {
     plat_log("%s", msg);
-    consoleInit(NULL); printf("\n  %s\n\n  Put the game files in sdmc:/switch/nonoxp/\n  (or use the version with the files inside).\n\n  Press + to exit.\n", msg);
+    consoleInit(NULL); printf("\n  %s\n\n  Put the game files in sdmc:/switch/NonomuraHospitalHD/\n  (or use the version with the files inside).\n\n  Press + to exit.\n", msg);
     PadState pad; padConfigureInput(1, HidNpadStyleSet_NpadStandard); padInitializeDefault(&pad);
     while (appletMainLoop()) { padUpdate(&pad); if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break; consoleUpdate(NULL); }
     consoleExit(NULL);
@@ -220,7 +220,7 @@ static bool splash(void) {
     if (pic) SDL_DestroyTexture(pic); if (pr) SDL_DestroyTexture(pr);
     return go;
 }
-/* libnx start-up done here (instead of libnx's default __appInit) so a failure is written to sdmc:/switch/nonoxp/boot.txt
+/* libnx start-up done here (instead of libnx's default __appInit) so a failure is written to sdmc:/switch/NonomuraHospitalHD/boot.txt
    instead of an abort with nothing left behind: the installed (NSP) build closed before main() */
 extern void __libnx_init_time(void) __attribute__((weak));
 extern void __libnx_init_cwd(void) __attribute__((weak));
@@ -234,7 +234,13 @@ void __appInit(void) {
     Result rc = smInitialize(); if (R_FAILED(rc)) diagAbortWithResult(rc);
     if (R_SUCCEEDED(setsysInitialize())) { SetSysFirmwareVersion fw; if (R_SUCCEEDED(setsysGetFirmwareVersion(&fw))) hosversionSet(MAKEHOSVERSION(fw.major, fw.minor, fw.micro)); setsysExit(); }
     g_boot_rc[0] = fsInitialize(); if (R_SUCCEEDED(g_boot_rc[0])) fsdevMountSdmc();
-    mkdir("sdmc:/switch", 0777); mkdir(DATA_DIR, 0777); remove(DATA_DIR "boot.txt");
+    mkdir("sdmc:/switch", 0777);
+    { struct stat st; if (stat("sdmc:/switch/NonomuraHospitalHD", &st) != 0 && stat("sdmc:/switch/nonoxp", &st) == 0)   /* the folder's old name */
+          rename("sdmc:/switch/nonoxp", "sdmc:/switch/NonomuraHospitalHD");
+      if (stat("sdmc:/switch/NonomuraHospitalHD/save", &st) != 0 && stat("sdmc:/switch/nonoxp/save", &st) == 0)   /* saves left in the old folder */
+          { mkdir("sdmc:/switch/NonomuraHospitalHD", 0777); rename("sdmc:/switch/nonoxp/save", "sdmc:/switch/NonomuraHospitalHD/save"); } }
+    mkdir(DATA_DIR, 0777); remove(DATA_DIR "boot.txt");
+    { struct stat st; if (stat(DATA_DIR "NonomuraHospitalHD.nro", &st) != 0 && stat(DATA_DIR "nonoxp.nro", &st) == 0) rename(DATA_DIR "nonoxp.nro", DATA_DIR "NonomuraHospitalHD.nro"); }
     boot_note("fs", g_boot_rc[0]);
     g_boot_rc[1] = appletInitialize(); boot_note("applet", g_boot_rc[1]);
     g_boot_rc[2] = hidInitialize(); boot_note("hid", g_boot_rc[2]);
@@ -247,7 +253,7 @@ void __appExit(void) { if (__nx_win_exit) __nx_win_exit(); timeExit(); hidExit()
 int main(int argc, char **argv) {
     boot_note("main", 0);
     mkdir("sdmc:/switch", 0777); mkdir(DATA_DIR, 0777);
-    /* started by the NSP's loader (argv "romfs:/nonoxp.nro"): the game files are the installed title's own RomFS.
+    /* started by the NSP's loader (argv "romfs:/NonomuraHospitalHD.nro"): the game files are the installed title's own RomFS.
        Any other start (Homebrew menu, title override) keeps the plain romfsInit: there the current process' data storage
        belongs to another title (the overridden game) and must not be touched */
     bool from_nsp = argc > 0 && argv && argv[0] && !strncmp(argv[0], "romfs:", 6);
@@ -262,12 +268,12 @@ int main(int argc, char **argv) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK) < 0) { char m[200]; snprintf(m, sizeof m, "SDL_Init failed: %s", SDL_GetError()); fatal(m); if (g_romfs) romfsExit(); return 0; }
     plat_log("SDL ok");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-    g_win = SDL_CreateWindow("nonoxp", 0, 0, 1280, 720, SDL_WINDOW_FULLSCREEN);
+    g_win = SDL_CreateWindow("NonomuraHospitalHD", 0, 0, 1280, 720, SDL_WINDOW_FULLSCREEN);
     if (!g_win) plat_log("window: %s", SDL_GetError());
     g_ren = g_win ? SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC) : NULL;
     if (!g_ren && g_win) {   /* GPU (OpenGL ES) renderer refused: the installed (NSP) build hit this; fall back to the CPU renderer */
         plat_log("GPU renderer: %s", SDL_GetError());
-        SDL_DestroyWindow(g_win); g_win = SDL_CreateWindow("nonoxp", 0, 0, 1280, 720, SDL_WINDOW_FULLSCREEN);
+        SDL_DestroyWindow(g_win); g_win = SDL_CreateWindow("NonomuraHospitalHD", 0, 0, 1280, 720, SDL_WINDOW_FULLSCREEN);
         if (g_win) g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_SOFTWARE);
         plat_log("CPU renderer: %s", g_ren ? "ok" : SDL_GetError());
     }

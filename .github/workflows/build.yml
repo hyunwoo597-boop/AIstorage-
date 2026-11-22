@@ -37,6 +37,7 @@ jobs:
           elf2nso nonoxp.elf main
           npdmtool tools/nsp_maker/exefs.json main.npdm
           ls -l nonoxp.nro nonoxp.nacp main main.npdm
+          cp nonoxp.nro NonomuraHospitalHD.nro
       - name: nx-hbloader (reference exefs for NSP launch tests)
         continue-on-error: true
         run: |
@@ -64,6 +65,7 @@ jobs:
           name: nonoxp-switch
           path: |
             nonoxp.nro
+            NonomuraHospitalHD.nro
             nonoxp.nacp
             main
             main.npdm
@@ -116,8 +118,8 @@ jobs:
           fi
           ./makerom -f cia -o out/nonoxp.cia -elf out/nonoxp.elf -rsf ctr/nonoxp.rsf -icon out/nonoxp.smdh $banner -exefslogo -target t
           python3 tools/cia_maker_xp/build.py out/nonoxp.cia out/nonoxp_cia_maker.html "$(date -u +%Y-%m-%d) 판"
-          python3 tools/nsp_launcher/build.py out/fwd_main out/fwd.npdm out/nonoxp.nacp assets/icon_switch.jpg out/nonoxp_nsp.html "$(date -u +%Y-%m-%d) 판"
-          python3 tools/nsp_maker/build.py out/fwdr_main out/fwd.npdm out/nonoxp.nacp --nro out/nonoxp.nro assets/icon_switch.jpg out/nonoxp_nsp_maker.html "$(date -u +%Y-%m-%d) 판"
+          python3 tools/nsp_launcher/build.py out/fwd_main out/fwd.npdm out/nonoxp.nacp assets/icon_switch.jpg out/NonomuraHospitalHD_nsp_launcher.html "$(date -u +%Y-%m-%d) 판"
+          python3 tools/nsp_maker/build.py out/fwdr_main out/fwd.npdm out/nonoxp.nacp --nro out/NonomuraHospitalHD.nro assets/icon_switch.jpg out/NonomuraHospitalHD_nsp_maker.html "$(date -u +%Y-%m-%d) 판"
           ls -l out
       - name: Publish binaries as release "nonoxp-latest"
         uses: softprops/action-gh-release@v2
@@ -129,9 +131,9 @@ jobs:
             out/nonoxp.3dsx
             out/nonoxp.cia
             out/nonoxp_cia_maker.html
-            out/nonoxp.nro
-            out/nonoxp_nsp_maker.html
-            out/nonoxp_nsp.html
+            out/NonomuraHospitalHD.nro
+            out/NonomuraHospitalHD_nsp_maker.html
+            out/NonomuraHospitalHD_nsp_launcher.html
             out/hblout/*
             out/fwd_main
             out/fwdr_main
@@ -139,7 +141,7 @@ jobs:
             out/nonoxp.nacp
       - name: Publish binaries to branch nonoxp-3ds-bin
         run: |
-          mkdir pub && cp out/nonoxp.3dsx out/nonoxp.smdh out/nonoxp.cia out/nonoxp_cia_maker.html out/nonoxp.nro out/nonoxp_nsp_maker.html out/nonoxp_nsp.html out/main out/main.npdm out/nonoxp.nacp pub/ && cd pub
+          mkdir pub && cp out/nonoxp.3dsx out/nonoxp.smdh out/nonoxp.cia out/nonoxp_cia_maker.html out/NonomuraHospitalHD.nro out/NonomuraHospitalHD_nsp_maker.html out/NonomuraHospitalHD_nsp_launcher.html out/main out/main.npdm out/nonoxp.nacp pub/ && cd pub
           git init -q
           git config user.name "github-actions"
           git config user.email "actions@github.com"

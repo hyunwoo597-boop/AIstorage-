@@ -77,7 +77,7 @@ small { color:var(--sub); }
 
 <div class="card">
   <h2>설치와 실행</h2>
-  <p>1) 만든 NSP 를 SD 카드에 복사하고 DBI · Tinfoil · Awoo 같은 설치 프로그램으로 설치합니다.<br>2) 홈 메뉴에서 실행합니다. 저장 파일은 SD 카드 <b>switch/nonoxp/save/</b> 에 생깁니다.<br>3) 서명 패치(sigpatches)가 있는 커스텀 펌웨어(Atmosphère)가 필요합니다.<br>4) SD 카드 switch/nonoxp/ 에 같은 이름의 파일을 두면 NSP 안의 것 대신 그 파일을 씁니다.</p>
+  <p>1) 만든 NSP 를 SD 카드에 복사하고 DBI · Tinfoil · Awoo 같은 설치 프로그램으로 설치합니다.<br>2) 홈 메뉴에서 실행합니다. 저장 파일은 SD 카드 <b>switch/NonomuraHospitalHD/save/</b> 에 생깁니다.<br>3) 서명 패치(sigpatches)가 있는 커스텀 펌웨어(Atmosphère)가 필요합니다.<br>4) SD 카드 switch/NonomuraHospitalHD/ 에 같은 이름의 파일을 두면 NSP 안의 것 대신 그 파일을 씁니다.</p>
   <small>조작: A 결정 · B 취소 · + 메뉴 · L 이전 대사 · R(누름) 넘기기 · 오른쪽 스틱 포인터 · 터치 가능</small>
 </div>
 </main>
@@ -200,12 +200,12 @@ $('go').onclick = async function () {
         if (korean) { var patch = JSON.parse($('patch').textContent); for (var k in patch) files.push({ name: 'patch_' + k, data: b64(patch[k]) }); }
         }
         dosFiles.forEach(function (f) { files.push(f); });
-        if ($('nro').textContent.trim()) files.push({ name: 'nonoxp.nro', data: b64($('nro').textContent) });   /* 게임 프로그램: NSP 의 로더(nx-hbloader)가 읽어 실행 */
+        if ($('nro').textContent.trim()) files.push({ name: 'NonomuraHospitalHD.nro', data: b64($('nro').textContent) });   /* 게임 프로그램: NSP 의 로더(nx-hbloader)가 읽어 실행 */
         var nsp = await NspCore.buildNsp({ keys: keys, nso: b64($('nso').textContent), npdm: b64($('npdm').textContent), nacp: b64($('nacp').textContent), icon: b64($('icon').textContent), titleId: '01004e4f4e4f0000', files: files },
             function (f, m) { setp(0.05 + 0.95 * f); say(m + '… ' + Math.round(f * 100) + '%'); });
         setp(1); say('완료: ' + mb(nsp.size));
         var u = URL.createObjectURL(nsp);
-        $('out').innerHTML = '<a class="dl" href="' + u + '" download="nonoxp.nsp">nonoxp.nsp 저장 (' + mb(nsp.size) + ')</a><small>저장한 뒤 SD 카드에 복사해 설치하세요.</small>';
+        $('out').innerHTML = '<a class="dl" href="' + u + '" download="Nonomura_Hospital_HD.nsp">Nonomura_Hospital_HD.nsp 저장 (' + mb(nsp.size) + ')</a><small>저장한 뒤 SD 카드에 복사해 설치하세요.</small>';
     } catch (e) { say('실패: ' + (e && e.message ? e.message : e)); }
     btn.disabled = false;
 };

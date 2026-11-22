@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Installed (NSP) build = nx-hbloader that starts sdmc:/switch/nonoxp/nonoxp.nro (an SD-card forwarder).
+"""Installed (NSP) build = nx-hbloader that starts sdmc:/switch/NonomuraHospitalHD/NonomuraHospitalHD.nro (an SD-card forwarder).
   mkfwd.py patch <nx-hbloader/source/main.c>
   mkfwd.py npdm <hbl.npdm> <out.npdm> <program id hex>  : program id, application type 1"""
 import sys, struct
 if sys.argv[1] == 'patch':
     # the plain nx-hbloader (an NSP with it starts sdmc:/hbmenu.nro fine) with only two changes:
-    # it starts sdmc:/switch/nonoxp/nonoxp.nro instead of hbmenu, and goes back to HOME when the game returns
+    # it starts sdmc:/switch/NonomuraHospitalHD/NonomuraHospitalHD.nro instead of hbmenu, and goes back to HOME when the game returns
     p = sys.argv[2]; s = open(p).read()
     o = '#define DEFAULT_NRO "sdmc:/hbmenu.nro"'
-    assert o in s; s = s.replace(o, '#define DEFAULT_NRO "sdmc:/switch/nonoxp/nonoxp.nro"')
+    assert o in s; s = s.replace(o, '#define DEFAULT_NRO "sdmc:/switch/NonomuraHospitalHD/NonomuraHospitalHD.nro"')
     o = """    if (g_nextNroPath[0] == '\\0')
     {
 """
@@ -18,7 +18,7 @@ if sys.argv[1] == 'patch':
     open(p, 'w').write(s); print('patched', p)
 elif sys.argv[1] == 'romfs':
     # all-in-one NSP: nx-hbloader that reads nonoxp.nro out of the title's own RomFS with plain fs-service calls
-    # (no heap, no romfs device: the loader keeps only a 16KB heap), logs each step to sdmc:/switch/nonoxp/fwd.txt
+    # (no heap, no romfs device: the loader keeps only a 16KB heap), logs each step to sdmc:/switch/NonomuraHospitalHD/fwd.txt
     p = sys.argv[2]; s = open(p).read()
     def rep(o, n):
         global s
@@ -30,8 +30,9 @@ static void flog(const char *msg, u64 v)
     b[n++] = ' '; b[n++] = '0'; b[n++] = 'x'; for (int i = 15; i >= 0; i--) { int d = (v >> (i * 4)) & 15; if (d || n > 3 + 0 || i == 0) b[n++] = "0123456789abcdef"[d]; }
     b[n++] = '\n';
     FsFileSystem sd; if (R_FAILED(fsOpenSdCardFileSystem(&sd))) return;
-    static const char path[] = "/switch/nonoxp/fwd.txt";
-    if (g_flogOff < 0) { fsFsCreateDirectory(&sd, "/switch"); fsFsCreateDirectory(&sd, "/switch/nonoxp"); fsFsDeleteFile(&sd, path); g_flogOff = 0; }
+    static const char path[] = "/switch/NonomuraHospitalHD/fwd.txt";
+    if (g_flogOff < 0) { fsFsRenameDirectory(&sd, "/switch/nonoxp", "/switch/NonomuraHospitalHD");   /* the folder's old name */
+        fsFsCreateDirectory(&sd, "/switch"); fsFsCreateDirectory(&sd, "/switch/NonomuraHospitalHD"); fsFsDeleteFile(&sd, path); g_flogOff = 0; }
     fsFsCreateFile(&sd, path, 0, 0);
     FsFile f; if (R_SUCCEEDED(fsFsOpenFile(&sd, path, FsOpenMode_Write | FsOpenMode_Append, &f))) {
         if (R_SUCCEEDED(fsFileWrite(&f, g_flogOff, b, n, FsWriteOption_Flush))) g_flogOff += n; fsFileClose(&f); }
@@ -50,8 +51,8 @@ static void readRomfsNro(u8 *buf)
     rc = fsStorageRead(&st, h[7], meta, ms); if (R_FAILED(rc)) fwdAbort(MAKERESULT(Module_HomebrewLoader, 403));
     for (u64 p = 0; p + 0x20 <= ms; ) {
         u32 nl; u64 off, size; memcpy(&off, meta + p + 8, 8); memcpy(&size, meta + p + 16, 8); memcpy(&nl, meta + p + 28, 4);
-        if (nl == 10 && p + 0x20 + nl <= ms && !memcmp(meta + p + 0x20, "nonoxp.nro", 10)) {
-            flog("nonoxp.nro size", size);
+        if (nl == 22 && p + 0x20 + nl <= ms && !memcmp(meta + p + 0x20, "NonomuraHospitalHD.nro", 22)) {
+            flog("NRO size", size);
             /* only the program part (NroHeader.size): what follows it in the file (icon, NACP, assets) must not land on the
                .bss after .data, which the game expects to be zero (hbl reads header->size bytes for the same reason) */
             rc = fsStorageRead(&st, h[9] + off, buf, sizeof(NroStart) + sizeof(NroHeader));
@@ -79,7 +80,7 @@ void __libnx_initheap(void)''')
         if (s_started++) { flog("game returned", 0); svcExitProcess(); }
         flog("loader start", 0);
         g_fromRomfs = 1;
-        strcpy(g_nextNroPath, "romfs:/nonoxp.nro"); strcpy(g_nextArgv, "romfs:/nonoxp.nro");
+        strcpy(g_nextNroPath, "romfs:/NonomuraHospitalHD.nro"); strcpy(g_nextArgv, "romfs:/NonomuraHospitalHD.nro");
     }
 """)
     rep("    rc = fsdevMountSdmc();\n", "    if (g_fromRomfs) { g_fromRomfs = 0; g_nextNroPath[0] = '\\0'; readRomfsNro(nrobuf); if (header->magic != NROHEADER_MAGIC) fwdAbort(MAKERESULT(Module_HomebrewLoader, 5)); goto nro_loaded; }\n    rc = fsdevMountSdmc();\n")

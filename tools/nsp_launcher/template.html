@@ -35,7 +35,7 @@ small { color:var(--sub); }
 <p class="sub">__BASEINFO__<br>제작자 : 디시인사이드 스위치CFW 갤러리 -루카-</p>
 <div class="card">
   <h2>이 NSP 는</h2>
-  <p>홈 메뉴 아이콘으로 SD 카드의 <b>switch/nonoxp/nonoxp.nro</b> 를 바로 실행합니다. 게임 파일은 지금 NRO 로 잘 실행되는 그 폴더(<b>switch/nonoxp/</b>)를 그대로 씁니다. 세이브도 그대로입니다.</p>
+  <p>홈 메뉴 아이콘으로 SD 카드의 <b>switch/NonomuraHospitalHD/NonomuraHospitalHD.nro</b> 를 바로 실행합니다. 게임 파일은 지금 NRO 로 잘 실행되는 그 폴더(<b>switch/NonomuraHospitalHD/</b>)를 그대로 씁니다. 세이브도 그대로입니다.</p>
 </div>
 <div class="card">
   <h2><span class="step">1</span>prod.keys</h2>
@@ -52,7 +52,7 @@ small { color:var(--sub); }
 </div>
 <div class="card">
   <h2>설치와 실행</h2>
-  <p>1) 전에 설치한 Nonomura Hospital HD 는 먼저 삭제합니다.<br>2) 만든 NSP 를 DBI · Tinfoil · Awoo 등으로 설치합니다.<br>3) SD 카드 <b>switch/nonoxp/</b> 에 nonoxp.nro 와 게임 파일이 있어야 합니다(폴더를 옮기거나 이름을 바꾸지 마세요).<br>4) 서명 패치(sigpatches)가 있는 Atmosphère 가 필요합니다.</p>
+  <p>1) 전에 설치한 Nonomura Hospital HD 는 먼저 삭제합니다.<br>2) 만든 NSP 를 DBI · Tinfoil · Awoo 등으로 설치합니다.<br>3) SD 카드 <b>switch/NonomuraHospitalHD/</b> 에 nonoxp.nro 와 게임 파일이 있어야 합니다(폴더를 옮기거나 이름을 바꾸지 마세요).<br>4) 서명 패치(sigpatches)가 있는 Atmosphère 가 필요합니다.</p>
 </div>
 </main>
 <script id="nso" type="application/octet-stream">__NSO64__</script>
@@ -79,7 +79,7 @@ $('go').onclick = async function () {
         var nsp = await NspCore.buildNsp({ keys: keys, nso: b64($('nso').textContent), npdm: b64($('npdm').textContent), nacp: b64($('nacp').textContent), icon: b64($('icon').textContent), titleId: '01004e4f4e4f0000', files: [] },
             function (f, m) { setp(f); say(m + '… ' + Math.round(f * 100) + '%'); });
         setp(1); say('완료: ' + mb(nsp.size));
-        $('out').innerHTML = '<a class="dl" href="' + URL.createObjectURL(nsp) + '" download="nonoxp.nsp">nonoxp.nsp 저장 (' + mb(nsp.size) + ')</a>';
+        $('out').innerHTML = '<a class="dl" href="' + URL.createObjectURL(nsp) + '" download="Nonomura_Hospital_HD.nsp">Nonomura_Hospital_HD.nsp 저장 (' + mb(nsp.size) + ')</a>';
     } catch (e) { say('실패: ' + (e && e.message ? e.message : e)); }
     btn.disabled = false;
 };

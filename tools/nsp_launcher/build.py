@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """NSP launcher maker (one HTML): python3 tools/nsp_launcher/build.py <fwd_main> <fwd.npdm> <nacp> <icon.jpg> <out.html> [version]
-The NSP holds only the loader (nx-hbloader starting sdmc:/switch/nonoxp/nonoxp.nro), the NACP and the icon. No game files, no keys."""
+The NSP holds only the loader (nx-hbloader starting sdmc:/switch/NonomuraHospitalHD/NonomuraHospitalHD.nro), the NACP and the icon. No game files, no keys."""
 import base64, os, sys
 here = os.path.dirname(os.path.abspath(__file__)); top = os.path.join(here, '..', '..')
 nso, npdm, nacp, icon, out = sys.argv[1:6]; info = sys.argv[6] if len(sys.argv) > 6 else ''
