@@ -240,12 +240,15 @@ void __appInit(void) {
 }
 void __appExit(void) { timeExit(); hidExit(); appletExit(); fsdevUnmountAll(); fsExit(); smExit(); }
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
     boot_note("main", 0);
     mkdir("sdmc:/switch", 0777); mkdir(DATA_DIR, 0777);
-    Result rfs = romfsInit(); int rfe = 0;
-    if (R_FAILED(rfs)) {   /* started from the NSP's loader as an NRO: the game files are the installed title's RomFS */
-        FsStorage st; rfs = fsOpenDataStorageByCurrentProcess(&st); if (R_SUCCEEDED(rfs)) rfs = romfsMountFromStorage(st, 0, "romfs"); }
+    /* started by the NSP's loader (argv "romfs:/nonoxp.nro"): the game files are the installed title's own RomFS.
+       Any other start (Homebrew menu, title override) keeps the plain romfsInit: there the current process' data storage
+       belongs to another title (the overridden game) and must not be touched */
+    bool from_nsp = argc > 0 && argv && argv[0] && !strncmp(argv[0], "romfs:", 6);
+    Result rfs; int rfe = 0;
+    if (from_nsp) { FsStorage st; rfs = fsOpenDataStorageByCurrentProcess(&st); if (R_SUCCEEDED(rfs)) rfs = romfsMountFromStorage(st, 0, "romfs"); }
+    else rfs = romfsInit();
     if (R_SUCCEEDED(rfs)) { FILE *t = fopen("romfs:/MES.ARC", "rb"); if (t) { fclose(t); g_romfs = true; } else rfe = errno; }
     static vm_t vm; g_vm = &vm;
     FILE *chk = open_data("MES.ARC"); if (!chk) { fatal("Game files not found (MES.ARC DATA.ARC BG.ARC)."); if (g_romfs) romfsExit(); return 0; } fclose(chk);
