@@ -246,7 +246,7 @@ async function buildNsp(o, prog) {
     var cnmt = buildCnmt(o.titleId, [{ hash: program.hash, id: program.id, size: program.size, type: 1 }, { hash: control.hash, id: control.id, size: control.size, type: 3 }]);
     var meta = await buildNca(o.keys, 1, o.titleId, [await pfsSection(buildPfs0([{ name: 'Application_' + o.titleId.replace(/^0x/, '').toLowerCase() + '.cnmt', data: cnmt }]))]);
     prog && prog(0.95, 'NSP 묶는 중');
-    var nsp = new BlobC(buildPfs0([{ name: program.id + '.nca', data: program.blob }, { name: control.id + '.nca', data: control.blob }, { name: meta.id + '.cnmt.nca', data: meta.blob }]).parts);   /* 진짜 Blob (암호화된 조각뿐) */
+    var nsp = new BlobC(buildPfs0([{ name: program.id + '.nca', data: program.blob }, { name: control.id + '.nca', data: control.blob }, { name: meta.id + '.cnmt.nca', data: meta.blob }]).parts, { type: 'application/octet-stream' });   /* (형식을 주지 않으면 안드로이드가 .txt 를 붙인다) */   /* 진짜 Blob (암호화된 조각뿐) */
     prog && prog(1, '완료');
     return nsp;
 }
