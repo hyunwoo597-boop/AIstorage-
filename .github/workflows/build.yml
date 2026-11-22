@@ -37,6 +37,14 @@ jobs:
           elf2nso nonoxp.elf main
           npdmtool tools/nsp_maker/exefs.json main.npdm
           ls -l nonoxp.nro nonoxp.nacp main main.npdm
+      - name: nx-hbloader (reference exefs for NSP launch tests)
+        continue-on-error: true
+        run: |
+          git clone --depth 1 https://github.com/switchbrew/nx-hbloader.git hbl
+          make -C hbl
+          ls -l hbl
+          cat hbl/*.json || true
+          mkdir -p hblout && cp hbl/*.nso hblout/hbl_main 2>/dev/null; cp hbl/*.npdm hblout/hbl.npdm 2>/dev/null; cp hbl/*.json hblout/ 2>/dev/null; ls -l hblout
       - uses: actions/upload-artifact@v4
         with:
           name: nonoxp-switch
@@ -45,6 +53,7 @@ jobs:
             nonoxp.nacp
             main
             main.npdm
+            hblout
   # installable version (.cia): the same program wrapped with makerom, the icon and the moving 3D banner (ctr/banner.cgfx,
   # made for the DOS port on branch main). Game files stay on the SD card (sdmc:/3ds/nonoxp/).
   cia:
@@ -104,6 +113,7 @@ jobs:
             out/nonoxp_cia_maker.html
             out/nonoxp.nro
             out/nonoxp_nsp_maker.html
+            out/hblout/*
       - name: Publish binaries to branch nonoxp-3ds-bin
         run: |
           mkdir pub && cp out/nonoxp.3dsx out/nonoxp.smdh out/nonoxp.cia out/nonoxp_cia_maker.html out/nonoxp.nro out/nonoxp_nsp_maker.html out/main out/main.npdm out/nonoxp.nacp pub/ && cd pub
