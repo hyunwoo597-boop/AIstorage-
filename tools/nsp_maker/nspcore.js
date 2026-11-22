@@ -156,7 +156,22 @@ async function romfsSection(romfs, prog) {
 }
 
 /* ---------- NCA ---------- */
-async function buildNca(keys, contentType, titleId, sections, prog) {
+/* NCA 머리 서명 2: 프로그램 NCA 는 NPDM(ACID)에 든 공개키로 서명을 확인한다(hacBrewPack 과 같은 방식). 키는 만들 때마다 새로 만들고,
+   그 공개키를 main.npdm 의 ACID 에 넣는다 */
+async function makeSigKey() {
+    var k = await subtle.generateKey({ name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
+    var jwk = await subtle.exportKey('jwk', k.publicKey), b = jwk.n.replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '=';
+    var bin = atob(b), n = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) n[i] = bin.charCodeAt(i);
+    if (n.length > 256) n = n.subarray(n.length - 256);
+    return { priv: k.privateKey, modulus: n };
+}
+function npdmWithKey(npdm, modulus) {
+    var d = new Uint8Array(npdm), at = -1;
+    for (var i = 0; i + 4 <= d.length; i++) if (d[i] === 0x41 && d[i + 1] === 0x43 && d[i + 2] === 0x49 && d[i + 3] === 0x44) { at = i; break; }   /* 'ACID' */
+    if (at < 0x200) throw new Error('main.npdm 에 ACID 가 없습니다');
+    d.set(modulus, at - 0x100); return d;
+}
+async function buildNca(keys, contentType, titleId, sections, prog, sig2) {
     var keyArea = new Uint8Array(0x40); var secKey = getRandom(16); keyArea.set(secKey, 0x20);       /* 2번 = AES-CTR 키 */
     var kak = await aesKey(keys.kak, 'AES-CBC'), encArea = new Uint8Array(0x40);
     for (var q = 0; q < 4; q++) encArea.set(await ecbEncrypt(kak, keyArea.subarray(q * 16, q * 16 + 16)), q * 16);
@@ -175,6 +190,7 @@ async function buildNca(keys, contentType, titleId, sections, prog) {
         s.ctrHi = new Uint8Array(8); var v = i; for (var j = 7; j >= 0; j--) { s.ctrHi[j] = v & 255; v = Math.floor(v / 256); }
     });
     hdr.set(encArea, 0x300);
+    if (sig2) hdr.set(new Uint8Array(await subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, sig2, hdr.subarray(0x200, 0x400))), 0x100);
     var encHdr = await xtsEncrypt(keys.header_key, hdr, 0x200, 0);
     var parts = [encHdr], sha = new Sha(); sha.update(encHdr);
     for (var i = 0; i < sections.length; i++) {
@@ -206,10 +222,11 @@ var LANGS = ['AmericanEnglish', 'BritishEnglish', 'Japanese', 'French', 'German'
 async function buildNsp(o, prog) {
     var P = function (a, b, m) { return function (f) { prog && prog(a + (b - a) * Math.min(f, 1), m); }; };
     /* Program NCA */
-    var exefs = await pfsSection(buildPfs0([{ name: 'main', data: o.nso }, { name: 'main.npdm', data: o.npdm }]));
+    var sk = await makeSigKey();
+    var exefs = await pfsSection(buildPfs0([{ name: 'main', data: o.nso }, { name: 'main.npdm', data: npdmWithKey(o.npdm, sk.modulus) }]));
     var secs = [exefs];
     if (o.files && o.files.length) secs.push(await romfsSection(buildSwitchRomfs(o.files), P(0.02, 0.35, '데이터 확인값 계산')));   /* 없으면 게임 파일은 SD 카드에서 */
-    var program = await buildNca(o.keys, 0, o.titleId, secs, function (f, i) { if (i === 1) P(0.35, 0.9, '암호화')(f); });
+    var program = await buildNca(o.keys, 0, o.titleId, secs, function (f, i) { if (i === 1) P(0.35, 0.9, '암호화')(f); }, sk.priv);
     /* Control NCA: control.nacp + 언어별 아이콘.  NACP 는 NRO 용(nacptool)이라 설치형에 맞게 고친다:
        소유자/그룹 ID = 타이틀 ID (0 이면 실행하자마자 닫힘), 사용자 선택·시스템 세이브 없음(세이브는 SD 카드), 로고는 시스템이 처리 */
     var nacpFix = new Uint8Array(o.nacp), tidLE = hexb(o.titleId).reverse(), dv = new DataView(nacpFix.buffer);
