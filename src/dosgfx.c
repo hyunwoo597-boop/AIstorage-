@@ -149,6 +149,25 @@ static void clip_opening(Canvas *c) {
         size_t i = (size_t)(c->ch - 1 - y) * c->cw + x; memset(c->bgr + i * 3, 0, 3); if (c->alpha) c->alpha[i] = 0; }
 }
 /* Build the DOS version of a Windows picture.  xw, xh, xmask: the Windows picture's size and whether it has a mask. */
+int dosgfx_piece_ok;
+/* a DOS picture drawn as a sprite (colour 8 see-through): its left and right edges are mostly colour 8, or a large part of
+   it (a fifth) is colour 8 joined to its border (G98/G100: the cast standing in a row, the room around them left out) */
+static int is_sprite(const Gp4 *g) {
+    int n8 = 0, nb = 0;
+    for (int y = 8; y < g->h - 8; y++) { nb += 2; n8 += (g->idx[(size_t)y * g->W] & 15) == 8; n8 += (g->idx[(size_t)y * g->W + g->w - 1] & 15) == 8; }
+    if (nb && n8 * 2 >= nb) return 1;
+    size_t n = (size_t)g->w * g->h; uint8_t *seen = calloc(n, 1); int *q = malloc(sizeof(int) * n); if (!seen || !q) { free(seen); free(q); return 0; }
+    size_t nq = 0, cnt = 0;
+    #define C8(X, Y) ((g->idx[(size_t)(Y) * g->W + (X)] & 15) == 8)
+    #define PUSH(X, Y) do { size_t k_ = (size_t)(Y) * g->w + (X); if (!seen[k_] && C8(X, Y)) { seen[k_] = 1; q[nq++] = (int)k_; cnt++; } } while (0)
+    for (int x = 0; x < g->w; x++) { PUSH(x, 0); PUSH(x, g->h - 1); }
+    for (int y = 0; y < g->h; y++) { PUSH(0, y); PUSH(g->w - 1, y); }
+    while (nq) { int k = q[--nq], x = k % g->w, y = k / g->w;
+        if (x > 0) PUSH(x - 1, y); if (x < g->w - 1) PUSH(x + 1, y); if (y > 0) PUSH(x, y - 1); if (y < g->h - 1) PUSH(x, y + 1); }
+    #undef PUSH
+    #undef C8
+    free(seen); free(q); return cnt * 5 >= n;
+}
 int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
     load_all(); if (!nents) return -1;
     const char *b = strrchr(gccname, '\\'); b = b ? b + 1 : gccname;
@@ -158,16 +177,17 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
     Gp4 g; if (gp4_decode(e->data, e->size, &g)) return -1;
     memset(im, 0, sizeof *im);
     int full = xw >= 600 && xh >= 440;
+    /* a full Windows picture whose DOS version only covers part of the screen and is no sprite (G27B: the changed part of
+       G27A) is drawn as a piece over what the surface holds, when the caller says that is the DOS picture it belongs on */
+    if (full && dosgfx_piece_ok && !(g.x <= 40 && g.x + g.w >= 600)) {
+        if (!is_sprite(&g)) { full = 0; xmask = 0; } }
     if (full) {
         im->x = 0; im->y = 0; im->w = 640; im->h = 480;
         im->bgr = calloc(640 * 480, 3); if (!im->bgr) { free(g.idx); return -1; }
         /* a masked Windows picture (characters cut out to sit on a background, e.g. G76 on G73) whose DOS version is a sprite
            (left and right edges mostly colour 8): colour 8 is see-through, as in the pieces below. Otherwise (G26: a complete
            scene on the DOS release) the whole picture is opaque */
-        int sprite = 0;
-        if (xmask) { int n8 = 0, nb = 0;
-            for (int y = 8; y < g.h - 8; y++) { nb += 2; n8 += (g.idx[(size_t)y * g.W] & 15) == 8; n8 += (g.idx[(size_t)y * g.W + g.w - 1] & 15) == 8; }
-            sprite = nb && n8 * 2 >= nb; }
+        int sprite = xmask && is_sprite(&g);
         if (xmask) { im->has_alpha = 1; im->ax = 0; im->ay = 0; im->aw = im->w; im->ah = im->h;
             im->alpha = sprite ? calloc((size_t)im->aw * im->ah, 1) : malloc((size_t)im->aw * im->ah);
             if (!im->alpha) im->has_alpha = 0; else if (!sprite) memset(im->alpha, 255, (size_t)im->aw * im->ah); }
@@ -182,9 +202,7 @@ int dosgfx_make(const char *gccname, int xw, int xh, int xmask, gcc_image *im) {
            the other black (colour 0) is part of the drawing. */
         /* Some masked Windows pictures (G26: characters cut out to sit on G23) are complete scenes on the DOS release,
            where colour 8 is just black: only a picture whose left and right edges are mostly colour 8 is a sprite. */
-        { int n8 = 0, nb = 0;            /* (also Windows pictures pasted with a key colour instead of a mask, like G23A) */
-            for (int y = 8; y < g.h - 8; y++) { nb += 2; n8 += (g.idx[(size_t)y * g.W] & 15) == 8; n8 += (g.idx[(size_t)y * g.W + g.w - 1] & 15) == 8; }
-            xmask = nb && n8 * 2 >= nb; }
+        xmask = is_sprite(&g);           /* (also Windows pictures pasted with a key colour instead of a mask, like G23A) */
         /* small variant patches (a face over a character) are rectangles whose corners are colour 8: the colour 8 joined to
            the edge is left out, so the patch keeps the character's outline */
         uint8_t *edge = NULL;

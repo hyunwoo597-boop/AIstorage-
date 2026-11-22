@@ -311,11 +311,21 @@ void dosgfx_anim_reset(void); void dosgfx_anim_slot(int a, const char *axname); 
 void dosgfx_anim_frame(double dt, void (*put)(int x, int y, const uint8_t rgb[3]));
 static int dos_mode;
 /* where the pieces drawn into each surface came from: a Windows rectangle and (for a DOS picture) the DOS rectangle */
-typedef struct { int xr[4], dr[4]; bool isdos, masked; int ms, mx, my; } PartLoad;   /* ms/mx/my: where the piece's own mask is (its sheet) */
+typedef struct { int xr[4], dr[4]; bool isdos, masked; int ms, mx, my, mid; } PartLoad;   /* mid: own copy of the mask (mpool) */   /* ms/mx/my: where the piece's own mask is (its sheet) */
 static PartLoad parts[NSURF][8]; static int nparts[NSURF]; static bool base_dos[NSURF];
+/* a copy of each DOS piece's mask as loaded: the sheet surface that held it is often drawn over later while the piece is still
+   on screen (END09: Miho's sheet reused for the background), and the piece must still be told from what is around it */
+enum { NMPOOL = 48 };
+static struct { int id, w, h; uint8_t *m; } mpool[NMPOOL]; static int mpool_next = 1, pa_mid;
+static int mpool_add(const uint8_t *alpha, int w, int h) {   /* alpha: bottom-up rows, as gcc_image */
+    int id = mpool_next++, k = id % NMPOOL; free(mpool[k].m); mpool[k].m = malloc((size_t)w * h); if (!mpool[k].m) { mpool[k].id = 0; return 0; }
+    for (int y = 0; y < h; y++) memcpy(mpool[k].m + (size_t)y * w, alpha + (size_t)(h - 1 - y) * w, w);
+    mpool[k].id = id; mpool[k].w = w; mpool[k].h = h; return id;
+}
 static void part_add(int s, const int xr[4], const int dr[4], bool isdos, bool masked, int ms, int mx, int my) {
     if (nparts[s] == 8) { memmove(parts[s], parts[s] + 1, sizeof parts[s][0] * 7); nparts[s]--; }
     PartLoad *p = &parts[s][nparts[s]++]; memcpy(p->xr, xr, sizeof p->xr); memcpy(p->dr, dr, sizeof p->dr); p->isdos = isdos; p->masked = masked; p->ms = ms; p->mx = mx; p->my = my;
+    p->mid = pa_mid; pa_mid = 0;
 }
 /* DOS look: a partial copy out of a piece is redirected to the DOS piece's own rectangle (the DOS variants/sprites are drawn
    where they belong on the DOS screen); a piece of Windows art is not pasted over a DOS picture. Returns 1 to skip the copy. */
@@ -356,7 +366,7 @@ static int dos_remap(int *x0, int *y0, int *w, int *h, int ss, int *dx, int *dy,
             e[7] = q->ms; e[8] = q->mx; e[9] = q->my; }
         for (int t = 0; t < n; t++) { const int *e = remap_more[t]; const PartLoad *q = &parts[ss][sel[t]];
             int xr[4] = { q->xr[0] + ddx, q->xr[1] + ddy, q->xr[2], q->xr[3] }, dr[4] = { e[4], e[5], e[2], e[3] };
-            part_add(ds, xr, dr, true, e[6] == 3, e[7], e[8], e[9]); }
+            pa_mid = q->mid; part_add(ds, xr, dr, true, e[6] == 3, e[7], e[8], e[9]); }
         int *e = remap_more[n - 1]; *x0 = e[0]; *y0 = e[1]; *w = e[2]; *h = e[3]; *dx = e[4]; *dy = e[5]; remap_n = n - 1; remap_ms = e[7]; remap_mx = e[8]; remap_my = e[9];   /* last one returned, the others in remap_more */
         return e[6]; }
     return 0;
@@ -457,7 +467,9 @@ static void load_image_(vm_t *vm, const char *name, int dst, int ox, int oy) {
     static struct { char name[36]; gcc_image im; unsigned use; size_t bytes; bool dos; int xr[4]; } cache[NCACHE]; static unsigned tick;
     int xr[4] = { 0, 0, 0, 0 };
     gcc_image im; dst %= NSURF; int hit = -1; bool isdos = false;
-    char key[36]; snprintf(key, sizeof key, "%s%s", dos_mode && !load_win_piece ? "D:" : "", name);
+    extern int dosgfx_piece_ok; dosgfx_piece_ok = dos_mode && base_dos[dst] && dst != 0;   /* see dosgfx_make: the surface holds a DOS picture */
+    if (dos_mode && dst != 0) for (int i = 0; i < nparts[dst]; i++) if (parts[dst][i].isdos && parts[dst][i].dr[2] * parts[dst][i].dr[3] >= 540 * 280) dosgfx_piece_ok = 1;
+    char key[36]; snprintf(key, sizeof key, "%s%s%s", dos_mode && !load_win_piece ? "D:" : "", dosgfx_piece_ok ? "P:" : "", name);
     for (int i = 0; i < NCACHE; i++) if (cache[i].im.bgr && !strcasecmp(cache[i].name, key)) { hit = i; break; }
     if (hit < 0) {
         size_t n; uint8_t *raw = arc_load(&vm->arc_bg, name, &n); if (!raw) { plat_log("missing image %s", name); return; }
@@ -509,6 +521,7 @@ static void load_image_(vm_t *vm, const char *name, int dst, int ox, int oy) {
             /* pieces loaded earlier into this surface whose Windows rectangle the new one covers are gone (the Windows picture
                overwrote them); their DOS pixels may still be there outside the new DOS piece and must not be copied on later */
             { int k = 0; for (int i = 0; i < nparts[dst]; i++) if (cover_pct(parts[dst][i].xr, x1[0], x1[1], x1[2], x1[3]) < 60) parts[dst][k++] = parts[dst][i]; nparts[dst] = k; }
+            if (isdos && im.has_alpha && im.aw == im.w && im.ah == im.h) pa_mid = mpool_add(im.alpha, im.aw, im.ah);
             part_add(dst, x1, d1, isdos, im.has_alpha, dst % NSURF, cx, cy); }
     }
 }
@@ -529,6 +542,8 @@ static int cover_pct(const int xr[4], int x0, int y0, int w, int h) {
 static bool in_mask(const PartLoad *q, int x, int y) {   /* (x, y) in the surface that holds q: one of q's own pixels? */
     if (x < q->dr[0] || y < q->dr[1] || x >= q->dr[0] + q->dr[2] || y >= q->dr[1] + q->dr[3]) return false;
     if (!q->masked) return true;
+    if (q->mid && mpool[q->mid % NMPOOL].id == q->mid) { const int k = q->mid % NMPOOL; int px = x - q->dr[0], py = y - q->dr[1];
+        if (px < mpool[k].w && py < mpool[k].h) return mpool[k].m[(size_t)py * mpool[k].w + px] >= 128; }
     int mx = q->mx + x - q->dr[0], my = q->my + y - q->dr[1]; return INS(q->ms, mx, my) && MSK(q->ms, mx, my) >= 128;
 }
 /* DOS look: a copy of a Windows rectangle that brought DOS pieces leaves no Windows pixels outside the DOS picture opening
@@ -581,17 +596,13 @@ static bool dos_copy(int x0, int y0, int w, int h, int ss, int dx, int dy, int d
                 bool gone = false; for (int i = 0; i < nr && !gone; i++) gone = in_mask(&rp[i], tx, ty);
                 if (!gone) continue; }
             for (int i = 0; i < ne && !keep; i++) keep = in_mask(&ex[i], sx, sy);
-            /* a character kept on the destination: its own pixels, from its mask, or (the sheet its mask came from has been
-               drawn over since) wherever inside it the destination differs from what is copied in */
-            for (int i = 0; i < np && !keep; i++) { const PartLoad *q = &pr[i];
-                if (tx < q->dr[0] || ty < q->dr[1] || tx >= q->dr[0] + q->dr[2] || ty >= q->dr[1] + q->dr[3]) continue;
-                keep = in_mask(q, tx, ty) || memcmp(PIX(ds, tx, ty), PIX(ss, sx, sy), 3) != 0; }
+            for (int i = 0; i < np && !keep; i++) keep = in_mask(&pr[i], tx, ty);
             if (keep) continue; }
         memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy);
         if (with_mask != 2) DEP(ds, tx, ty) = DEP(ss, sx, sy); }
     for (int i = 0; i < nc; i++) { const PartLoad *q = &cp[i];
         int xr[4] = { q->xr[0] + ddx, q->xr[1] + ddy, q->xr[2], q->xr[3] }, dr[4] = { q->dr[0] + ddx, q->dr[1] + ddy, q->dr[2], q->dr[3] };
-        part_add(ds, xr, dr, true, q->masked, q->ms, q->mx, q->my); }
+        pa_mid = q->mid; part_add(ds, xr, dr, true, q->masked, q->ms, q->mx, q->my); }
     if (nc) dos_blank_outside(ds, dx, dy, w, h);
     return true;
 }
@@ -622,7 +633,16 @@ static void gfx_copy_key_raw(int x0, int y0, int w, int h, int ss, int dx, int d
 static void gfx_copy_key(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer) {
     { int a[10] = { x0, y0, w, h, ss, dx, dy, ds, (int)key, keep_layer }; oplog(OP_KEY, ds, a, 10, NULL, false, ss); }
     dos_widen(&x0, &y0, &w, &h, &dx, &dy);
+    int fx0 = x0, fy0 = y0, fw = w, fh = h, fdx = dx, fdy = dy;
     int rm = dos_remap(&x0, &y0, &w, &h, ss, &dx, &dy, ds); if (rm == 1) return;
+    if (dos_mode && rm == 0 && fw * fh >= SW * SH * 9 / 10) {
+        /* a keyed copy of (nearly) the whole surface holding DOS sprites (G98 over G23 in the CG gallery): the sprites have no
+           key colour, so they go through their masks and the rest of the source is left out */
+        int ns = ss % NSURF, done = 0;
+        for (int i = 0; i < nparts[ns]; i++) { const PartLoad *q = &parts[ns][i]; if (!q->isdos) continue;   /* (unmasked: a DOS part-picture, G94A) */
+            int mk1[3] = { q->ms, q->mx, q->my };
+            gfx_copy_key_raw(q->dr[0], q->dr[1], q->dr[2], q->dr[3], ss, q->dr[0] + fdx - fx0, q->dr[1] + fdy - fy0, ds, key, keep_layer, q->masked ? 3 : 2, mk1); done = 1; }
+        if (done) return; }
     int n = remap_n, more[8][10]; memcpy(more, remap_more, sizeof more); int mk[3] = { remap_ms, remap_mx, remap_my };
     for (int i = 0; i < n; i++) gfx_copy_key_raw(more[i][0], more[i][1], more[i][2], more[i][3], ss, more[i][4], more[i][5], ds, key, keep_layer, more[i][6], more[i] + 7);
     gfx_copy_key_raw(x0, y0, w, h, ss, dx, dy, ds, key, keep_layer, rm, mk);
@@ -1192,6 +1212,9 @@ void sys_call(vm_t *vm, uint32_t fn) {
             SET_SYS16(vm, 2, SYS16(vm, 2) & ~2);
             gfx_copy(0, 0, SW, SH, 0, 0, 0, 11, 0); if (p[1].val) gfx_fill(0, 0, SW, SH, 10, p[1].val, 0);
             gfx_copy(0, 0, SW, SH, 10, 0, 0, 0, 0); fx_left = 16;
+            /* DOS look: the DOS animations draw straight onto the screen; going on through the fade they would stamp the old
+               picture's frames over the new one (END05A: Eisaku's face over the lamp). Their scene is over: stop them */
+            if (dos_mode) dosgfx_anim_reset();
             while (fx_left && !vm->quit) if (!frame(vm)) vm->quit = true;
             return; }
         break;
