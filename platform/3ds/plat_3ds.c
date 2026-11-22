@@ -380,17 +380,24 @@ static void depth_stats(void) {
     if (sub < lo) sub = lo; if (sub > hi) sub = hi;
     g_lo = lo; g_hi_d = hi; g_sub = sub;
 }
-/* big depth steps (character outline against the background) become ramps ~18 px wide (the larger shifts need the wider ramp), small relief stays: at full slider
-   the shift difference across an outline was larger than the outline's soft edge, so pixels folded over each other and
-   showed as a pale ghost line. out = blur + (depth - blur) limited to +-12 levels */
+/* depth map clean-up for the warp (AI maps):
+   - the fine relief inside a figure (eyes, nose, hair strands) is kept at a quarter: at full strength the eyes and the face
+     outline moved by different amounts and the face looked bent (both eyes saw a different face)
+   - a figure keeps its own depth right up to its outline: the step to the background becomes a ramp on the background side
+     (max filter before the blur), so the background stretches next to a character instead of the character's face
+   out = B + clamp(d - B, +-12) / 4, B = box blur (19 px) of the 4-px max filter of d */
 static void soften_steps(void) {
-    static uint16_t t[240 * 320]; static uint32_t c[321];
-    for (int y = 0; y < 240; y++) { c[0] = 0; for (int x = 0; x < 320; x++) c[x + 1] = c[x] + g_dmh[y][x];
+    static uint8_t m[240][320]; static uint16_t t[240 * 320]; static uint32_t c[321];
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int v = 0;    /* max filter, horizontal then vertical */
+        for (int k = x - 4; k <= x + 4; k++) if (k >= 0 && k < 320 && g_dmh[y][k] > v) v = g_dmh[y][k]; t[y * 320 + x] = v; }
+    for (int x = 0; x < 320; x++) for (int y = 0; y < 240; y++) { int v = 0;
+        for (int k = y - 4; k <= y + 4; k++) if (k >= 0 && k < 240 && t[k * 320 + x] > v) v = t[k * 320 + x]; m[y][x] = v; }
+    for (int y = 0; y < 240; y++) { c[0] = 0; for (int x = 0; x < 320; x++) c[x + 1] = c[x] + m[y][x];
         for (int x = 0; x < 320; x++) { int a = x - 9 < 0 ? 0 : x - 9, b = x + 10 > 320 ? 320 : x + 10; t[y * 320 + x] = (uint16_t)((c[b] - c[a]) * 16 / (b - a)); } }
     static uint32_t cc[241];
     for (int x = 0; x < 320; x++) { cc[0] = 0; for (int y = 0; y < 240; y++) cc[y + 1] = cc[y] + t[y * 320 + x];
         for (int y = 0; y < 240; y++) { int a = y - 9 < 0 ? 0 : y - 9, b = y + 10 > 240 ? 240 : y + 10; int bl = (int)((cc[b] - cc[a]) / (b - a)) / 16;
-            int d = g_dmh[y][x] - bl; if (d > 12) d = 12; if (d < -12) d = -12; g_dmh[y][x] = (uint8_t)(bl + d); } }
+            int d = g_dmh[y][x] - bl; if (d > 12) d = 12; if (d < -12) d = -12; int o = bl + d / 4; g_dmh[y][x] = (uint8_t)(o < 0 ? 0 : o > 255 ? 255 : o); } }
 }
 static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
     /* shifts in 1/16 pixel: whole-pixel shifts turned most of the fine relief of the depth maps into the same shift (86 %
