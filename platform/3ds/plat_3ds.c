@@ -126,7 +126,7 @@ static inline void put(u8 *fb, int x, int y, int r, int g, int b) { u8 *p = fb +
 /* stereoscopic 3D: the engine tags every screen pixel as backdrop or sprite (sys_scene_depth). With the 3D slider up, the
    backdrop is pushed behind the screen (up to BACK_MAX px per eye) and characters/overlays come slightly forward
    (up to FRONT_MAX px per eye, opposite direction). Backdrop hidden behind a sprite is filled from the nearest backdrop. */
-enum { BACK_MAX = 7, FRONT_MAX = 3 };
+enum { BACK_MAX = 11, FRONT_MAX = 5 };
 static const uint8_t *g_fade; static int g_fade_a;
 static inline void avg2(const uint8_t *r0, const uint8_t *r1, int sx, int *r, int *g, int *b) {
     const uint8_t *a = r0 + sx * 6, *c = r1 + sx * 6; *r = (a[0] + a[3] + c[0] + c[3]) >> 2; *g = (a[1] + a[4] + c[1] + c[4]) >> 2; *b = (a[2] + a[5] + c[2] + c[5]) >> 2;
@@ -381,16 +381,16 @@ static void depth_stats(void) {
     if (sub < lo) sub = lo; if (sub > hi) sub = hi;
     g_lo = lo; g_hi_d = hi; g_sub = sub;
 }
-/* big depth steps (character outline against the background) become ramps ~12 px wide, small relief stays: at full slider
+/* big depth steps (character outline against the background) become ramps ~18 px wide (the larger shifts need the wider ramp), small relief stays: at full slider
    the shift difference across an outline was larger than the outline's soft edge, so pixels folded over each other and
    showed as a pale ghost line. out = blur + (depth - blur) limited to +-12 levels */
 static void soften_steps(void) {
     static uint16_t t[240 * 320]; static uint32_t c[321];
     for (int y = 0; y < 240; y++) { c[0] = 0; for (int x = 0; x < 320; x++) c[x + 1] = c[x] + g_dmh[y][x];
-        for (int x = 0; x < 320; x++) { int a = x - 6 < 0 ? 0 : x - 6, b = x + 7 > 320 ? 320 : x + 7; t[y * 320 + x] = (uint16_t)((c[b] - c[a]) * 16 / (b - a)); } }
+        for (int x = 0; x < 320; x++) { int a = x - 9 < 0 ? 0 : x - 9, b = x + 10 > 320 ? 320 : x + 10; t[y * 320 + x] = (uint16_t)((c[b] - c[a]) * 16 / (b - a)); } }
     static uint32_t cc[241];
     for (int x = 0; x < 320; x++) { cc[0] = 0; for (int y = 0; y < 240; y++) cc[y + 1] = cc[y] + t[y * 320 + x];
-        for (int y = 0; y < 240; y++) { int a = y - 6 < 0 ? 0 : y - 6, b = y + 7 > 240 ? 240 : y + 7; int bl = (int)((cc[b] - cc[a]) / (b - a)) / 16;
+        for (int y = 0; y < 240; y++) { int a = y - 9 < 0 ? 0 : y - 9, b = y + 10 > 240 ? 240 : y + 10; int bl = (int)((cc[b] - cc[a]) / (b - a)) / 16;
             int d = g_dmh[y][x] - bl; if (d > 12) d = 12; if (d < -12) d = -12; g_dmh[y][x] = (uint8_t)(bl + d); } }
 }
 static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
@@ -444,10 +444,10 @@ static void draw_scene(const uint8_t *rgb) {
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
           else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); soften_steps(); g_hi = true; } } g_dm_sig = sig; depth_stats(); }
         /* slider curve: 32 steps (no jitter); the effect rises quickly at the bottom (s^0.7), the depth behind the screen
-           grows to 10 px and the pop-out grows faster in the upper half (2..6 px); as the slider goes up the screen plane
+           grows to 14 px and the pop-out grows faster in the upper half (3..8 px); as the slider goes up the screen plane
            moves from halfway (subject slightly forward) towards the far end (subject clearly in front of the screen) */
         float q = (int)(sl * 32.0f + 0.5f) / 32.0f, e = powf(q, 0.7f);
-        int bk = (int)(e * 9.0f + 0.5f), fb2 = (int)(e * (2.0f + 3.0f * q) + 0.5f);
+        int bk = (int)(e * 14.0f + 0.5f), fb2 = (int)(e * (3.0f + 5.0f * q) + 0.5f);   /* stronger (was 9 / 2..5) */
         g_zp = g_lo + (int)((g_sub - g_lo) * (0.55f - 0.25f * q));
         make_half(rgb, z, true); draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
