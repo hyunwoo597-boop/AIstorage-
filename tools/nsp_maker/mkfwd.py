@@ -52,7 +52,13 @@ static void readRomfsNro(u8 *buf)
         u32 nl; u64 off, size; memcpy(&off, meta + p + 8, 8); memcpy(&size, meta + p + 16, 8); memcpy(&nl, meta + p + 28, 4);
         if (nl == 10 && p + 0x20 + nl <= ms && !memcmp(meta + p + 0x20, "nonoxp.nro", 10)) {
             flog("nonoxp.nro size", size);
-            rc = fsStorageRead(&st, h[9] + off, buf, size); flog("read", rc);
+            /* only the program part (NroHeader.size): what follows it in the file (icon, NACP, assets) must not land on the
+               .bss after .data, which the game expects to be zero (hbl reads header->size bytes for the same reason) */
+            rc = fsStorageRead(&st, h[9] + off, buf, sizeof(NroStart) + sizeof(NroHeader));
+            if (R_FAILED(rc)) fwdAbort(MAKERESULT(Module_HomebrewLoader, 405));
+            u32 psize = ((NroHeader *)(buf + sizeof(NroStart)))->size; flog("program size", psize);
+            if (psize < sizeof(NroStart) + sizeof(NroHeader) || psize > size) fwdAbort(MAKERESULT(Module_HomebrewLoader, 406));
+            rc = fsStorageRead(&st, h[9] + off + sizeof(NroStart) + sizeof(NroHeader), buf + sizeof(NroStart) + sizeof(NroHeader), psize - sizeof(NroStart) - sizeof(NroHeader)); flog("read", rc);
             if (R_FAILED(rc)) fwdAbort(MAKERESULT(Module_HomebrewLoader, 405));
             fsStorageClose(&st); return;
         }
