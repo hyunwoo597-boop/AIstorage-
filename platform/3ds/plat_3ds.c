@@ -1,7 +1,7 @@
 /* Nintendo 3DS backend (libctru, software framebuffers).
  * Top screen   : the scene, 640x480 averaged down to 320x240, centred in 400x240.
  * Bottom screen: dialogue / choices re-rendered from strings with the 16px font (20 full-width columns).
- * Data folder  : sdmc:/3ds/nonoxp/  (MES.ARC DATA.ARC BG.ARC font16.bin; optional SOUND.ARC VOICE.ARC)
+ * Data folder  : sdmc:/3ds/NonomuraHospitalHD/  (MES.ARC DATA.ARC BG.ARC font16.bin; optional SOUND.ARC VOICE.ARC)
  * NOTE: written without access to hardware or the toolchain; first build may need fixes. */
 #include <3ds.h>
 #include <stdio.h>
@@ -17,7 +17,7 @@
 
 u32 __stacksize__ = 0x40000;   /* the script interpreter recurses; the default 32 KB is too small */
 
-#define DATA_DIR "sdmc:/3ds/nonoxp/"
+#define DATA_DIR "sdmc:/3ds/NonomuraHospitalHD/"
 static vm_t *g_vm;
 static u32 g_held, g_down; static touchPosition g_touch; static bool g_touching, g_touch_armed;
 static int g_cx = 320, g_cy = 100;
@@ -554,7 +554,12 @@ static bool splash(void) {
 int main(void) {
     gfxInitDefault(); gfxSetDoubleBuffering(GFX_TOP, true); gfxSetDoubleBuffering(GFX_BOTTOM, true);
     osSetSpeedupEnable(true);
-    mkdir("sdmc:/3ds", 0777); mkdir(DATA_DIR, 0777);
+    mkdir("sdmc:/3ds", 0777);
+    { struct stat st; if (stat("sdmc:/3ds/NonomuraHospitalHD", &st) != 0 && stat("sdmc:/3ds/nonoxp", &st) == 0)   /* the folder's old name */
+          rename("sdmc:/3ds/nonoxp", "sdmc:/3ds/NonomuraHospitalHD");
+      if (stat("sdmc:/3ds/NonomuraHospitalHD/save", &st) != 0 && stat("sdmc:/3ds/nonoxp/save", &st) == 0)
+          { mkdir("sdmc:/3ds/NonomuraHospitalHD", 0777); rename("sdmc:/3ds/nonoxp/save", "sdmc:/3ds/NonomuraHospitalHD/save"); } }
+    mkdir(DATA_DIR, 0777);
     if (R_SUCCEEDED(romfsInit())) { FILE *t = fopen("romfs:/MES.ARC", "rb"); if (t) { fclose(t); g_romfs = true; } }
     void snd_init(void), snd_exit(void); snd_init();
     static vm_t vm; g_vm = &vm;

@@ -53,7 +53,7 @@ small { color:var(--sub); }
 
 <div class="card">
   <h2><span class="step">3</span>입체 깊이 DEPTH.PAK (선택)</h2>
-  <p>AI 로 만든 입체 3D 깊이 파일. 없으면 입체가 단순한 추정 방식으로 나옵니다. 나중에 SD 카드의 <b>3ds/nonoxp/</b> 에 넣어도 됩니다.</p>
+  <p>AI 로 만든 입체 3D 깊이 파일. 없으면 입체가 단순한 추정 방식으로 나옵니다. 나중에 SD 카드의 <b>3ds/NonomuraHospitalHD/</b> 에 넣어도 됩니다.</p>
   <label class="pick">여기를 눌러 DEPTH.PAK 고르기<input type="file" id="inDepth"></label>
   <div class="files" id="fDepth"></div>
 </div>
@@ -69,13 +69,13 @@ small { color:var(--sub); }
 
 <div class="card">
   <h2>게임 파일 없는 설치판</h2>
-  <p>게임 파일을 SD 카드 <b>3ds/nonoxp/</b> 폴더에 직접 넣어 쓰는 경우의 작은 설치 파일(약 1MB)입니다.</p>
-  <button class="small" id="dlBase">nonoxp.cia 받기</button>
+  <p>게임 파일을 SD 카드 <b>3ds/NonomuraHospitalHD/</b> 폴더에 직접 넣어 쓰는 경우의 작은 설치 파일(약 1MB)입니다.</p>
+  <button class="small" id="dlBase">NonomuraHospitalHD.cia 받기</button>
 </div>
 
 <div class="card">
   <h2>설치와 실행</h2>
-  <p>1) 만든 CIA 를 SD 카드에 복사하고 FBI 로 설치합니다.<br>2) 홈 메뉴에서 실행합니다. 저장 파일은 SD 카드 <b>3ds/nonoxp/save/</b> 에 생깁니다.<br>3) 소리가 안 나면 SD 카드 <b>3ds/dspfirm.cdc</b> 가 있는지 확인하세요(DSP1 으로 만들 수 있습니다).<br>4) SD 카드 3ds/nonoxp/ 에 같은 이름의 파일을 두면 CIA 안의 것 대신 그 파일을 씁니다(예: 새 DEPTH.PAK).</p>
+  <p>1) 만든 CIA 를 SD 카드에 복사하고 FBI 로 설치합니다.<br>2) 홈 메뉴에서 실행합니다. 저장 파일은 SD 카드 <b>3ds/NonomuraHospitalHD/save/</b> 에 생깁니다.<br>3) 소리가 안 나면 SD 카드 <b>3ds/dspfirm.cdc</b> 가 있는지 확인하세요(DSP1 으로 만들 수 있습니다).<br>4) SD 카드 3ds/NonomuraHospitalHD/ 에 같은 이름의 파일을 두면 CIA 안의 것 대신 그 파일을 씁니다(예: 새 DEPTH.PAK).</p>
   <small>New 3DS 전용입니다. 구형 3DS 에서는 실행되지 않습니다.</small>
 </div>
 </main>
@@ -123,7 +123,7 @@ $('inKor').onchange = function () { picked.kor = Array.from(this.files);
     var mes = picked.kor.find(function (f) { return f.name.toUpperCase() === 'MES.ARC'; }), bg = picked.kor.find(function (f) { return f.name.toUpperCase() === 'BG.ARC'; });
     show('fKor', picked.kor, (mes ? '<span class="ok">✔ 한글 대사</span> ' : '<span class="warn">mes.arc 없음</span> ') + (bg ? '<span class="ok">✔ 한글 그림</span>' : '<span class="warn">Bg.Arc 없음</span>')); };
 $('inDepth').onchange = function () { picked.depth = Array.from(this.files).slice(0, 1); show('fDepth', picked.depth, picked.depth.length ? '<span class="ok">✔ 입체 깊이</span>' : ''); };
-$('dlBase').onclick = function () { var u = URL.createObjectURL(new Blob([b64($('base').textContent)])); var a = document.createElement('a'); a.href = u; a.download = 'nonoxp.cia'; document.body.appendChild(a); a.click(); a.remove(); };
+$('dlBase').onclick = function () { var u = URL.createObjectURL(new Blob([b64($('base').textContent)])); var a = document.createElement('a'); a.href = u; a.download = 'NonomuraHospitalHD_base.cia'; document.body.appendChild(a); a.click(); a.remove(); };
 
 $('go').onclick = async function () {
     var btn = this; btn.disabled = true; $('out').innerHTML = ''; var logEl = $('log'), bar = $('bar');
@@ -158,7 +158,7 @@ $('go').onclick = async function () {
         var cia = await XpCore.buildCia(base, files, function (f, m) { setp(f); say(m + '… ' + Math.round(f * 100) + '%'); });
         setp(1); say('완료: ' + mb(cia.size));
         var u = URL.createObjectURL(cia);
-        $('out').innerHTML = '<a class="dl" href="' + u + '" download="nonoxp_full.cia">nonoxp_full.cia 저장 (' + mb(cia.size) + ')</a><small>저장한 뒤 SD 카드에 복사해 FBI 로 설치하세요.</small>';
+        $('out').innerHTML = '<a class="dl" href="' + u + '" download="NonomuraHospitalHD.cia">NonomuraHospitalHD.cia 저장 (' + mb(cia.size) + ')</a><small>저장한 뒤 SD 카드에 복사해 FBI 로 설치하세요.</small>';
     } catch (e) { say('실패: ' + (e && e.message ? e.message : e)); }
     btn.disabled = false;
 };

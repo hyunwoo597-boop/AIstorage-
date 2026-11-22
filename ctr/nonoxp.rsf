@@ -24,7 +24,7 @@ AccessControlInfo:
 
   UseExtSaveData          : false
 
-  # the game files, the settings file and the log all live on the SD card (sdmc:/3ds/nonoxp)
+  # the game files, the settings file and the log all live on the SD card (sdmc:/3ds/NonomuraHospitalHD)
   FileSystemAccess:
    - DirectSdmc
 
