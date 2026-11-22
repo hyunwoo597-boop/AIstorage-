@@ -176,6 +176,10 @@
     "allow_debug": true,
     "force_debug": false
    }
+  },
+  {
+   "type": "application_type",
+   "value": 1
   }
  ]
 }
