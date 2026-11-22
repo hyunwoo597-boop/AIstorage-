@@ -210,7 +210,17 @@ async function buildNsp(o, prog) {
     var secs = [exefs];
     if (o.files && o.files.length) secs.push(await romfsSection(buildSwitchRomfs(o.files), P(0.02, 0.35, '데이터 확인값 계산')));   /* 없으면 게임 파일은 SD 카드에서 */
     var program = await buildNca(o.keys, 0, o.titleId, secs, function (f, i) { if (i === 1) P(0.35, 0.9, '암호화')(f); });
-    /* Control NCA: control.nacp + 언어별 아이콘 */
+    /* Control NCA: control.nacp + 언어별 아이콘.  NACP 는 NRO 용(nacptool)이라 설치형에 맞게 고친다:
+       소유자/그룹 ID = 타이틀 ID (0 이면 실행하자마자 닫힘), 사용자 선택·시스템 세이브 없음(세이브는 SD 카드), 로고는 시스템이 처리 */
+    var nacpFix = new Uint8Array(o.nacp), tidLE = hexb(o.titleId).reverse(), dv = new DataView(nacpFix.buffer);
+    nacpFix[0x3025] = 0;                                              /* StartupUserAccount: 없음 */
+    nacpFix.set(tidLE, 0x3038);                                       /* PresenceGroupId */
+    var addon = hexb(o.titleId); addon[6] = (addon[6] + 0x10) & 255; nacpFix.set(addon.reverse(), 0x3070);   /* AddOnContentBaseId = +0x1000 */
+    nacpFix.set(tidLE, 0x3078);                                       /* SaveDataOwnerId */
+    for (var z = 0x3080; z < 0x30A8; z++) nacpFix[z] = 0;            /* 사용자/기기 세이브 크기 0 */
+    nacpFix.set(tidLE, 0x30B0);                                       /* LocalCommunicationId[0] */
+    nacpFix[0x30F1] = 0;                                              /* LogoHandling: Auto */
+    o.nacp = nacpFix;
     var cfiles = [{ name: 'control.nacp', data: o.nacp }];
     for (var li = 0; li < LANGS.length; li++) { var t = o.nacp.subarray(li * 0x300, li * 0x300 + 0x200); if (t[0]) cfiles.push({ name: 'icon_' + LANGS[li] + '.dat', data: o.icon }); }
     var nacp = new Uint8Array(o.nacp);   /* 아이콘이 있는 언어와 NACP 가 맞도록(그대로) */
