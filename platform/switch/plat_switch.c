@@ -191,6 +191,33 @@ static void fatal(const char *msg) {
     consoleExit(NULL);
 }
 void snd_init(void); void snd_exit(void);
+/* start-up title picture (tools/mkswsplash.py), "A 버튼으로 시작" blinking at the bottom; A, + or a touch goes on */
+extern const size_t swsplash_raw_size, swsplash_lz_size; extern const uint8_t swsplash_lz[];
+extern const int swprompt_w, swprompt_h; extern const uint8_t swprompt_rgba[];
+static bool splash(void) {
+    uint8_t *raw = malloc(swsplash_raw_size + 64); if (!raw) return true;
+    if (lzss_decode(swsplash_lz, swsplash_lz_size, raw, swsplash_raw_size) < swsplash_raw_size) { free(raw); return true; }
+    SDL_Texture *pic = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STATIC, 960, 720);
+    SDL_Texture *pr = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, swprompt_w, swprompt_h);
+    if (pic) SDL_UpdateTexture(pic, NULL, raw, 960 * 3);
+    if (pr) { SDL_UpdateTexture(pr, NULL, swprompt_rgba, swprompt_w * 4); SDL_SetTextureBlendMode(pr, SDL_BLENDMODE_BLEND); }
+    free(raw);
+    bool go = true; uint32_t t0 = SDL_GetTicks();
+    for (;;) {
+        if (!appletMainLoop()) { go = false; break; }
+        pump(); if (g_quit) { go = false; break; }
+        if (SDL_GetTicks() - t0 > 400 && (g_btn[JA] || g_btn[JPLUS] || g_click > 0)) break;
+        SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255); SDL_RenderClear(g_ren);
+        SDL_Rect d = { DX, 0, DW, 720 }; if (pic) SDL_RenderCopy(g_ren, pic, NULL, &d);
+        uint32_t ph = (SDL_GetTicks() - t0) % 1200;
+        if (pr && ph < 850) { SDL_Rect q = { (1280 - swprompt_w) / 2, 720 - swprompt_h - 24, swprompt_w, swprompt_h }; SDL_RenderCopy(g_ren, pr, NULL, &q); }
+        SDL_RenderPresent(g_ren);
+    }
+    while (go && appletMainLoop() && (g_btn[JA] || g_btn[JPLUS] || g_touch)) { pump(); SDL_Delay(10); }   /* the press does not reach the game */
+    g_click = 0;
+    if (pic) SDL_DestroyTexture(pic); if (pr) SDL_DestroyTexture(pr);
+    return go;
+}
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     mkdir("sdmc:/switch", 0777); mkdir(DATA_DIR, 0777);
@@ -203,6 +230,7 @@ int main(int argc, char **argv) {
     g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     g_tex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, 640, 480);
     g_joy = SDL_JoystickOpen(0);
+    if (!splash()) { if (g_joy) SDL_JoystickClose(g_joy); SDL_DestroyTexture(g_tex); SDL_DestroyRenderer(g_ren); SDL_DestroyWindow(g_win); SDL_Quit(); if (g_romfs) romfsExit(); return 0; }
     snd_init();
     if (!vm_init(&vm)) plat_log("Archives not found");
     else if (sys_set_popup_full(true), vm_load_mes(&vm, "MAIN.MES")) vm_run(&vm);
