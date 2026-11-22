@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nonomura Hospital HD — NSP 만들기</title>
+<style>
+:root { --bg:#f4f1ea; --card:#fffdf8; --ink:#1f2328; --sub:#667079; --line:#d9d3c5; --acc:#b3261e; --ok:#1d6b3a; --warn:#8a5a00; --chip:#ece7da; }
+@media (prefers-color-scheme: dark) { :root { --bg:#15171a; --card:#1e2125; --ink:#e8e6e1; --sub:#9aa3ab; --line:#33383e; --acc:#e0574e; --ok:#6fcf8f; --warn:#e3b35a; --chip:#2a2e33; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; }
+main { max-width:640px; margin:0 auto; padding:20px 16px 48px; }
+h1 { font-size:21px; margin:4px 0 2px; } .sub { color:var(--sub); font-size:14px; margin:0 0 18px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin:12px 0; }
+.card h2 { font-size:16px; margin:0 0 6px; } .card p { margin:4px 0 10px; color:var(--sub); font-size:14px; }
+.step { display:inline-block; min-width:22px; height:22px; border-radius:11px; background:var(--acc); color:#fff; text-align:center; font-size:13px; line-height:22px; margin-right:6px; }
+.pick { display:block; border:2px dashed var(--line); border-radius:12px; padding:14px; text-align:center; cursor:pointer; color:var(--sub); }
+.pick:active { background:var(--chip); }
+input[type=file] { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+.files { margin-top:8px; font-size:13px; } .files div { padding:2px 0; word-break:break-all; }
+.chip { display:inline-block; background:var(--chip); border-radius:8px; padding:1px 7px; margin:2px 4px 2px 0; font-size:13px; }
+.ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--acc); }
+button.go { width:100%; padding:14px; font-size:17px; border:0; border-radius:12px; background:var(--acc); color:#fff; font-weight:600; }
+button.go:disabled { opacity:.45; }
+button.small { padding:6px 12px; border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:8px; font-size:14px; }
+.bar { height:10px; background:var(--chip); border-radius:5px; overflow:hidden; margin:10px 0 4px; } .bar > i { display:block; height:100%; width:0; background:var(--acc); transition:width .2s; }
+#log { font-size:13px; color:var(--sub); white-space:pre-wrap; margin-top:6px; }
+a.dl { display:block; text-align:center; padding:14px; border-radius:12px; background:var(--ok); color:#fff; text-decoration:none; font-weight:600; margin-top:10px; }
+small { color:var(--sub); }
+</style>
+</head>
+<body>
+<main>
+<h1>Nonomura Hospital HD — NSP 만들기</h1>
+<p class="sub">__BASEINFO__<br>제작자 : 디시인사이드 스위치CFW 갤러리 -루카-</p>
+<div class="card">
+  <h2>이 NSP 는</h2>
+  <p>홈 메뉴 아이콘으로 SD 카드의 <b>switch/nonoxp/nonoxp.nro</b> 를 바로 실행합니다. 게임 파일은 지금 NRO 로 잘 실행되는 그 폴더(<b>switch/nonoxp/</b>)를 그대로 씁니다. 세이브도 그대로입니다.</p>
+</div>
+<div class="card">
+  <h2><span class="step">1</span>prod.keys</h2>
+  <p>본인 스위치에서 <b>Lockpick_RCM</b> 으로 뽑은 <b>prod.keys</b>. NSP 암호화에만 쓰이고 어디로도 보내지지 않습니다.</p>
+  <label class="pick">여기를 눌러 prod.keys 고르기<input type="file" id="inKeys"></label>
+  <div class="files" id="fKeys"></div>
+</div>
+<div class="card">
+  <h2><span class="step">2</span>만들기</h2>
+  <button class="go" id="go" disabled>NSP 만들기</button>
+  <div class="bar"><i id="bar"></i></div>
+  <div id="log"></div>
+  <div id="out"></div>
+</div>
+<div class="card">
+  <h2>설치와 실행</h2>
+  <p>1) 전에 설치한 Nonomura Hospital HD 는 먼저 삭제합니다.<br>2) 만든 NSP 를 DBI · Tinfoil · Awoo 등으로 설치합니다.<br>3) SD 카드 <b>switch/nonoxp/</b> 에 nonoxp.nro 와 게임 파일이 있어야 합니다(폴더를 옮기거나 이름을 바꾸지 마세요).<br>4) 서명 패치(sigpatches)가 있는 Atmosphère 가 필요합니다.</p>
+</div>
+</main>
+<script id="nso" type="application/octet-stream">__NSO64__</script>
+<script id="npdm" type="application/octet-stream">__NPDM64__</script>
+<script id="nacp" type="application/octet-stream">__NACP64__</script>
+<script id="icon" type="application/octet-stream">__ICON64__</script>
+<script>
+/*__CORE__*/
+/*__NSPCORE__*/
+</script>
+<script>
+'use strict';
+var $ = function (id) { return document.getElementById(id); };
+function b64(s) { s = s.replace(/\s+/g, ''); var bin = atob(s), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+function mb(n) { return (n / 1048576).toFixed(1) + 'MB'; }
+var keys = null;
+$('inKeys').onchange = async function () { keys = null; $('go').disabled = true; var f = this.files[0]; if (!f) return;
+    try { keys = NspCore.parseKeys(await f.text()); $('fKeys').innerHTML = '<span class="ok">✔ 키 확인</span>'; $('go').disabled = false; }
+    catch (e) { $('fKeys').innerHTML = '<span class="bad">' + String(e.message).replace(/[<>&]/g, '') + '</span>'; } };
+$('go').onclick = async function () {
+    var btn = this; btn.disabled = true; $('out').innerHTML = '';
+    var say = function (m) { $('log').textContent = m; }, setp = function (f) { $('bar').style.width = Math.round(f * 100) + '%'; };
+    try {
+        var nsp = await NspCore.buildNsp({ keys: keys, nso: b64($('nso').textContent), npdm: b64($('npdm').textContent), nacp: b64($('nacp').textContent), icon: b64($('icon').textContent), titleId: '01004e4f4e4f0000', files: [] },
+            function (f, m) { setp(f); say(m + '… ' + Math.round(f * 100) + '%'); });
+        setp(1); say('완료: ' + mb(nsp.size));
+        $('out').innerHTML = '<a class="dl" href="' + URL.createObjectURL(nsp) + '" download="nonoxp.nsp">nonoxp.nsp 저장 (' + mb(nsp.size) + ')</a>';
+    } catch (e) { say('실패: ' + (e && e.message ? e.message : e)); }
+    btn.disabled = false;
+};
+</script>
+</body>
+</html>
