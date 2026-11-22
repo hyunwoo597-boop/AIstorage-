@@ -367,6 +367,7 @@ static void make_half(const uint8_t *rgb, const uint8_t *z, bool fx) {
 /* per-scene depth budget: the scene's own depth range (3rd..98th percentile) is spread over the whole budget, and the
    screen plane sits between the far end and the subject (centre of the picture), so flat scenes still get full
    depth, the subject comes a little forward and only the nearest parts reach the front limit */
+static int g_dtoast, g_dtoast_kind;   /* PC98 / HD picture switch label (1 PC98, 2 HD, 3 no SILK files) */
 static bool g_tilt_on = true; static float g_tilt; static int g_toast;   /* circle pad: look around (motion parallax) */
 static void depth_stats(void) {
     int h[256] = { 0 }, hc[256] = { 0 }, n = 0, nc = 0;
@@ -514,7 +515,20 @@ bool plat_frame(const uint8_t *rgb, int w, int h) {
     if (!aptMainLoop()) return false;
     pump();
     if ((g_held & KEY_START) && (g_held & KEY_SELECT)) return false;
+    { static bool restored; if (!restored) { restored = true; FILE *f = fopen(DATA_DIR "dosgfx.cfg", "r"); if (f) { if (fgetc(f) == '1') sys_set_dos_gfx(g_vm, 1); fclose(f); } } }
+    if ((g_down & KEY_SELECT) && !(g_held & KEY_START)) {      /* SELECT: PC98 (DOS release) pictures <-> HD remaster (Windows) pictures */
+        int want = !sys_dos_gfx(), got = sys_set_dos_gfx(g_vm, want);
+        g_dtoast_kind = want && !got ? 3 : got ? 1 : 2; g_dtoast = 120;
+        FILE *f = fopen(DATA_DIR "dosgfx.cfg", "w"); if (f) { fputc(got ? '1' : '0', f); fclose(f); } }
     draw_scene(sys_scene_rgb()); draw_text();
+    if (g_dtoast > 0) { g_dtoast--;                             /* label at the top of the bottom screen for 2 s (tools/mkswtoast.py) */
+        extern const int dostoast_h, dostoast_w[3]; extern const uint8_t *const dostoast_px[3];
+        int k = g_dtoast_kind - 1, w = dostoast_w[k], h = dostoast_h, ox = (320 - w) / 2, oy = 6, mul = g_dtoast < 20 ? g_dtoast * 255 / 20 : 255;
+        const uint8_t *a = dostoast_px[k]; u8 *bf = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
+        for (int y = oy - 3; y < oy + h + 3; y++) for (int x = ox - 8; x < ox + w + 8; x++) { if (x < 0 || x >= 320 || y < 0 || y >= 240) continue;
+            u8 *p = bf + (x * 240 + (239 - y)) * 3; int d = 255 - mul * 3 / 4; p[0] = p[0] * d / 255; p[1] = p[1] * d / 255; p[2] = p[2] * d / 255; }
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int v = a[y * w + x] * mul / 255; if (!v) continue;
+            u8 *p = bf + ((ox + x) * 240 + (239 - (oy + y))) * 3; p[0] = (p[0] * (255 - v) + 80 * v) / 255; p[1] = (p[1] * (255 - v) + 220 * v) / 255; p[2] = (p[2] * (255 - v) + 255 * v) / 255; } }
     if (g_toast > 0) { g_toast--; extern const int toast_w, toast_h; extern const uint8_t toast_on[], toast_off[]; const uint8_t *t = g_tilt_on ? toast_on : toast_off;
         u8 *bf = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL); int ox = (320 - toast_w) / 2, oy = 8, mul = g_toast < 20 ? g_toast * 255 / 20 : 255;
         for (int y = 0; y < toast_h; y++) for (int x = 0; x < toast_w; x++) { const uint8_t *q = t + (y * toast_w + x) * 4; int a = q[3] * mul / 255; if (!a) continue;
