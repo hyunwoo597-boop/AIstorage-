@@ -122,7 +122,8 @@ bool plat_key(int key) {
     case 3: return g_btn[JDOWN] || g_ax[1] > dz;
     case 4: return g_btn[JLEFT] || g_ax[0] < -dz;
     case 5: return g_btn[JRIGHT] || g_ax[0] > dz;
-    case 6: return g_btn[JR] || g_btn[JZR];
+    case 6:                                      /* skip: wait / effects (Shift) */
+    case 7: return g_btn[JR] || g_btn[JZR];      /* skip: the message loop of the scripts polls key 7 (Ctrl) */
     case 9: return g_btn[JL];
     }
     return false;

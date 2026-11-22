@@ -114,7 +114,8 @@ bool plat_key(int key) {
     case 3: return (g_held & KEY_DDOWN) != 0;
     case 4: return (g_held & KEY_DLEFT) != 0;
     case 5: return (g_held & KEY_DRIGHT) != 0;
-    case 6: return (g_held & KEY_R) != 0;       /* skip */
+    case 6:                                     /* skip: wait / effects (Shift) */
+    case 7: return (g_held & KEY_R) != 0;       /* skip: the message loop of the scripts polls key 7 (Ctrl) */
     case 9: return (g_held & KEY_L) != 0;       /* message log (mouse wheel up on PC) */
     }
     return false;
