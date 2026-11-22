@@ -27,7 +27,7 @@
     "highest_thread_priority": 59,
     "lowest_thread_priority": 28,
     "lowest_cpu_id": 0,
-    "highest_cpu_id": 3
+    "highest_cpu_id": 2
    }
   },
   {
@@ -168,18 +168,31 @@
   },
   {
    "type": "handle_table_size",
-   "value": 1023
+   "value": 512
   },
   {
    "type": "debug_flags",
    "value": {
-    "allow_debug": true,
-    "force_debug": false
+    "allow_debug": false,
+    "force_debug_prod": false,
+    "force_debug": true
    }
   },
   {
    "type": "application_type",
    "value": 1
+  },
+  {
+   "type": "map_region",
+   "value": [
+    {
+     "region_type": 1,
+     "is_ro": true
+    }
+   ]
   }
- ]
+ ],
+ "program_id": "0x01004e4f4e4f0000",
+ "program_id_range_min": "0x01004e4f4e4f0000",
+ "program_id_range_max": "0x01004e4f4e4f0000"
 }
