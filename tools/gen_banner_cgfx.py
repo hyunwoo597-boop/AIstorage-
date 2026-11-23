@@ -59,32 +59,23 @@ def build(atlas_png, layout):
         samplers.append(N(input=t_acc, output=acc(struct.pack('<%df' % len(flat), *flat), 5126, 'VEC%d' % n, len(values)), interpolation='LINEAR'))
         channels.append(N(sampler=len(samplers) - 1, target=N(node=node_id, path=path)))
 
-    kids = []
+    # 모든 조각을 메시 하나(뼈 하나)에 담는다. 홈 메뉴는 배너 모델을 세로축으로 돌리는데, 그 뼈 하나에만 Y축 빌보드를
+    # 걸면 무대 전체가 한 덩어리로 늘 정면을 향한다 — 조각마다 빌보드를 걸면 각자 제자리에서 돌고 위치는 빙 돌아
+    # 조각끼리 따로 도는 것처럼 보였다. 조각 사이의 깊이(z)는 그대로라 입체는 남는다. 그리는 순서 = 배치표 순서(뒤 → 앞).
+    pos = []; uvs = []; idx = []
     for l in layout['layers']:
         x0, y0, x1, y1 = l['quad']; ax, ay, w, h = l['uv']
         zb, zt = l['z'] if isinstance(l['z'], list) else (l['z'], l['z'])
-        cx = (x0 + x1) / 2; hw = (x1 - x0) / 2; hh = y1 - y0
         u0, u1 = (ax + 0.25) / aw, (ax + w - 0.25) / aw; vt, vb = (ay + 0.25) / ah, (ay + h - 0.25) / ah   # glTF: v 는 위에서 아래로
-        # 뼈의 원점 = 조각의 발끝 가운데 (z 는 아래쪽 깊이). 바닥처럼 기울어진 판은 위쪽 정점만 z 가 다르다
-        pos = [(-hw, 0, 0), (hw, 0, 0), (-hw, hh, zt - zb), (hw, hh, zt - zb)]; uv = [(u0, vb), (u1, vb), (u0, vt), (u1, vt)]
-        p = acc(b''.join(struct.pack('<3f', *v) for v in pos), 5126, 'VEC3', 4)
-        t = acc(b''.join(struct.pack('<2f', *v) for v in uv), 5126, 'VEC2', 4)
-        i = acc(bytes([0, 1, 2, 1, 3, 2]), 5121, 'SCALAR', 6)
-        meshes.append(N(name=l['name'], primitives=[N(attributes=N(POSITION=p, TEXCOORD_0=t), indices=i, material=0)]))
-        base = [cx, y0, zb]
-        nodes.append(N(name=l['name'], mesh=len(meshes) - 1, translation=base))
-        nid = len(nodes) - 1; kids.append(nid)
-        a = ANIM.get(l['name'])
-        if a:
-            ph = a.get('phase', 0.0)
-            wave = [math.sin(2 * math.pi * (tm / a['period'] + ph)) for tm in times]
-            if 'bob' in a: animate(nid, 'translation', [[base[0], base[1] + a['bob'] * s, base[2]] for s in wave])
-            if 'roll' in a: animate(nid, 'rotation', [quat('z', a['roll'] * s) for s in wave])
-            if 'yaw' in a: animate(nid, 'rotation', [quat('y', a['yaw'] * s) for s in wave])
-    nodes.append(N(name='turntable', children=kids)); turn = len(nodes) - 1
-    a = ANIM.get('_root')
-    if a: animate(turn, 'rotation', [quat('y', a['yaw'] * math.sin(2 * math.pi * tm / a['period'])) for tm in times])
-    nodes.append(N(name='diorama', children=[turn])); root = len(nodes) - 1
+        n0 = len(pos)
+        pos += [(x0, y0, zb), (x1, y0, zb), (x0, y1, zt), (x1, y1, zt)]; uvs += [(u0, vb), (u1, vb), (u0, vt), (u1, vt)]
+        idx += [n0, n0 + 1, n0 + 2, n0 + 1, n0 + 3, n0 + 2]
+    p = acc(b''.join(struct.pack('<3f', *v) for v in pos), 5126, 'VEC3', len(pos))
+    t = acc(b''.join(struct.pack('<2f', *v) for v in uvs), 5126, 'VEC2', len(uvs))
+    i = acc(bytes(idx), 5121, 'SCALAR', len(idx))
+    meshes.append(N(name='scene', primitives=[N(attributes=N(POSITION=p, TEXCOORD_0=t), indices=i, material=0)]))
+    nodes.append(N(name='scene', mesh=0, translation=[0.0, 0.0, 0.0])); root = len(nodes) - 1
+    animate(root, 'translation', [[0.0, 0.0, 0.0] for _ in times])   # 움직임 없음 (변환기가 애니메이션 하나는 필요로 함)
 
     model = N(
         scene=0, scenes=[N(nodes=[root])], nodes=nodes, meshes=meshes, accessors=accs, bufferViews=views,
@@ -97,7 +88,7 @@ def build(atlas_png, layout):
     res = {'scene.bin': N(data=bytes(buf)), 'atlas.png': N(data=atlas_png)}
     gltf = N(model=model); gltf.get_resource = lambda uri: res[uri]
     cgfx = pycgfx.convert_gltf(gltf)
-    patch(cgfx, [l['name'] for l in layout['layers']])
+    patch(cgfx, [])
     return pycgfx.write(cgfx)
 
 
@@ -110,7 +101,7 @@ def patch(cgfx, pieces):
     from cgfx.sobj import BillboardMode
     from cgfx.mtob import CullMode
     cmdl = cgfx.data.models['COMMON']
-    names = set()   # 빌보드 없음: 조각은 정면을 향한 판 그대로, 깊이(z)만 달라 입체로 보인다 (마리오 배너 방식)
+    names = {'scene'}   # 뼈 하나(무대 전체)에만 Y축 빌보드: 홈 메뉴의 회전을 통째로 상쇄해 배너가 멈춰 있다
     hit = set()
     for b in cmdl.skeleton.bones:
         if b in names:
