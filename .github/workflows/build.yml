@@ -116,8 +116,8 @@ jobs:
             if ./bannertool makebanner -ci ctr/banner.cgfx -a ctr/banner.wav -o out/banner3d.bnr; then mv out/banner3d.bnr out/banner.bnr; else echo "::warning::3D banner failed - flat banner"; fi
             banner="-banner out/banner.bnr"
           fi
-          # a new title version on every build: the HOME Menu keeps a title's banner cached until its version changes
-          n=$GITHUB_RUN_NUMBER; ver="-major $(( 1 + (n / 64) % 60 )) -minor $(( n % 64 )) -micro 0"; echo "CIA version: $ver"
+          # a new title version on every build: the HOME Menu keeps a title's banner cached until its version changes (makerom drops -minor, so the build number goes in major)
+          n=$GITHUB_RUN_NUMBER; ver="-major $(( 1 + n % 63 )) -minor 0 -micro 0"; echo "CIA version: $ver"
           ./makerom -f cia -o out/nonoxp.cia $ver -elf out/nonoxp.elf -rsf ctr/nonoxp.rsf -icon out/nonoxp.smdh $banner -exefslogo -target t
           cp out/nonoxp.3dsx out/NonomuraHospitalHD.3dsx; cp out/nonoxp.cia out/NonomuraHospitalHD.cia
           python3 tools/cia_maker_xp/build.py out/nonoxp.cia out/NonomuraHospitalHD_cia_maker.html "$(date -u +%Y-%m-%d) 판"
