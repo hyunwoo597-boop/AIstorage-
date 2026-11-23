@@ -68,14 +68,18 @@ def build(atlas_png, layout):
         zb, zt = l['z'] if isinstance(l['z'], list) else (l['z'], l['z'])
         u0, u1 = (ax + 0.25) / aw, (ax + w - 0.25) / aw; vt, vb = (ay + 0.25) / ah, (ay + h - 0.25) / ah   # glTF: v 는 위에서 아래로
         n0 = len(pos)
-        pos += [(x0, y0, zb), (x1, y0, zb), (x0, y1, zt), (x1, y1, zt)]; uvs += [(u0, vb), (u1, vb), (u0, vt), (u1, vt)]
+        pos += [(x0, y0 + 7.0, zb), (x1, y0 + 7.0, zb), (x0, y1 + 7.0, zt), (x1, y1 + 7.0, zt)]; uvs += [(u0, vb), (u1, vb), (u0, vt), (u1, vt)]
         idx += [n0, n0 + 1, n0 + 2, n0 + 1, n0 + 3, n0 + 2]
     p = acc(b''.join(struct.pack('<3f', *v) for v in pos), 5126, 'VEC3', len(pos))
     t = acc(b''.join(struct.pack('<2f', *v) for v in uvs), 5126, 'VEC2', len(uvs))
     i = acc(bytes(idx), 5121, 'SCALAR', len(idx))
     meshes.append(N(name='scene', primitives=[N(attributes=N(POSITION=p, TEXCOORD_0=t), indices=i, material=0)]))
-    nodes.append(N(name='scene', mesh=0, translation=[0.0, 0.0, 0.0])); root = len(nodes) - 1
-    animate(root, 'translation', [[0.0, 0.0, 0.0] for _ in times])   # 움직임 없음 (변환기가 애니메이션 하나는 필요로 함)
+    # 뼈대는 예전에 실기에서 잘 뜨던 모양 그대로: diorama ─ turntable ─ 메시를 단 뼈. 메시와 빌보드를 맨 위 뼈에 바로 달았더니
+    # 홈 메뉴가 멈췄다 (배너가 안 나옴)
+    nodes.append(N(name='scene', mesh=0, translation=[0.0, -7.0, 0.0])); sc = len(nodes) - 1
+    nodes.append(N(name='turntable', children=[sc])); turn = len(nodes) - 1
+    nodes.append(N(name='diorama', children=[turn])); root = len(nodes) - 1
+    animate(sc, 'translation', [[0.0, -7.0, 0.0] for _ in times])   # 움직임 없음 (변환기가 애니메이션 하나는 필요로 함)
 
     model = N(
         scene=0, scenes=[N(nodes=[root])], nodes=nodes, meshes=meshes, accessors=accs, bufferViews=views,
