@@ -506,7 +506,12 @@ static void draw_eye_dm(u8 *fb, float back, float front, int eye) {
         for (int d = 0; d < 256; d++) {
             float a = (float)(g_rhi - (d < g_rlo ? g_rlo : d > g_rhi ? g_rhi : d)) / (g_rhi - g_rlo);
             float b = (float)((d < g_slo ? g_slo : d > g_shi ? g_shi : d) - g_slo) / (g_shi - g_slo);
-            tr[d] = (int16_t)lroundf(eye * back * a * 16); ts[d] = (int16_t)lroundf(-eye * front * (1.0f + 0.33f * b) * 16); }
+            tr[d] = (int16_t)lroundf(eye * back * a * 16); ts[d] = (int16_t)lroundf(-eye * front * (1.0f + 0.33f * b) * 16);
+            if (g_cg_on) {   /* event CG: the people lie on beds, sit on chairs, hold things - a whole-body jump tore them off what
+                                they touch. Here everything follows one depth scale: the room's nearest part at the screen,
+                                deeper = behind, the figures out of the screen in proportion to how far in front of the room they are */
+                float f = g_shi > g_rhi ? (float)((d > g_shi ? g_shi : d) - g_rhi) / (g_shi - g_rhi) : 0;
+                ts[d] = f > 0 ? (int16_t)lroundf(-eye * front * 1.33f * f * 16) : tr[d]; } }
         for (int d = 0; d < 256; d++) tab[d] = tr[d];   /* room pass below reads tab */
         for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3, *pr = g_plate_half + y * 320 * 3; const uint8_t *bd = g_bgd[y], *sd = g_spd[y], *sm = g_smask[y];
             for (int x = 0; x < 320; x++) {                  /* room: backward warp (its depth is smooth, two passes find the source) */
@@ -523,6 +528,19 @@ static void draw_eye_dm(u8 *fb, float back, float front, int eye) {
                             if (dz < zb[x]) continue; zb[x] = (int16_t)dz; for (int c = 0; c < 3; c++) col[x][c] = (uint8_t)((c0[c] * (256 - f) + c1[c] * f) >> 8); }
                         continue; } }
                 int x = (a + 8) >> 4; if (x >= 0 && x < 320 && sd[k] >= zb[x]) { zb[x] = sd[k]; col[x][0] = c0[0]; col[x][1] = c0[1]; col[x][2] = c0[2]; } }
+            for (int x = 1; x < 319; x++) { if (zb[x] >= 0 || zb[x - 1] < 0) continue;   /* cracks of 1-3 px inside a figure (its depth
+                changes fast, e.g. an arm across the body): blend across instead of showing the room through */
+                int e = x; while (e < 320 && e - x < 12 && zb[e] < 0) e++;
+                if (e >= 320 || zb[e] < 0) continue;
+                int L = x - 1, R = e;
+                if (e - x <= 3 && abs(zb[R] - zb[L]) <= 40) {
+                    for (int j = x; j < e; j++) { int f = (j - x + 1) * 256 / (e - x + 1); for (int c = 0; c < 3; c++) col[j][c] = (uint8_t)((col[L][c] * (256 - f) + col[R][c] * f) >> 8); zb[j] = zb[L]; } }
+                else {   /* a part of the body in front of another (an arm across the chest) moved more: the gap shows the
+                            farther body part, continued by mirroring it - not the room behind the whole figure */
+                    bool right = zb[R] < zb[L];
+                    for (int j = x; j < e; j++) { int q = right ? R + (e - 1 - j) : L - (j - x); if (q < 0 || q > 319 || zb[q] < 0) q = right ? R : L;
+                        col[j][0] = col[q][0]; col[j][1] = col[q][1]; col[j][2] = col[q][2]; zb[j] = zb[q]; } }
+                x = e; }
             u8 *p = fb + (40 * 240 + (239 - y)) * 3;
             for (int x = 0; x < 320; x++, p += 240 * 3) { p[0] = col[x][2]; p[1] = col[x][1]; p[2] = col[x][0]; } }
         return; }
