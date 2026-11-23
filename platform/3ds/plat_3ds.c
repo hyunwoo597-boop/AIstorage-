@@ -389,18 +389,18 @@ static void depth_stats(void) {
    and hips lifted):
    - a figure keeps its own depth right up to its outline: the step to the background becomes a ramp on the background side
      (max filter before the blur), so the background stretches next to a character instead of the character's face
-   out = B + clamp(d - B, +-40), B = box blur (9 px) of the 2-px max filter of d */
+   out = B + clamp(d - B, +-40), B = box blur (5 px) of the 1-px max filter of d (depth reads strongest at sharp steps) */
 static void soften_steps(void) {
     static uint8_t m[240][320]; static uint16_t t[240 * 320]; static uint32_t c[321];
     for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int v = 0;    /* max filter, horizontal then vertical */
-        for (int k = x - 2; k <= x + 2; k++) if (k >= 0 && k < 320 && g_dmh[y][k] > v) v = g_dmh[y][k]; t[y * 320 + x] = v; }
+        for (int k = x - 1; k <= x + 1; k++) if (k >= 0 && k < 320 && g_dmh[y][k] > v) v = g_dmh[y][k]; t[y * 320 + x] = v; }
     for (int x = 0; x < 320; x++) for (int y = 0; y < 240; y++) { int v = 0;
-        for (int k = y - 2; k <= y + 2; k++) if (k >= 0 && k < 240 && t[k * 320 + x] > v) v = t[k * 320 + x]; m[y][x] = v; }
+        for (int k = y - 1; k <= y + 1; k++) if (k >= 0 && k < 240 && t[k * 320 + x] > v) v = t[k * 320 + x]; m[y][x] = v; }
     for (int y = 0; y < 240; y++) { c[0] = 0; for (int x = 0; x < 320; x++) c[x + 1] = c[x] + m[y][x];
-        for (int x = 0; x < 320; x++) { int a = x - 4 < 0 ? 0 : x - 4, b = x + 5 > 320 ? 320 : x + 5; t[y * 320 + x] = (uint16_t)((c[b] - c[a]) * 16 / (b - a)); } }
+        for (int x = 0; x < 320; x++) { int a = x - 2 < 0 ? 0 : x - 2, b = x + 3 > 320 ? 320 : x + 3; t[y * 320 + x] = (uint16_t)((c[b] - c[a]) * 16 / (b - a)); } }
     static uint32_t cc[241];
     for (int x = 0; x < 320; x++) { cc[0] = 0; for (int y = 0; y < 240; y++) cc[y + 1] = cc[y] + t[y * 320 + x];
-        for (int y = 0; y < 240; y++) { int a = y - 4 < 0 ? 0 : y - 4, b = y + 5 > 240 ? 240 : y + 5; int bl = (int)((cc[b] - cc[a]) / (b - a)) / 16;
+        for (int y = 0; y < 240; y++) { int a = y - 2 < 0 ? 0 : y - 2, b = y + 3 > 240 ? 240 : y + 3; int bl = (int)((cc[b] - cc[a]) / (b - a)) / 16;
             int d = g_dmh[y][x] - bl; if (d > 40) d = 40; if (d < -40) d = -40; int o = bl + d; g_dmh[y][x] = (uint8_t)(o < 0 ? 0 : o > 255 ? 255 : o); } }
 }
 static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
@@ -457,8 +457,12 @@ static void draw_scene(const uint8_t *rgb) {
            grows to 14 px and the pop-out grows faster in the upper half (3..8 px); as the slider goes up the screen plane
            moves from halfway (subject slightly forward) towards the far end (subject clearly in front of the screen) */
         float q = (int)(sl * 32.0f + 0.5f) / 32.0f, e = powf(q, 0.7f);
-        int bk = (int)(e * 4.0f + 0.5f), fb2 = (int)(e * (5.0f + 7.0f * q) + 0.5f);   /* characters forward up to 12 px */
-        g_zp = g_bg;                                  /* background on the screen plane */
+        /* depth budget (stereo conversion practice: about 3 % of the width in all, crossed parallax up to 2-3 %, uncrossed
+           1-2 %): background behind the screen up to 5 px per eye, the figures' near parts (chest, hips: DEPTH.PAK lifts
+           them) out of the screen up to 8 px per eye. The screen plane sits near the figures' base, so the body is at the
+           screen and its rounded parts come out */
+        int bk = (int)(e * 5.0f + 0.5f), fb2 = (int)(e * (4.0f + 4.0f * q) + 0.5f);
+        g_zp = g_lo + (int)((g_sub - g_lo) * 0.85f);
         make_half(rgb, z, true); draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
         draw_eye_dm(fr, bk, fb2, -1); return;

@@ -24,6 +24,7 @@ def otsu(v):
         m0, m1 = (h[:i] * c[:i]).sum() / w0, (h[i:] * c[i:]).sum() / w1; s = w0 * w1 * (m0 - m1) ** 2
         if s > best: best, t = s, c[i]
     return t
+KEEPBG = __import__('os').environ.get('KEEPBG') == '1'   # KEEPBG=1: backgrounds keep their AI relief (characters still lifted in front)
 maps = rd(sys.argv[1]); pose = json.load(open(sys.argv[2])); gain = float(sys.argv[4]) if len(sys.argv) > 4 else 4.0
 prev = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] != '-' else None
 masked = set()
@@ -42,7 +43,8 @@ for key in list(maps):
     if full and name in masked: full = False                    # masked picture (cut-out figures over another picture): like a sprite
     sx, sy = mw / info['w'], mh / info['h']; yy, xx = np.mgrid[0:mh, 0:mw].astype(np.float32)
     if full and not people:
-        maps[key][2] = np.full_like(D, float(np.percentile(D, 30))); stat['flat'] += 1; continue
+        if not KEEPBG: maps[key][2] = np.full_like(D, float(np.percentile(D, 30)))
+        stat['flat'] += 1; continue
     # character area
     if full:
         fg = np.zeros_like(D); inbox = np.zeros(D.shape, bool); boxes = []
@@ -63,7 +65,9 @@ for key in list(maps):
             m = (reg > t) & (reg > ref[y0:y1, None] + 0.05)
             fg[y0:y1, x0:x1] = np.maximum(fg[y0:y1, x0:x1], m.astype(np.float32))
         fg = np.clip((blur(fg, 2) - 0.35) / 0.3, 0, 1)          # clean, soft edge
-        if fg.max() < 0.5: maps[key][2] = np.full_like(D, float(np.percentile(D, 30))); stat['flat'] += 1; continue
+        if fg.max() < 0.5:
+            if not KEEPBG: maps[key][2] = np.full_like(D, float(np.percentile(D, 30)))
+            stat['flat'] += 1; continue
         bgv = float(np.percentile(D[fg < 0.1], 50)) if (fg < 0.1).any() else float(D.min())
     else:
         fg = (D > 0.02).astype(np.float32); bgv = 0.0
@@ -97,8 +101,13 @@ for key in list(maps):
         bulge = bulge / max(np.percentile(bulge[W > 0.3], 95) if (W > 0.3).any() else 1, 1e-3)
         C = C + W * (1 - F) * gain * (0.07 + 0.09 * np.clip(bulge, 0, 1.5))
     if full:
-        C = np.maximum(C, bgv + 0.06)                           # characters stand in front of the flat background
-        out = bgv * (1 - fg) + C * fg; stat['chars'] += 1
+        if KEEPBG:                                              # background relief kept, figures lifted clearly in front of what is around them
+            near = blur(D * (1 - fg), max(4, mh / 10)) / np.maximum(blur(1 - fg, max(4, mh / 10)), 1e-3)
+            C = np.maximum(C, near + 0.12); out = D * (1 - fg) + C * fg
+        else:
+            C = np.maximum(C, bgv + 0.06)                       # characters stand in front of the flat background
+            out = bgv * (1 - fg) + C * fg
+        stat['chars'] += 1
     else:
         out = np.where(fg > 0, np.maximum(C, 0.03), 0); stat['sprite'] += 1
     out = np.clip(out, 0, 1); maps[key][2] = out
