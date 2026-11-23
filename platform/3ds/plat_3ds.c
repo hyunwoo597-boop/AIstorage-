@@ -447,7 +447,7 @@ static void make_plate(void) {   /* 320x240 copy of the bare background, if the 
     for (int y = 0; y < 240; y++) { const uint8_t *r0 = pl + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; uint8_t *o = g_plate_half + y * 320 * 3;
         for (int x = 0; x < 320; x++, o += 3) { int r, g, b; avg2(r0, r1, x, &r, &g, &b); o[0] = r; o[1] = g; o[2] = b; } }
 }
-static void draw_eye_dm(u8 *fb, int back, int front, int eye) {
+static void draw_eye_dm(u8 *fb, float back, float front, int eye) {
     int sh1 = g_hi ? 0 : 1; int16_t tab[256];
     for (int d = 0; d < 256; d++) { float v;   /* g_zp: screen plane, set by the slider in draw_scene */
         if (d <= g_zp) { int r = g_zp - g_lo; v = r > 0 ? back * (float)(g_zp - (d < g_lo ? g_lo : d)) / r : 0; }        /* behind the screen */
@@ -537,15 +537,21 @@ static void draw_scene(const uint8_t *rgb) {
         /* slider curve: 32 steps (no jitter); the effect rises quickly at the bottom (s^0.7), the depth behind the screen
            grows to 14 px and the pop-out grows faster in the upper half (3..8 px); as the slider goes up the screen plane
            moves from halfway (subject slightly forward) towards the far end (subject clearly in front of the screen) */
-        float q = (int)(sl * 32.0f + 0.5f) / 32.0f * (2.0f / 3.0f), e = powf(q, 0.7f);   /* full slider = the old 2/3 position (user: that looked best and cleanest) */
+        float q = (int)(sl * 32.0f + 0.5f) / 32.0f, e = powf(q, 0.7f);
         /* depth budget (stereo conversion practice: about 3 % of the width in all, crossed parallax up to 2-3 %, uncrossed
            1-2 %): background behind the screen up to 5 px per eye, the figures' near parts (chest, hips: DEPTH.PAK lifts
            them) out of the screen up to 8 px per eye. The screen plane sits near the figures' base, so the body is at the
            screen and its rounded parts come out */
         /* the per-eye shift is half the disparity the viewer sees: front 5 px per eye = 10 px = 2.5 % of the 400-px screen,
            back 3 px per eye = 6 px = 1.5 % (the old 8 / 5 px per eye was 4 % - past the comfortable limit, it bent at the top) */
-        int bk = (int)(e * 3.0f + 0.5f), fb2 = (int)(e * (3.0f + 2.0f * q) + 0.5f);
-        g_zp = g_lo + (int)((g_sub - g_lo) * 0.85f);
+        /* why it looked flat: (1) the budget had been cut twice and rounded to whole pixels - at full slider only 2 px behind and
+           3 px in front per eye; (2) the screen plane sat at the figures' own body (85 % of the way to them), so a character
+           stood ON the screen and only its chest came out. Now the screen plane is near the room just behind the figures (30 %),
+           so the whole character comes out of the screen, and the shifts are not rounded: full slider = 2.5 px behind and
+           4.5 px in front per eye (9 px = 2.3 % of the width crossed, inside the comfortable 2-3 %); the layered drawing keeps
+           the outlines clean at this depth */
+        float bk = e * 2.5f, fb2 = e * 4.5f;
+        g_zp = g_lo + (int)((g_sub - g_lo) * 0.30f);
         make_half(rgb, z, true); make_plate(); if (g_fade) g_plate_on = false; draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
         draw_eye_dm(fr, bk, fb2, -1); return;

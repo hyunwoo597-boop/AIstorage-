@@ -138,7 +138,7 @@ for key in list(maps):
         dist = ndi.distance_transform_edt(fgb)
         loc = ndi.maximum_filter(dist, size=int(max(5, mh / 5)))
         vol = np.sqrt(np.clip(dist / np.maximum(loc, 1), 0, 1))           # 0 at the outline, 1 in the middle of each part
-        relief = np.clip(D - ndi.gaussian_filter(D, max(2, mh / 25)), -0.08, 0.08) * (1 - 0.7 * np.clip(F, 0, 1))   # folds, hair strands; calm on the face
+        relief = np.clip(D - ndi.gaussian_filter(D, max(2, mh / 25)), -0.12, 0.12) * (1 - 0.7 * np.clip(F, 0, 1))   # folds, hair strands; calm on the face
         if full and KEEPBG:
             near = blur(D * (1 - fg), max(4, mh / 10)) / np.maximum(blur(1 - fg, max(4, mh / 10)), 1e-3)
         base = np.zeros_like(D)
@@ -148,7 +148,7 @@ for key in list(maps):
             lv = float(np.median(D[m]))
             if full: lv = max(lv, float(np.median(near[m])) + 0.12) if KEEPBG else max(lv, bgv + 0.06)
             base[m] = lv
-        Cf = base + 0.22 * vol + relief + W * (1 - np.clip(F, 0, 1)) * gain * 0.06
+        Cf = base + 0.35 * vol + relief + W * (1 - np.clip(F, 0, 1)) * gain * 0.06
         if full:
             fs = np.clip(blur(fgb.astype(np.float32), 1.5) * 1.2, 0, 1)
             out = D * (1 - fs) + np.where(fgb, Cf, D) * fs; stat['chars'] += 1

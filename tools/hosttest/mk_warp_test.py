@@ -22,11 +22,11 @@ int main(int c, char **v) {
     static uint8_t rgb[640 * 480 * 3], z[640 * 480]; char h[64]; FILE *f = fopen(v[1], "rb");
     if (!f || !fgets(h, 64, f) || !fread(rgb, 1, sizeof rgb, f)) return 1; fclose(f);
     f = fopen(v[2], "rb"); if (!f || !fgets(h, 64, f) || !fread(z, 1, sizeof z, f)) return 1; fclose(f);
-    int back = c > 4 ? atoi(v[4]) : 3, front = c > 5 ? atoi(v[5]) : 5;
+    float back = c > 4 ? atof(v[4]) : 2.5f, front = c > 5 ? atof(v[5]) : 4.5f;
     g_hi = false;
     if (full_picture(z) && ai_picture(z)) { build_dm_hi(z); soften_steps(); g_hi = true; }
     else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); soften_steps(); g_hi = true; } }
-    depth_stats(); build_plate_layers(z); g_zp = g_lo + (int)((g_sub - g_lo) * 0.85f);      /* as draw_scene at full slider */
+    depth_stats(); build_plate_layers(z); g_zp = g_lo + (int)((g_sub - g_lo) * 0.30f);      /* as draw_scene at full slider */
     if (c > 6) { static uint8_t pl[640 * 480 * 3]; FILE *pf = fopen(v[6], "rb"); if (pf && fgets(h, 64, pf) && fread(pl, 1, sizeof pl, pf)) g_tplate = pl; if (pf) fclose(pf); }
     make_half(rgb, z, true); make_plate();
     static u8 fb[400 * 240 * 3]; static uint8_t o[240 * 400 * 3]; char n[256];
