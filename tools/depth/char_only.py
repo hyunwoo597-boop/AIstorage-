@@ -34,6 +34,7 @@ if len(sys.argv) > 6:
     for n, o, sz in l:
         f.seek(o)
         if f.read(4)[3:4] == b'm': masked.add(n.upper())
+PATCH = {n + '.GCC' for n in 'G107A G12A G23A G27C G28B G37A G40A G40C G41A G41B G46A G52A G56A G78A G81A G94A G94B G99A'.split()}
 INSET = {n + '.GCC' for n in 'G36 G36A G38S G47S G54 G60S G65A G67S G72S G74S G97S OVER3B'.split()}
 stat = {'flat': 0, 'chars': 0, 'sprite': 0, 'kept': 0}
 for key in list(maps):
@@ -42,6 +43,8 @@ for key in list(maps):
     info = pose.get(name, {'people': [], 'w': mw * 2, 'h': mh * 2}); people = info['people']
     full = (info['w'] >= 600 and info['h'] >= 440) if name in pose else (mw, mh) in ((320, 240), (160, 120))   # full pictures vs sprites (0 outside the figure)
     if name in INSET: full = True                               # small framed pictures over the room (G38S, G74S, ...): whole pictures too
+    # variant patches with people (PATCH, e.g. G23A: two people on the chairs) stay on the plain path - their depth is matched to
+    # the base CG, and the figure mask there missed the seated woman's upper body; the head dome below lifts their faces                               # small framed pictures over the room (G38S, G74S, ...): whole pictures too
     if full and name in masked: full = False                    # masked picture (cut-out figures over another picture): like a sprite
     sx, sy = mw / info['w'], mh / info['h']; yy, xx = np.mgrid[0:mh, 0:mw].astype(np.float32)
     if full and not people:
@@ -99,6 +102,11 @@ for key in list(maps):
                 W = np.maximum(W, np.exp(-((xx - c[0]) ** 2 + (yy - c[1]) ** 2) / (2 * r * r)))
     if F.max() > 0:
         rf = max(3, mh / 16); C = C * (1 - F) + blur(C, rf) * F
+        # the head comes forward with the body: the chest and hips are lifted below, a face left at its old depth sat behind
+        # them on the wall like a flat cut-out (G23A). A smooth dome over the head: forward as much as the chest's base lift
+        # plus a rounded shape (nose/cheeks forward of the hairline)
+        Fd = np.clip(F, 0, 1); Fd = Fd * Fd * (3 - 2 * Fd)
+        C = C + Fd * gain * 0.07 + np.clip(F - 0.4, 0, 1) * gain * 0.04
     if W.max() > 0.05:
         r = max(3, mh / 24); bulge = np.clip(C - blur(C, r), 0, None)
         bulge = bulge / max(np.percentile(bulge[W > 0.3], 95) if (W > 0.3).any() else 1, 1e-3)
