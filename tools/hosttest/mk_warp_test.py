@@ -22,11 +22,11 @@ int main(int c, char **v) {
     static uint8_t rgb[640 * 480 * 3], z[640 * 480]; char h[64]; FILE *f = fopen(v[1], "rb");
     if (!f || !fgets(h, 64, f) || !fread(rgb, 1, sizeof rgb, f)) return 1; fclose(f);
     f = fopen(v[2], "rb"); if (!f || !fgets(h, 64, f) || !fread(z, 1, sizeof z, f)) return 1; fclose(f);
-    int back = c > 4 ? atoi(v[4]) : 9, front = c > 5 ? atoi(v[5]) : 5;
+    int back = c > 4 ? atoi(v[4]) : 4, front = c > 5 ? atoi(v[5]) : 12;
     g_hi = false;
     if (full_picture(z) && ai_picture(z)) { build_dm_hi(z); soften_steps(); g_hi = true; }
     else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); soften_steps(); g_hi = true; } }
-    depth_stats(); g_zp = g_lo + (int)((g_sub - g_lo) * 0.30f);      /* slider at max */
+    depth_stats(); g_zp = g_bg;      /* background on the screen plane, as draw_scene */
     make_half(rgb, z, true);
     static u8 fb[400 * 240 * 3]; static uint8_t o[240 * 400 * 3]; char n[256];
     for (int e = -1; e <= 1; e += 2) { memset(fb, 0, sizeof fb); draw_eye_dm(fb, back, front, e);

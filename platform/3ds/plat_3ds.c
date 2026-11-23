@@ -368,6 +368,7 @@ static void make_half(const uint8_t *rgb, const uint8_t *z, bool fx) {
    screen plane sits between the far end and the subject (centre of the picture), so flat scenes still get full
    depth, the subject comes a little forward and only the nearest parts reach the front limit */
 static bool g_tilt_on = true; static float g_tilt; static int g_toast;   /* circle pad: look around (motion parallax) */
+static int g_bg;
 static void depth_stats(void) {
     int h[256] = { 0 }, hc[256] = { 0 }, n = 0, nc = 0;
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int d = g_hi ? g_dmh[y * 2][x * 2] : g_dm[y][x]; h[d]++; n++;
@@ -379,24 +380,28 @@ static void depth_stats(void) {
     if (hi - lo < 40) { int m = (lo + hi) / 2; lo = m - 20; hi = m + 20; }   /* nearly flat picture: keep it nearly flat */
     if (sub < lo) sub = lo; if (sub > hi) sub = hi;
     g_lo = lo; g_hi_d = hi; g_sub = sub;
+    /* background level: the flat background plane of DEPTH.PAK (tools/depth/char_only.py) is the most common depth; it is put
+       on the screen plane, so it does not move between the eyes (no stretching) and only the characters come forward */
+    int md = 0; for (int d = 1; d < 256; d++) if (h[d] > h[md]) md = d;
+    g_bg = h[md] * 5 >= n ? md : lo;
 }
 /* depth map clean-up for the warp (AI maps; DEPTH.PAK from tools/depth/char_only.py: backgrounds flat, faces smoothed, chest
    and hips lifted):
    - a figure keeps its own depth right up to its outline: the step to the background becomes a ramp on the background side
      (max filter before the blur), so the background stretches next to a character instead of the character's face
-   out = B + clamp(d - B, +-16), B = box blur (19 px) of the 4-px max filter of d */
+   out = B + clamp(d - B, +-40), B = box blur (9 px) of the 2-px max filter of d */
 static void soften_steps(void) {
     static uint8_t m[240][320]; static uint16_t t[240 * 320]; static uint32_t c[321];
     for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int v = 0;    /* max filter, horizontal then vertical */
-        for (int k = x - 4; k <= x + 4; k++) if (k >= 0 && k < 320 && g_dmh[y][k] > v) v = g_dmh[y][k]; t[y * 320 + x] = v; }
+        for (int k = x - 2; k <= x + 2; k++) if (k >= 0 && k < 320 && g_dmh[y][k] > v) v = g_dmh[y][k]; t[y * 320 + x] = v; }
     for (int x = 0; x < 320; x++) for (int y = 0; y < 240; y++) { int v = 0;
-        for (int k = y - 4; k <= y + 4; k++) if (k >= 0 && k < 240 && t[k * 320 + x] > v) v = t[k * 320 + x]; m[y][x] = v; }
+        for (int k = y - 2; k <= y + 2; k++) if (k >= 0 && k < 240 && t[k * 320 + x] > v) v = t[k * 320 + x]; m[y][x] = v; }
     for (int y = 0; y < 240; y++) { c[0] = 0; for (int x = 0; x < 320; x++) c[x + 1] = c[x] + m[y][x];
-        for (int x = 0; x < 320; x++) { int a = x - 9 < 0 ? 0 : x - 9, b = x + 10 > 320 ? 320 : x + 10; t[y * 320 + x] = (uint16_t)((c[b] - c[a]) * 16 / (b - a)); } }
+        for (int x = 0; x < 320; x++) { int a = x - 4 < 0 ? 0 : x - 4, b = x + 5 > 320 ? 320 : x + 5; t[y * 320 + x] = (uint16_t)((c[b] - c[a]) * 16 / (b - a)); } }
     static uint32_t cc[241];
     for (int x = 0; x < 320; x++) { cc[0] = 0; for (int y = 0; y < 240; y++) cc[y + 1] = cc[y] + t[y * 320 + x];
-        for (int y = 0; y < 240; y++) { int a = y - 9 < 0 ? 0 : y - 9, b = y + 10 > 240 ? 240 : y + 10; int bl = (int)((cc[b] - cc[a]) / (b - a)) / 16;
-            int d = g_dmh[y][x] - bl; if (d > 16) d = 16; if (d < -16) d = -16; int o = bl + d; g_dmh[y][x] = (uint8_t)(o < 0 ? 0 : o > 255 ? 255 : o); } }
+        for (int y = 0; y < 240; y++) { int a = y - 4 < 0 ? 0 : y - 4, b = y + 5 > 240 ? 240 : y + 5; int bl = (int)((cc[b] - cc[a]) / (b - a)) / 16;
+            int d = g_dmh[y][x] - bl; if (d > 40) d = 40; if (d < -40) d = -40; int o = bl + d; g_dmh[y][x] = (uint8_t)(o < 0 ? 0 : o > 255 ? 255 : o); } }
 }
 static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
     /* shifts in 1/16 pixel: whole-pixel shifts turned most of the fine relief of the depth maps into the same shift (86 %
@@ -405,7 +410,7 @@ static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward wa
     int sh1 = g_hi ? 0 : 1; int16_t tab[256];
     for (int d = 0; d < 256; d++) { float v;   /* g_zp: screen plane, set by the slider in draw_scene */
         if (d <= g_zp) { int r = g_zp - g_lo; v = r > 0 ? back * (float)(g_zp - (d < g_lo ? g_lo : d)) / r : 0; }        /* behind the screen */
-        else { int r = g_hi_d - g_zp; v = r > 0 ? -front * (float)((d > g_hi_d ? g_hi_d : d) - g_zp) / r : 0; }         /* in front */
+        else { int r = g_hi_d - g_zp; if (r < 60) r = 60; v = -front * (float)((d > g_hi_d ? g_hi_d : d) - g_zp) / r; }   /* in front (a small range: little pop) */
         float t = 0; if (g_tilt_on) { int r = g_hi_d - g_lo; if (r > 40) t = g_tilt * 5.0f * ((d < g_lo ? g_lo : d > g_hi_d ? g_hi_d : d) - g_zp) / r; }   /* motion parallax: near and far slide apart */
         float sv = eye * v + t, lim = back > front ? back : front; if (sv > lim) sv = lim; if (sv < -lim) sv = -lim;   /* stick never adds to the stereo extremes */
         tab[d] = (int16_t)lroundf(sv * 16); }
@@ -452,8 +457,8 @@ static void draw_scene(const uint8_t *rgb) {
            grows to 14 px and the pop-out grows faster in the upper half (3..8 px); as the slider goes up the screen plane
            moves from halfway (subject slightly forward) towards the far end (subject clearly in front of the screen) */
         float q = (int)(sl * 32.0f + 0.5f) / 32.0f, e = powf(q, 0.7f);
-        int bk = (int)(e * 14.0f + 0.5f), fb2 = (int)(e * (3.0f + 5.0f * q) + 0.5f);   /* stronger (was 9 / 2..5) */
-        g_zp = g_lo + (int)((g_sub - g_lo) * (0.55f - 0.25f * q));
+        int bk = (int)(e * 4.0f + 0.5f), fb2 = (int)(e * (5.0f + 7.0f * q) + 0.5f);   /* characters forward up to 12 px */
+        g_zp = g_bg;                                  /* background on the screen plane */
         make_half(rgb, z, true); draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
         draw_eye_dm(fr, bk, fb2, -1); return;
