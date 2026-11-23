@@ -63,13 +63,34 @@ for key in list(maps):
         ref = np.full(mh, np.nan)
         for y in range(mh):
             v = D[y][~inbox[y]]
-            if v.size >= 4: ref[y] = np.percentile(v, 60)
+            if v.size >= 4: ref[y] = np.percentile(v, 35)   # (35: a limb outside the boxes on that row must not count as room)
         if np.isnan(ref).all(): ref[:] = np.percentile(D, 20)
         idx = np.arange(mh); ok_ = ~np.isnan(ref); ref = np.interp(idx, idx[ok_], ref[ok_])
+        # a bright thing on a few rows (G05: the desk lamp's arm at the man's chin) raised the reference there and cut a band out
+        # of the figure: the reference is the running median over a sixth of the height
+        k = max(3, mh // 12); ref = np.array([np.median(ref[max(0, y - k):y + k + 1]) for y in range(mh)])
         for x0, y0, x1, y1 in boxes:
             reg = D[y0:y1, x0:x1]; t = otsu(reg.ravel())
             m = (reg > t) & (reg > ref[y0:y1, None] + 0.05)
             fg[y0:y1, x0:x1] = np.maximum(fg[y0:y1, x0:x1], m.astype(np.float32))
+        # a limb that runs out of the person's box was lifted only inside it (hard rectangles across thighs, G27B / G88): the figure
+        # mask grows from the box over connected pixels that also stand out from the room
+        allowed = (D > ref[:, None] + 0.05)
+        for _ in range(int(max(mw, mh) * 0.4)):
+            g2 = fg.copy(); g2[1:] = np.maximum(g2[1:], fg[:-1]); g2[:-1] = np.maximum(g2[:-1], fg[1:]); g2[:, 1:] = np.maximum(g2[:, 1:], fg[:, :-1]); g2[:, :-1] = np.maximum(g2[:, :-1], fg[:, 1:])
+            g2 = np.where(allowed, g2, fg)
+            if (g2 == fg).all(): break
+            fg = g2
+        # close gaps inside each figure: a column whose figure pixels are interrupted by a short run (< 1/8 height) is filled
+        g = max(2, mh // 8)
+        for x0, y0, x1, y1 in boxes:
+            for x in range(x0, x1):
+                col = fg[y0:y1, x]; on = np.where(col > 0)[0]
+                if on.size < 2: continue
+                gaps = np.where(np.diff(on) > 1)[0]
+                for gi in gaps:
+                    a, b = on[gi], on[gi + 1]
+                    if b - a <= g: col[a:b] = 1
         fg = np.clip((blur(fg, 2) - 0.35) / 0.3, 0, 1)          # clean, soft edge
         if fg.max() < 0.5:
             if not KEEPBG: maps[key][2] = np.full_like(D, float(np.percentile(D, 30)))
@@ -111,6 +132,22 @@ for key in list(maps):
         r = max(3, mh / 24); bulge = np.clip(C - blur(C, r), 0, None)
         bulge = bulge / max(np.percentile(bulge[W > 0.3], 95) if (W > 0.3).any() else 1, 1e-3)
         C = C + W * (1 - F) * gain * (0.07 + 0.09 * np.clip(bulge, 0, 1.5))
+    # neck: head and chest both come forward, the neck between them stayed back as a deep valley (G05: a dark band under the
+    # chin). A tube from the head down to the shoulders is raised to the lower of the two
+    for p in people:
+        k = p['kp']; ok = lambda i: k[i][2] > 0.3; P = lambda i: np.array([k[i][0] * sx, k[i][1] * sy])
+        if not (ok(0) and ok(5) and ok(6)): continue
+        hd, sm = P(0), (P(5) + P(6)) / 2; sw = np.linalg.norm(P(5) - P(6))
+        if sw < 4: continue
+        def lv(pt, r):
+            x, y = int(np.clip(pt[0], 0, mw - 1)), int(np.clip(pt[1], 0, mh - 1)); r = max(1, int(r))
+            return float(np.median(C[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1]))
+        tgt = min(lv(hd, sw * 0.12), lv(sm + (sm - hd) * 0.35, sw * 0.15))
+        T = np.zeros_like(C)
+        for t in np.linspace(0, 1, 12):
+            c = hd + (sm - hd) * t; rr = sw * 0.26
+            T = np.maximum(T, np.exp(-((xx - c[0]) ** 2 + (yy - c[1]) ** 2) / (2 * rr * rr)))
+        C = C + T * np.clip(tgt - C, 0, None)
     if full:
         if KEEPBG:                                              # background relief kept, figures lifted clearly in front of what is around them
             near = blur(D * (1 - fg), max(4, mh / 10)) / np.maximum(blur(1 - fg, max(4, mh / 10)), 1e-3)
