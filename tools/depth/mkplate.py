@@ -17,6 +17,7 @@ for n in names:
     if o.shape[:2] != (480, 640): continue
     th = o[::2, ::2].reshape(30, 8, 40, 8, 3).sum(axis=(1, 3)) // 64
     m = Image.open(os.path.join(msk, n)).convert('L').resize((320, 240), Image.NEAREST).filter(ImageFilter.MaxFilter(3))   # 1 px wider: the outline goes with the figure
+    if (np.asarray(m) > 127).mean() < 0.02: print('no character found, skipped:', n); continue
     p = np.asarray(Image.open(os.path.join(plt, n)).convert('RGB'), np.int32)
     room = (p[0::2, 0::2] + p[1::2, 0::2] + p[0::2, 1::2] + p[1::2, 1::2]) // 4
     ents.append((n[:-4] + '.GCC', th.astype(np.uint8).tobytes() + np.asarray(m, np.uint8).tobytes() + room.astype(np.uint8).tobytes()))
