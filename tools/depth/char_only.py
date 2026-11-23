@@ -34,16 +34,19 @@ if len(sys.argv) > 6:
     for n, o, sz in l:
         f.seek(o)
         if f.read(4)[3:4] == b'm': masked.add(n.upper())
+INSET = {n + '.GCC' for n in 'G36 G36A G38S G47S G54 G60S G65A G67S G72S G74S G97S OVER3B'.split()}
 stat = {'flat': 0, 'chars': 0, 'sprite': 0, 'kept': 0}
 for key in list(maps):
     name = key.rstrip(b'\0').decode(); mw, mh, D = maps[key]
     if name == 'TITLELOGO.GCC': stat['kept'] += 1; continue
     info = pose.get(name, {'people': [], 'w': mw * 2, 'h': mh * 2}); people = info['people']
     full = (info['w'] >= 600 and info['h'] >= 440) if name in pose else (mw, mh) in ((320, 240), (160, 120))   # full pictures vs sprites (0 outside the figure)
+    if name in INSET: full = True                               # small framed pictures over the room (G38S, G74S, ...): whole pictures too
     if full and name in masked: full = False                    # masked picture (cut-out figures over another picture): like a sprite
     sx, sy = mw / info['w'], mh / info['h']; yy, xx = np.mgrid[0:mh, 0:mw].astype(np.float32)
     if full and not people:
         if not KEEPBG: maps[key][2] = np.full_like(D, float(np.percentile(D, 30)))
+        elif name in INSET and name not in ('G65A.GCC', 'OVER3B.GCC'): maps[key][2] = 0.35 + 0.65 * D
         stat['flat'] += 1; continue
     # character area
     if full:
@@ -110,6 +113,7 @@ for key in list(maps):
         stat['chars'] += 1
     else:
         out = np.where(fg > 0, np.maximum(C, 0.03), 0); stat['sprite'] += 1
+    if name in INSET and name not in ('G65A.GCC', 'OVER3B.GCC'): out = 0.35 + 0.65 * out   # framed picture: in front of the room behind it (the two patches are matched to their base)
     out = np.clip(out, 0, 1); maps[key][2] = out
     if prev: Image.fromarray((np.hstack([D, out, np.maximum(W, F * 0.5)]) * 255).clip(0, 255).astype(np.uint8)).save('%s/%s.png' % (prev, name[:-4]))
 hdr = b'DPK1' + struct.pack('<I', len(maps)); off = 8 + 24 * len(maps); tab = b''; data = b''
