@@ -41,7 +41,11 @@ static void load_all(void) {
     }
     plat_log("DOS pictures: %d files in SILK*.DAT", nents);
 }
-int dosgfx_available(void) { load_all(); return nents > 0; }
+int dosgfx_available(void) {
+#ifdef __3DS__
+    return 0;   /* 3DS: PC98 pictures removed (user request) - SILK*.DAT are never read, the HD pictures always show */
+#endif
+    load_all(); return nents > 0; }
 
 static const DosEnt *find(const char *gccname) {
     const char *b = strrchr(gccname, '\\'); if (b) gccname = b + 1;
