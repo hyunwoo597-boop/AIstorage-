@@ -80,7 +80,9 @@ bool plat_frame(const uint8_t *rgb, int w, int h) {
             for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) memcpy(half + (y * 320 + x) * 3, l + ((y * 2) * 640 + x * 2) * 3, 3); b = half; }
         snprintf(n, sizeof n, "/tmp/bt_%05ld.ppm", g_frame); f = b ? fopen(n, "wb") : NULL; if (f) { fprintf(f, "P6 320 240 255\n"); fwrite(b, 1, 320 * 240 * 3, f); fclose(f); } }
     if (g_dump_every && g_frame % g_dump_every == 0 && getenv("AI5_DEPTH")) { const uint8_t *z = sys_scene_depth(); char n[64]; snprintf(n, sizeof n, "/tmp/dp_%05ld.pgm", g_frame);
-        FILE *f = z ? fopen(n, "wb") : NULL; if (f) { fprintf(f, "P5 640 480 255\n"); for (int i = 0; i < 640 * 480; i++) fputc(z[i], f); fclose(f); } }
+        FILE *f = z ? fopen(n, "wb") : NULL; if (f) { fprintf(f, "P5 640 480 255\n"); for (int i = 0; i < 640 * 480; i++) fputc(z[i], f); fclose(f); }
+        const uint8_t *pl = sys_scene_plate(); snprintf(n, sizeof n, "/tmp/pl_%05ld.ppm", g_frame);   /* bare background found for 3D hole filling */
+        f = pl ? fopen(n, "wb") : NULL; if (f) { fprintf(f, "P6 640 480 255\n"); fwrite(pl, 1, 640 * 480 * 3, f); fclose(f); } }
     return g_frame < g_limit;
 }
 static long g_logn;

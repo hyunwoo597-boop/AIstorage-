@@ -216,6 +216,21 @@ const uint8_t *sys_fade(int *alpha) { if (!fx_left || snap_on || !surf[11] || sw
 const uint8_t *sys_scene_depth(void) {
     if (snap_on && snap_z) return snap_z;
     return (surf[0] && !shake_x && !shake_y) ? dpth[0] : NULL; }
+/* Port addition for stereoscopic 3D: the bare background behind the characters. The scripts load the room into its own
+   surface and paste the characters over a copy of it, so that surface still shows what the characters hide. Found by
+   comparison: it must equal the scene where the scene shows background and differ where it shows characters. The 3D view
+   fills the background uncovered beside a moved character from it (real picture instead of a guess). */
+const uint8_t *sys_scene_plate(void) {
+    const uint8_t *z = sys_scene_depth(), *rgb = sys_scene_rgb(); if (!z || !rgb || rgb != surf[0]) return NULL;
+    for (int s = 1; s < NSURF; s++) { if (s == 11 || !surf[s] || sw[s] != SW || sh[s] < SH) continue;
+        int nb = 0, mb = 0, ns = 0, ds = 0;
+        for (int y = 3; y < SH; y += 6) for (int x = 3; x < SW; x += 6) { int i = y * SW + x, v = z[i]; const uint8_t *a = rgb + i * 3, *b = surf[s] + i * 3;
+            bool same = abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2]) < 12;
+            if (v == 1 || v >= 128) { ns++; ds += !same; } else { nb++; mb += same; } }
+        if (getenv("AI5_PLATELOG")) plat_log("plate s%d: bg %d/%d same, chars %d/%d differ", s, mb, nb, ds, ns);
+        if (ns >= 60 && nb >= 200 && mb * 100 >= nb * 97 && ds * 100 >= ns * 60) return surf[s]; }
+    return NULL;
+}
 const uint8_t *sys_scene_rgb(void) {
     if (!surf[0]) return NULL;
     if (snap_on && snap_rgb) return snap_rgb;

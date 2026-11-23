@@ -104,6 +104,7 @@ typedef struct {
     bool backlog;                                                 /* message log viewer is open */
 } ui_text;
 const uint8_t *sys_scene_rgb(void);
+const uint8_t *sys_scene_plate(void);     /* 640x480 bare background behind the characters (3D hole filling), or NULL */
 const uint8_t *sys_scene_depth(void);     /* 640x480 layer map for stereoscopic 3D (0 backdrop, 1 sprite), NULL = draw flat */         /* 640x480 RGB888 scene (surface 0 with shake applied), no text windows */
 const uint8_t *sys_bottom_rgb(void);       /* 320x240 RGB the engine wants on the bottom screen (title menu, confirm dialogs), else NULL */
 const uint8_t *sys_live_rgb(void);
