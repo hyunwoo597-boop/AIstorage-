@@ -537,7 +537,7 @@ static void draw_scene(const uint8_t *rgb) {
         /* slider curve: 32 steps (no jitter); the effect rises quickly at the bottom (s^0.7), the depth behind the screen
            grows to 14 px and the pop-out grows faster in the upper half (3..8 px); as the slider goes up the screen plane
            moves from halfway (subject slightly forward) towards the far end (subject clearly in front of the screen) */
-        float q = (int)(sl * 32.0f + 0.5f) / 32.0f, e = powf(q, 0.7f);
+        float q = (int)(sl * 32.0f + 0.5f) / 32.0f * (2.0f / 3.0f), e = powf(q, 0.7f);   /* full slider = the old 2/3 position (user: that looked best and cleanest) */
         /* depth budget (stereo conversion practice: about 3 % of the width in all, crossed parallax up to 2-3 %, uncrossed
            1-2 %): background behind the screen up to 5 px per eye, the figures' near parts (chest, hips: DEPTH.PAK lifts
            them) out of the screen up to 8 px per eye. The screen plane sits near the figures' base, so the body is at the
