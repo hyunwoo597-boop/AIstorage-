@@ -113,7 +113,7 @@ jobs:
           banner=""
           if [ -x ./bannertool ]; then
             ./bannertool makebanner -i ctr/banner.png -a ctr/banner.wav -o out/banner.bnr
-            if ./bannertool makebanner -ci ctr/banner.cgfx -a ctr/banner.wav -o out/banner3d.bnr; then mv out/banner3d.bnr out/banner.bnr; else echo "::warning::3D banner failed - flat banner"; fi
+            # flat picture banner (ctr/banner.png): a still image, no model for the HOME Menu to swing (user request: banner must not move)
             banner="-banner out/banner.bnr"
           fi
           # a new title version on every build: the HOME Menu keeps a title's banner cached until its version changes (makerom drops -minor, so the build number goes in major)
