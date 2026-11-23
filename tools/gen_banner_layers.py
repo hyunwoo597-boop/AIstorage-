@@ -13,18 +13,19 @@ import json, sys
 import numpy as np, cv2
 from PIL import Image
 
-AW, AH = 512, 512
+AW, AH = 512, 256   # pycgfx/홈 메뉴 한도: 세로 256 (512 로 만들면 변환기가 세로를 절반으로 줄여 흐려졌다)
 # 마리오 배너처럼: 받침 없이 화면을 가득 채우는 큰 로고(맨 앞)와 크게 나온 인물들, 뒤에 병원. 화면 보이는 범위는 대략
 # x -20..20, y -11..13 (홈 메뉴 카메라 (0,1,44.8), 시야각 30°). 흔들림 없음 — 깊이(z)만으로 입체.
 # (이름, 가운데 x, 바닥 y, 높이, z, 화소 밀도 배율, 아래쪽 흐림 비율)   — 뒤 → 앞 순서
 LAYOUT = [
-    ('hospital',   0.0,  -6.5,  9.5, -6.0, 0.55, 0.0),
-    ('orange',   -14.0, -12.5, 17.5, -2.0, 0.9, 0.0),
-    ('pink',      14.2, -12.5, 19.0, -1.0, 0.9, 0.0),
-    ('blue',      -6.8, -12.5, 15.5,  1.5, 0.9, 0.0),
-    ('scooter',    5.0, -12.5, 14.0,  3.5, 0.9, 0.0),
-    ('logo',       0.0,  -0.8,  9.6,  6.0, 1.0, 0.0),
+    ('hospital',   0.0,  -6.5,  9.5, -12.0, 0.35, 0.0),
+    ('orange',   -14.0, -12.5, 17.5,  -4.0, 1.0, 0.0),
+    ('pink',      14.2, -12.5, 19.0,  -2.0, 1.0, 0.0),
+    ('blue',      -6.8, -12.5, 15.5,   3.0, 1.0, 0.0),
+    ('scooter',    5.0, -12.5, 14.0,   7.0, 1.0, 0.0),
+    ('logo',       0.0,  -0.8,  9.6,  12.0, 1.4, 0.0),
 ]
+CAM = 44.786   # 홈 메뉴 카메라 거리 (0, 1, 44.786): 앞뒤로 옮긴 조각은 화면에서 같은 크기·자리로 보이게 거리에 맞춰 줄이거나 키운다
 
 
 def load(path, fade):
@@ -49,15 +50,26 @@ def load(path, fade):
 
 
 def pack(sizes):
-    sky = [0] * AW; place = {}
-    for n in sorted(sizes, key=lambda k: -sizes[k][0] * sizes[k][1]):
-        w, h = sizes[n]; best = None
-        for x in range(0, AW - w + 1):
-            y = max(sky[x:x+w])
-            if y + h <= AH and (best is None or y < best[1]): best = (x, y)
+    """MaxRects (가장 짧은 변이 잘 맞는 빈칸) — 조각 사이 1 화소 띄움"""
+    free = [(0, 0, AW, AH)]; place = {}
+    for n in sorted(sizes, key=lambda k: -max(sizes[k])):
+        best = None
+        for rot in (False, True):                             # 90° 돌려 넣기도 해 본다 (세로 256 한도)
+            w, h = (sizes[n][1], sizes[n][0]) if rot else sizes[n]; w += 1; h += 1
+            for fx, fy, fw, fh in free:
+                if w <= fw and h <= fh:
+                    sc = (min(fw - w, fh - h), max(fw - w, fh - h))
+                    if best is None or sc < best[0]: best = (sc, fx, fy, rot, w, h)
         if best is None: return None
-        x, y = best; place[n] = (x, y, w, h)
-        for i in range(x, min(AW, x + w + 1)): sky[i] = y + h + 1
+        _, x, y, rot, w, h = best; place[n] = (x, y, w - 1, h - 1, rot)
+        nf = []
+        for fx, fy, fw, fh in free:
+            if x >= fx + fw or x + w <= fx or y >= fy + fh or y + h <= fy: nf.append((fx, fy, fw, fh)); continue
+            if x > fx: nf.append((fx, fy, x - fx, fh))
+            if x + w < fx + fw: nf.append((x + w, fy, fx + fw - x - w, fh))
+            if y > fy: nf.append((fx, fy, fw, y - fy))
+            if y + h < fy + fh: nf.append((fx, y + h, fw, fy + fh - y - h))
+        free = [r for r in nf if not any(r != o and r[0] >= o[0] and r[1] >= o[1] and r[0] + r[2] <= o[0] + o[2] and r[1] + r[3] <= o[1] + o[3] for o in nf)]
     return place
 
 
@@ -75,11 +87,13 @@ def main():
         dens *= 0.97
     atlas = np.zeros((AH, AW, 4), np.uint8); lay = []
     for (n, cx, by, hgt, z, k, _) in LAYOUT:
-        c, al = parts[n]; x, y, w, h = place[n]
-        atlas[y:y+h, x:x+w, :3] = np.clip(cv2.resize(c, (w, h), interpolation=cv2.INTER_AREA), 0, 255)
-        atlas[y:y+h, x:x+w, 3] = np.clip(cv2.resize(al, (w, h), interpolation=cv2.INTER_AREA) * 255, 0, 255)
-        wid = hgt * al.shape[1] / al.shape[0]
-        lay.append(dict(name=n, z=z, quad=[round(cx - wid / 2, 3), by, round(cx + wid / 2, 3), round(by + hgt, 3)], uv=[x, y, w, h]))
+        c, al = parts[n]; x, y, w, h, rot = place[n]; ow, oh = (h, w) if rot else (w, h)   # ow/oh: 조각 자체의 크기
+        cc = np.clip(cv2.resize(c, (ow, oh), interpolation=cv2.INTER_AREA), 0, 255); aa = np.clip(cv2.resize(al, (ow, oh), interpolation=cv2.INTER_AREA) * 255, 0, 255)
+        if rot: cc = np.rot90(cc, -1); aa = np.rot90(aa, -1)      # 시계 방향 90°
+        atlas[y:y+h, x:x+w, :3] = cc; atlas[y:y+h, x:x+w, 3] = aa
+        f = (CAM - (z if not isinstance(z, list) else z[0])) / CAM
+        wid = hgt * al.shape[1] / al.shape[0] * f; cxs = cx * f; bys = 1 + (by - 1) * f; hs = hgt * f
+        lay.append(dict(name=n, z=z, quad=[round(cxs - wid / 2, 3), round(bys, 3), round(cxs + wid / 2, 3), round(bys + hs, 3)], uv=[x, y, w, h], rot=bool(rot)))
     Image.fromarray(atlas, 'RGBA').save(out + '/banner_atlas.png')
     json.dump(dict(atlas=[AW, AH], layers=lay), open(out + '/banner_layout.json', 'w'), indent=1)
     print('화소 밀도 %.1f' % dens, place)

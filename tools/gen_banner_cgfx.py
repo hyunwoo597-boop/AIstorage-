@@ -68,7 +68,9 @@ def build(atlas_png, layout):
         zb, zt = l['z'] if isinstance(l['z'], list) else (l['z'], l['z'])
         u0, u1 = (ax + 0.25) / aw, (ax + w - 0.25) / aw; vt, vb = (ay + 0.25) / ah, (ay + h - 0.25) / ah   # glTF: v 는 위에서 아래로
         n0 = len(pos)
-        pos += [(x0, y0 + 7.0, zb), (x1, y0 + 7.0, zb), (x0, y1 + 7.0, zt), (x1, y1 + 7.0, zt)]; uvs += [(u0, vb), (u1, vb), (u0, vt), (u1, vt)]
+        pos += [(x0, y0 + 7.0, zb), (x1, y0 + 7.0, zb), (x0, y1 + 7.0, zt), (x1, y1 + 7.0, zt)]
+        if l.get('rot'): uvs += [(u0, vt), (u0, vb), (u1, vt), (u1, vb)]   # 조각 모음에 시계 방향 90° 돌려 넣은 조각: 아래왼→위왼, 아래오→아래왼, 위왼→위오, 위오→아래오
+        else: uvs += [(u0, vb), (u1, vb), (u0, vt), (u1, vt)]
         idx += [n0, n0 + 1, n0 + 2, n0 + 1, n0 + 3, n0 + 2]
     p = acc(b''.join(struct.pack('<3f', *v) for v in pos), 5126, 'VEC3', len(pos))
     t = acc(b''.join(struct.pack('<2f', *v) for v in uvs), 5126, 'VEC2', len(uvs))
@@ -155,11 +157,12 @@ def preview(atlas_path, layout, out_gif, frames=48, size=(400, 240)):
                 pts.append((W / 2 + X * f / d, H / 2 - (Y - 1) * f / d, d))
             items.append((sum(p[2] for p in pts) / 4, l, pts))
         for _, l, pts in sorted(items, key=lambda it: -it[0]):
-            ax, ay, w, h = l['uv']
+            ax, ay, w, h = l['uv']; piece = at[ay:ay+h, ax:ax+w]
+            if l.get('rot'): piece = np.ascontiguousarray(np.rot90(piece, 1)); w, h = h, w
             src = np.float32([[0, h], [w, h], [0, 0], [w, 0]]); dst = np.float32([[p[0], p[1]] for p in pts])
             import cv2
             M = cv2.getPerspectiveTransform(src, dst)
-            warped = cv2.warpPerspective(at[ay:ay+h, ax:ax+w], M, (W, H), flags=cv2.INTER_LINEAR)
+            warped = cv2.warpPerspective(piece, M, (W, H), flags=cv2.INTER_LINEAR)
             al = warped[..., 3:4] / 255; can = can * (1 - al) + warped[..., :3] * al
         imgs.append(Image.fromarray(can.astype(np.uint8)))
     imgs[0].save(out_gif, save_all=True, append_images=imgs[1:], duration=int(1000 * LOOP / frames), loop=0)
