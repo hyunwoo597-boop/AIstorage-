@@ -475,7 +475,7 @@ static void build_plate_layers(const uint8_t *z) {
     { int hr[256] = { 0 }, hs[256] = { 0 }, nr = 0, ns = 0;      /* depth ranges of the room and of the characters (2nd..98th percentile) */
       for (int y = 0; y < 240; y += 2) for (int x = 0; x < 320; x += 2) { hr[g_bgd[y][x]]++; nr++; if (g_smask[y][x]) { hs[g_spd[y][x]]++; ns++; } }
       int c = 0; g_rlo = 0; for (int d = 0; d < 256; d++) { c += hr[d]; if (c * 100 <= nr * 2) g_rlo = d; }
-      c = 0; g_rhi = 255; for (int d = 255; d >= 0; d--) { c += hr[d]; if (c * 100 <= nr * 2) g_rhi = d; }
+      c = 0; g_rhi = 255; for (int d = 255; d >= 0; d--) { c += hr[d]; if (c * 100 <= nr * 15) g_rhi = d; }   /* room's near part: 85th percentile (the floor at the bottom edge is nearer still and stays at the screen) */
       c = 0; g_slo = 0; for (int d = 0; d < 256; d++) { c += hs[d]; if (c * 100 <= ns * 2) g_slo = d; }
       c = 0; g_shi = 255; for (int d = 255; d >= 0; d--) { c += hs[d]; if (c * 100 <= ns * 2) g_shi = d; }
       if (g_rhi - g_rlo < 20) g_rhi = g_rlo + 20; if (g_shi - g_slo < 20) g_shi = g_slo + 20; }
@@ -510,8 +510,8 @@ static void draw_eye_dm(u8 *fb, float back, float front, int eye) {
             if (g_cg_on) {   /* event CG: the people lie on beds, sit on chairs, hold things - a whole-body jump tore them off what
                                 they touch. Here everything follows one depth scale: the room's nearest part at the screen,
                                 deeper = behind, the figures out of the screen in proportion to how far in front of the room they are */
-                float f = g_shi > g_rhi ? (float)((d > g_shi ? g_shi : d) - g_rhi) / (g_shi - g_rhi) : 0;
-                ts[d] = f > 0 ? (int16_t)lroundf(-eye * front * 1.33f * f * 16) : tr[d]; } }
+                float f = g_shi > g_rhi ? (float)((d > g_shi ? g_shi : d) - g_rhi) / (g_shi - g_rhi) : 0; if (f < 0) f = 0;
+                ts[d] = (int16_t)lroundf(-eye * front * (0.25f + 1.08f * f) * 16); } }   /* every figure pixel at least a quarter out: faces resting on a pillow or against the wall still separate */
         for (int d = 0; d < 256; d++) tab[d] = tr[d];   /* room pass below reads tab */
         for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3, *pr = g_plate_half + y * 320 * 3; const uint8_t *bd = g_bgd[y], *sd = g_spd[y], *sm = g_smask[y];
             for (int x = 0; x < 320; x++) {                  /* room: backward warp (its depth is smooth, two passes find the source) */

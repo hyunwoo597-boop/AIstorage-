@@ -165,6 +165,9 @@ for key in list(maps):
         else:
             out = np.where(fgb, np.maximum(Cf, 0.03), 0); stat['sprite'] += 1
     if name in INSET and name not in ('G65A.GCC', 'OVER3B.GCC'): out = 0.35 + 0.65 * out   # framed picture: in front of the room behind it (the two patches are matched to their base)
+    mx = float(np.percentile(out, 99.7)) if full else float(out.max())
+    if mx > 1: out = out / mx                                   # squeeze instead of clipping: lifted figures used to saturate at 255 together with the
+                                                                 # near floor, so a face, a chest and the floor all had the same depth (no separation)
     out = np.clip(out, 0, 1); maps[key][2] = out
     if prev: Image.fromarray((np.hstack([D, out, np.maximum(W, F * 0.5)]) * 255).clip(0, 255).astype(np.uint8)).save('%s/%s.png' % (prev, name[:-4]))
 hdr = b'DPK1' + struct.pack('<I', len(maps)); off = 8 + 24 * len(maps); tab = b''; data = b''
