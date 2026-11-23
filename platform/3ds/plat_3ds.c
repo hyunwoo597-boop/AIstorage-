@@ -601,7 +601,7 @@ static void draw_scene(const uint8_t *rgb) {
            so the whole character comes out of the screen, and the shifts are not rounded: full slider = 2.5 px behind and
            4.5 px in front per eye (9 px = 2.3 % of the width crossed, inside the comfortable 2-3 %); the layered drawing keeps
            the outlines clean at this depth */
-        float bk = e * 2.5f, fb2 = e * 4.5f;
+        float bk = e * 3.0f, fb2 = e * 5.2f;   /* user: a little stronger (was 2.5 / 4.5) */
         g_zp = g_lo + (int)((g_sub - g_lo) * 0.30f);
         make_half(rgb, z, true); make_plate(); if (g_fade) g_plate_on = false; draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
