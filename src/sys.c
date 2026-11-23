@@ -310,10 +310,13 @@ bool sys_has_depth(void) { int a, b; depth_map("", &a, &b); return dpk_n > 0; }
 /* colour-key copies paste picture variants (a rectangle of people/objects over the base picture). Those stay part of the
    picture: a mapped patch keeps its (picture-matched) depth, an unmapped one over a mapped picture keeps the picture's */
 static inline uint8_t dep_key(uint8_t src, uint8_t dst) {
+    if (dst >= 128 && src < 128) return dst;        /* face / eyes / mouth patch over a character: the character's own depth
+                                                       (the patch came with the room's depth and its face moved with the room in 3D) */
     if (src >= 2) return src; if (dst >= 2 && dst < 128) return dst; return dst >= 128 ? dst : 1;
 }
 static inline uint8_t dep_sprite(uint8_t src, uint8_t dst) {   /* layer value when a sprite pixel is drawn */
-    if (src >= 128) return src; if (src >= 2) return (uint8_t)(src + 126);
+    if (src >= 128) return src; if (dst >= 128) return dst;   /* unmapped or room-mapped patch over a character: the character's depth */
+    if (src >= 2) return (uint8_t)(src + 126);
     return dst >= 128 ? dst : 1;                    /* unmapped patch (face, eyes, mouth) over a mapped sprite keeps its depth */
 }
 /* load a GCC image into surface dst.  [EXE 0x41ab80, used by SYS 9 (0x420540) and SYS 25 (0x421b30)]
@@ -641,7 +644,7 @@ static void gfx_copy_raw(int x0, int y0, int w, int h, int ss, int dx, int dy, i
     bool patch = w * h < SW * SH * 9 / 10;          /* unmapped patch (animation frame) over a mapped picture keeps its depth */
     EACH(if (mk && !(INS(mk[0], mk[1] + sx - x0, mk[2] + sy - y0) && MSK(mk[0], mk[1] + sx - x0, mk[2] + sy - y0) >= 128) && dos_protected(tx, ty)) continue;
          memcpy(PIX(ds, tx, ty), PIX(ss, sx, sy), 3); if (with_mask == 1) MSK(ds, tx, ty) = MSK(ss, sx, sy);
-         if (with_mask != 2) { uint8_t z = DEP(ss, sx, sy); if (!(patch && z < 2 && DEP(ds, tx, ty) >= 2)) DEP(ds, tx, ty) = z; })
+         if (with_mask != 2) { uint8_t z = DEP(ss, sx, sy); uint8_t o = DEP(ds, tx, ty); if (!(patch && ((z < 2 && o >= 2) || (z < 128 && o >= 128)))) DEP(ds, tx, ty) = z; })   /* a patch over a character (face, eyes) keeps the character's depth */
 }
 /* [EXE 0x41af20] copy skipping the key colour (COLORREF); exact compare is assumed */
 static void gfx_copy_key_raw(int x0, int y0, int w, int h, int ss, int dx, int dy, int ds, uint32_t key, int keep_layer, int rm, const int *mk);
