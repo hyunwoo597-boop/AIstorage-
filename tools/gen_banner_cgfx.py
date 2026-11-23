@@ -110,7 +110,7 @@ def patch(cgfx, pieces):
     from cgfx.sobj import BillboardMode
     from cgfx.mtob import CullMode
     cmdl = cgfx.data.models['COMMON']
-    names = set(pieces) | {'diorama'}   # 모든 조각이 늘 정면: 홈 메뉴가 돌려도 옆·뒤로 돌아 사라지지 않는다
+    names = set()   # 빌보드 없음: 조각은 정면을 향한 판 그대로, 깊이(z)만 달라 입체로 보인다 (마리오 배너 방식)
     hit = set()
     for b in cmdl.skeleton.bones:
         if b in names:
