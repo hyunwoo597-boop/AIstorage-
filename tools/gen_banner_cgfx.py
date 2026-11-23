@@ -31,13 +31,7 @@ import convert as pycgfx                            # noqa: E402
 LOOP = 8.0                                          # 초
 STEP = 0.1                                          # 키 간격(초) — 직선 보간
 # 이름: 움직임.  yaw/roll 은 도(°), bob 은 단위 길이, period 는 초(LOOP 의 약수여야 이음매가 없다)
-ANIM = {
-    'logo':    dict(bob=0.22, yaw=35.0, period=4.0),   # 무대·인물은 고정, 글자(로고)만 좌우로 돈다
-    'orange':  dict(roll=1.0, period=4.0, phase=0.00),
-    'blue':    dict(roll=1.2, period=4.0, phase=0.35),
-    'pink':    dict(roll=1.0, period=4.0, phase=0.70),
-    'scooter': dict(bob=0.045, period=0.5),
-}
+ANIM = {'scooter': dict(bob=0.0, period=4.0)}   # 사용자 요청: 배너는 완전히 고정 (움직임 0 — 변환기가 애니메이션 하나는 필요로 함)
 
 
 def quat(axis, deg):
@@ -116,7 +110,7 @@ def patch(cgfx, pieces):
     from cgfx.sobj import BillboardMode
     from cgfx.mtob import CullMode
     cmdl = cgfx.data.models['COMMON']
-    names = (set(pieces) - {'logo'}) | {'diorama'}   # 로고는 스스로 돌아야 하므로 빼고 (무대는 돌지 않는다)
+    names = set(pieces) | {'diorama'}   # 모든 조각이 늘 정면: 홈 메뉴가 돌려도 옆·뒤로 돌아 사라지지 않는다
     hit = set()
     for b in cmdl.skeleton.bones:
         if b in names:
