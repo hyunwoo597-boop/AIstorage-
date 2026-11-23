@@ -419,11 +419,43 @@ static void soften_steps(void) {
    no holes; the characters are the engine's exact sprite pixels (from the layer map), moved with their own depth smoothed
    inside the figure only. No guessed edges, no torn faces, no ghost outlines, nothing to fill in. */
 static uint8_t g_smask[240][320], g_bgd[240][320], g_spd[240][320]; static int g_rlo, g_rhi, g_slo, g_shi;
+/* event CGs (people drawn into the picture, no separate room): PLATE.PAK (optional, made offline - tools/depth/mkplate.py)
+   holds for each such CG the room with the people removed by AI inpainting and the figure mask, so CGs are drawn as two
+   layers too and their characters come cleanly out of the screen.
+   "PLT1" | u32 n | n x { char name[16], u32 offset } | per entry: thumbnail 40x30 RGB, mask 320x240, room 320x240 RGB
+   The picture on screen is recognised by its thumbnail (no name tracking through the engine's copies). */
+#define PLT_TH (40 * 30 * 3)
+static FILE *g_plt; static uint32_t g_plt_n; static uint8_t *g_plt_th; static uint32_t *g_plt_off;
+static bool g_cg_on; static int g_cg_cur = -1; static uint8_t g_cgmask[240][320], g_cgroom[240 * 320 * 3];
+static void cg_match(const uint8_t *rgb, const uint8_t *z) {
+    g_cg_on = false;
+    if (!g_plt_th) { static bool tried; if (tried) return; tried = true;
+        g_plt = open_data("PLATE.PAK"); if (!g_plt) return; uint8_t h[8];
+        if (fread(h, 1, 8, g_plt) != 8 || memcmp(h, "PLT1", 4)) { fclose(g_plt); g_plt = NULL; return; }
+        g_plt_n = h[4] | h[5] << 8 | h[6] << 16 | (uint32_t)h[7] << 24; if (!g_plt_n || g_plt_n > 4096) { fclose(g_plt); g_plt = NULL; return; }
+        g_plt_off = malloc(g_plt_n * 4); g_plt_th = malloc(g_plt_n * PLT_TH); if (!g_plt_off || !g_plt_th) { g_plt_th = NULL; return; }
+        for (uint32_t i = 0; i < g_plt_n; i++) { uint8_t e[20]; if (fread(e, 1, 20, g_plt) != 20) { g_plt_th = NULL; return; } g_plt_off[i] = e[16] | e[17] << 8 | e[18] << 16 | (uint32_t)e[19] << 24; }
+        for (uint32_t i = 0; i < g_plt_n; i++) { fseek(g_plt, g_plt_off[i], SEEK_SET); if (fread(g_plt_th + i * PLT_TH, 1, PLT_TH, g_plt) != PLT_TH) { g_plt_th = NULL; return; } } }
+    for (int i = 0; i < 640 * 480; i += 997) if (z[i] == 1 || z[i] >= 128) return;   /* only full pictures (no sprite layer) */
+    uint8_t th[PLT_TH];                                   /* scene thumbnail: 16x16 block averages */
+    for (int by = 0; by < 30; by++) for (int bx = 0; bx < 40; bx++) { int s[3] = { 0, 0, 0 };
+        for (int y = by * 16; y < by * 16 + 16; y += 2) for (int x = bx * 16; x < bx * 16 + 16; x += 2) { const uint8_t *q = rgb + (y * 640 + x) * 3; s[0] += q[0]; s[1] += q[1]; s[2] += q[2]; }
+        for (int c = 0; c < 3; c++) th[(by * 40 + bx) * 3 + c] = (uint8_t)(s[c] / 64); }
+    int best = -1, bd = 1 << 30;
+    for (uint32_t i = 0; i < g_plt_n; i++) { const uint8_t *t = g_plt_th + i * PLT_TH; int d = 0;   /* blocks that differ (a text window may cover some) */
+        for (int k = 0; k < 1200 && d < bd; k++) d += abs(t[k * 3] - th[k * 3]) + abs(t[k * 3 + 1] - th[k * 3 + 1]) + abs(t[k * 3 + 2] - th[k * 3 + 2]) > 36;
+        if (d < bd) { bd = d; best = (int)i; } }
+    if (best < 0 || bd > 1200 * 25 / 100) return;        /* over a quarter of the picture differs: not one of these */
+    if (best != g_cg_cur) { fseek(g_plt, g_plt_off[best] + PLT_TH, SEEK_SET);
+        if (fread(g_cgmask, 1, sizeof g_cgmask, g_plt) != sizeof g_cgmask || fread(g_cgroom, 1, sizeof g_cgroom, g_plt) != sizeof g_cgroom) { g_cg_cur = -1; return; }
+        g_cg_cur = best; }
+    g_cg_on = true;
+}
 static void build_plate_layers(const uint8_t *z) {
     static uint16_t t[240][320]; static uint8_t c[240][320];
     for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int n = 0; const uint8_t *q = z + (y * 2) * 640 + x * 2;
         n += q[0] == 1 || q[0] >= 128; n += q[1] == 1 || q[1] >= 128; n += q[640] == 1 || q[640] >= 128; n += q[641] == 1 || q[641] >= 128;
-        g_smask[y][x] = n >= 2; }
+        g_smask[y][x] = g_cg_on ? g_cgmask[y][x] > 127 : n >= 2; }
     #define DEPTH_AT(yy, xx) (g_hi ? g_dmh[yy][xx] : g_dm[(yy) >> 1][(xx) >> 1])
     for (int y = 0; y < 240; y++) { int last = -1;       /* room depth under the characters: straight line between the room on both sides */
         for (int x = 0; x <= 320; x++) { if (x < 320 && g_smask[y][x]) continue;
@@ -450,7 +482,8 @@ static void build_plate_layers(const uint8_t *z) {
 }
 static uint8_t g_plate_half[240 * 320 * 3]; static bool g_plate_on;
 static void make_plate(void) {   /* 320x240 copy of the bare background, if the engine has one for this scene */
-    const uint8_t *pl = sys_scene_plate(); g_plate_on = pl != NULL; if (!pl) return;
+    const uint8_t *pl = sys_scene_plate(); g_plate_on = pl != NULL;
+    if (!pl) { if (g_cg_on) { memcpy(g_plate_half, g_cgroom, sizeof g_cgroom); g_plate_on = true; } return; }
     for (int y = 0; y < 240; y++) { const uint8_t *r0 = pl + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; uint8_t *o = g_plate_half + y * 320 * 3;
         for (int x = 0; x < 320; x++, o += 3) { int r, g, b; avg2(r0, r1, x, &r, &g, &b); o[0] = r; o[1] = g; o[2] = b; } }
 }
@@ -551,7 +584,7 @@ static void draw_scene(const uint8_t *rgb) {
           else if (full_picture(z) && sys_has_depth()) memset(g_dm, 150, sizeof g_dm);   /* no map (notices, opening text, menus): one flat plane, lettering stays clean */
           else if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
-          else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); soften_steps(); g_hi = true; } } g_dm_sig = sig; depth_stats(); build_plate_layers(z); }
+          else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); soften_steps(); g_hi = true; } } g_dm_sig = sig; depth_stats(); cg_match(rgb, z); build_plate_layers(z); }
         /* slider curve: 32 steps (no jitter); the effect rises quickly at the bottom (s^0.7), the depth behind the screen
            grows to 14 px and the pop-out grows faster in the upper half (3..8 px); as the slider goes up the screen plane
            moves from halfway (subject slightly forward) towards the far end (subject clearly in front of the screen) */

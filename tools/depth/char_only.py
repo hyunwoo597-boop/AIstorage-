@@ -1,7 +1,7 @@
 # 3D only on the characters (user request): backgrounds become one flat plane, characters keep their AI relief with the
 # face smoothed (only the basic shape: detailed relief bent faces in the stereo pair) and chest / hips strongly lifted.
 # usage: char_only.py DEPTH_preboost.PAK pose.json out.pak [gain=4.0] [preview_dir] [BG.ARC: masked pictures, ...24m]
-import sys, json, struct, numpy as np
+import os, sys, json, struct, numpy as np
 from PIL import Image
 def rd(p):
     d = open(p, 'rb').read(); n = struct.unpack('<I', d[4:8])[0]; r = {}
@@ -150,6 +150,16 @@ for key in list(maps):
             base[m] = lv
         Cf = base + 0.35 * vol + relief + W * (1 - np.clip(F, 0, 1)) * gain * 0.06
         if full:
+            if os.environ.get('MASKOUT'):                       # figure masks for the inpainted room plates (PLATE.PAK)
+                mk = fgb.copy()
+                for p in people:                                # the rest of each body inside its box at about the body's depth (lower torso behind a desk...)
+                    x0, y0, x1, y1 = p['box']; x0, x1 = int(x0 * sx), int(np.ceil(x1 * sx)); y0, y1 = int(y0 * sy), int(np.ceil(y1 * sy))
+                    sl = (slice(max(0, y0), min(mh, y1)), slice(max(0, x0), min(mw, x1))); f0 = fgb[sl]
+                    if f0.sum() < 20 or (x1 - x0) * (y1 - y0) < mw * mh * 0.15: continue   # small people far back: their box would come out as a rectangle
+                    mk[sl] |= D[sl] >= float(np.median(D[sl][f0])) - 0.12
+                lab1, _ = ndi.label(mk); keep = np.unique(lab1[fgb]); mk = np.isin(lab1, keep[keep > 0])
+                mk = ndi.binary_fill_holes(ndi.binary_closing(mk, iterations=3))   # whole figures: no holes (a stethoscope, a gap under an arm left in the room layer tore)
+                Image.fromarray((mk * 255).astype(np.uint8)).save(os.path.join(os.environ['MASKOUT'], name[:-4] + '.png'))
             fs = np.clip(blur(fgb.astype(np.float32), 1.5) * 1.2, 0, 1)
             out = D * (1 - fs) + np.where(fgb, Cf, D) * fs; stat['chars'] += 1
         else:

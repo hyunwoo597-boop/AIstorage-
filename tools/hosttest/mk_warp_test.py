@@ -13,6 +13,7 @@ print('''#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 typedef uint8_t u8;
+static FILE *open_data(const char *n) { const char *p = getenv("PLATE"); (void)n; return p ? fopen(p, "rb") : NULL; }   /* PLATE=PLATE.PAK */
 static const uint8_t *g_fade; static int g_fade_a; static uint8_t *g_tplate; static const uint8_t *sys_scene_plate(void) { return g_tplate; }
 static inline void avg2(const uint8_t *r0, const uint8_t *r1, int sx, int *r, int *g, int *b) { const uint8_t *a = r0 + sx * 6, *c = r1 + sx * 6;
     *r = (a[0] + a[3] + c[0] + c[3]) >> 2; *g = (a[1] + a[4] + c[1] + c[4]) >> 2; *b = (a[2] + a[5] + c[2] + c[5]) >> 2; }
@@ -26,7 +27,7 @@ int main(int c, char **v) {
     g_hi = false;
     if (full_picture(z) && ai_picture(z)) { build_dm_hi(z); soften_steps(); g_hi = true; }
     else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); soften_steps(); g_hi = true; } }
-    depth_stats(); build_plate_layers(z); g_zp = g_lo + (int)((g_sub - g_lo) * 0.30f);      /* as draw_scene at full slider */
+    depth_stats(); cg_match(rgb, z); build_plate_layers(z); g_zp = g_lo + (int)((g_sub - g_lo) * 0.30f);      /* as draw_scene at full slider */
     if (c > 6) { static uint8_t pl[640 * 480 * 3]; FILE *pf = fopen(v[6], "rb"); if (pf && fgets(h, 64, pf) && fread(pl, 1, sizeof pl, pf)) g_tplate = pl; if (pf) fclose(pf); }
     make_half(rgb, z, true); make_plate();
     static u8 fb[400 * 240 * 3]; static uint8_t o[240 * 400 * 3]; char n[256];
