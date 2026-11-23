@@ -390,15 +390,23 @@ static void depth_stats(void) {
    the slider went up). Where the depth changes a lot within 2 px, each pixel takes the nearer-valued of the local min /
    max: the figure moves as one piece and the background stays background. Smooth relief (bodies, rooms) is unchanged. */
 static void soften_steps(void) {
-    static uint8_t mn[240][320], mx[240][320], t1[240][320], t2[240][320];
+    /* 1) the figure's depth grows 1 px outward: the AI map stops a little inside the drawn outline, and the outline pixels
+          that kept the background depth stayed behind as a ghost line when the figure moved (afterimage at the edges)
+       2) at a step the side is chosen from the 3x3-smoothed depth against the middle of the local range, so the edge follows a
+          smooth contour (per-pixel choices made a ragged, stair-stepped edge) */
+    static uint8_t m[240][320], t1[240][320], t2[240][320], mn[240][320], mx[240][320];
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int v = 0; for (int k = x - 1; k <= x + 1; k++) if (k >= 0 && k < 320 && g_dmh[y][k] > v) v = g_dmh[y][k]; t1[y][x] = (uint8_t)v; }
+    for (int x = 0; x < 320; x++) for (int y = 0; y < 240; y++) { int v = 0; for (int k = y - 1; k <= y + 1; k++) if (k >= 0 && k < 240 && t1[k][x] > v) v = t1[k][x]; m[y][x] = (uint8_t)v; }
     for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int lo = 255, hi = 0;
-        for (int k = x - 2; k <= x + 2; k++) { if (k < 0 || k > 319) continue; int v = g_dmh[y][k]; if (v < lo) lo = v; if (v > hi) hi = v; }
+        for (int k = x - 2; k <= x + 2; k++) { if (k < 0 || k > 319) continue; int v = m[y][k]; if (v < lo) lo = v; if (v > hi) hi = v; }
         t1[y][x] = (uint8_t)lo; t2[y][x] = (uint8_t)hi; }
     for (int x = 0; x < 320; x++) for (int y = 0; y < 240; y++) { int lo = 255, hi = 0;
         for (int k = y - 2; k <= y + 2; k++) { if (k < 0 || k > 239) continue; if (t1[k][x] < lo) lo = t1[k][x]; if (t2[k][x] > hi) hi = t2[k][x]; }
         mn[y][x] = (uint8_t)lo; mx[y][x] = (uint8_t)hi; }
-    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int v = g_dmh[y][x], lo = mn[y][x], hi = mx[y][x];
-        if (hi - lo >= 24) g_dmh[y][x] = (uint8_t)(v - lo < hi - v ? lo : hi); }
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int lo = mn[y][x], hi = mx[y][x];
+        if (hi - lo < 24) { g_dmh[y][x] = m[y][x]; continue; }
+        int s = 0, n = 0; for (int j = -1; j <= 1; j++) for (int k = -1; k <= 1; k++) { int yy = y + j, xx = x + k; if (yy < 0 || yy > 239 || xx < 0 || xx > 319) continue; s += m[yy][xx]; n++; }
+        g_dmh[y][x] = (uint8_t)(s * 2 >= (lo + hi) * n ? hi : lo); }
 }
 /* forward warp with a depth test (depth-image-based rendering): every source pixel is moved by its own shift; where two
    land on the same place the nearer one wins, a continuous surface is drawn as a span between neighbouring pixels, and
@@ -431,8 +439,11 @@ static void draw_eye_dm(u8 *fb, int back, int front, int eye) {
         }
         /* holes: copy the farther of the two pixels on either side (the uncovered background) */
         for (int x = 0; x < 320; x++) { if (zb[x] >= 0) continue; int e = x; while (e < 320 && zb[e] < 0) e++;
-            int L = x - 1, R = e; int src = L < 0 ? R : R >= 320 ? L : (zb[L] <= zb[R] ? L : R);
-            for (int j = x; j < e; j++) { if (src >= 0 && src < 320) { col[j][0] = col[src][0]; col[j][1] = col[src][1]; col[j][2] = col[src][2]; } zb[j] = src >= 0 && src < 320 ? zb[src] : 0; }
+            int L = x - 1, R = e; bool right = L < 0 ? true : R >= 320 ? false : zb[R] <= zb[L];
+            /* the background is continued by mirroring the pixels beyond the gap (a copied single pixel made streaks) */
+            for (int j = x; j < e; j++) { int q = right ? R + (e - 1 - j) : L - (j - x);
+                if (right ? (q >= 320 || zb[q] < 0 || zb[q] > zb[R] + 12) : (q < 0 || zb[q] < 0 || zb[q] > zb[L] + 12)) q = right ? R : L;   /* stay on the background */
+                if (q >= 0 && q < 320) { col[j][0] = col[q][0]; col[j][1] = col[q][1]; col[j][2] = col[q][2]; zb[j] = zb[q]; } else zb[j] = 0; }
             x = e - 1; }
         u8 *p = fb + (40 * 240 + (239 - y)) * 3;
         for (int x = 0; x < 320; x++, p += 240 * 3) { p[0] = col[x][2]; p[1] = col[x][1]; p[2] = col[x][0]; } }
