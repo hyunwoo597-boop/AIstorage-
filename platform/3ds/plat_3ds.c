@@ -418,7 +418,7 @@ static void soften_steps(void) {
    background (sys_scene_plate) with the room's own depth carried under the characters (filled across each row), so it has
    no holes; the characters are the engine's exact sprite pixels (from the layer map), moved with their own depth smoothed
    inside the figure only. No guessed edges, no torn faces, no ghost outlines, nothing to fill in. */
-static uint8_t g_smask[240][320], g_bgd[240][320], g_spd[240][320];
+static uint8_t g_smask[240][320], g_bgd[240][320], g_spd[240][320]; static int g_rlo, g_rhi, g_slo, g_shi;
 static void build_plate_layers(const uint8_t *z) {
     static uint16_t t[240][320]; static uint8_t c[240][320];
     for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int n = 0; const uint8_t *q = z + (y * 2) * 640 + x * 2;
@@ -440,6 +440,13 @@ static void build_plate_layers(const uint8_t *z) {
         for (int k = y - 3; k <= y + 3; k++) if (k >= 0 && k < 240 && c[k][x]) { sm += t[k][x]; n++; }
         int v = n ? sm / (16 * n) : DEPTH_AT(y, x); if (v < g_bgd[y][x] + 4) v = g_bgd[y][x] + 4; g_spd[y][x] = (uint8_t)(v > 255 ? 255 : v); }
     #undef DEPTH_AT
+    { int hr[256] = { 0 }, hs[256] = { 0 }, nr = 0, ns = 0;      /* depth ranges of the room and of the characters (2nd..98th percentile) */
+      for (int y = 0; y < 240; y += 2) for (int x = 0; x < 320; x += 2) { hr[g_bgd[y][x]]++; nr++; if (g_smask[y][x]) { hs[g_spd[y][x]]++; ns++; } }
+      int c = 0; g_rlo = 0; for (int d = 0; d < 256; d++) { c += hr[d]; if (c * 100 <= nr * 2) g_rlo = d; }
+      c = 0; g_rhi = 255; for (int d = 255; d >= 0; d--) { c += hr[d]; if (c * 100 <= nr * 2) g_rhi = d; }
+      c = 0; g_slo = 0; for (int d = 0; d < 256; d++) { c += hs[d]; if (c * 100 <= ns * 2) g_slo = d; }
+      c = 0; g_shi = 255; for (int d = 255; d >= 0; d--) { c += hs[d]; if (c * 100 <= ns * 2) g_shi = d; }
+      if (g_rhi - g_rlo < 20) g_rhi = g_rlo + 20; if (g_shi - g_slo < 20) g_shi = g_slo + 20; }
 }
 static uint8_t g_plate_half[240 * 320 * 3]; static bool g_plate_on;
 static void make_plate(void) {   /* 320x240 copy of the bare background, if the engine has one for this scene */
@@ -457,6 +464,17 @@ static void draw_eye_dm(u8 *fb, float back, float front, int eye) {
         tab[d] = (int16_t)lroundf(sv * 16); }
     static uint8_t col[320][3]; static int16_t zb[320];
     if (g_plate_on) {                                    /* two layers: room (bare background) + characters */
+        /* the characters come clearly out of the screen as a whole: every figure pixel is in front by the full pop-out
+           (front) plus up to a third more for its own relief (nose, chest), while the room goes from the screen plane (its
+           nearest part, just behind the figures) to `back` behind. The two layers are drawn separately, so a strong
+           separation does not tear or smear the outlines. Full slider: 4.5 + 1.5 px in front, 2.5 px behind per eye
+           = 12 px crossed (3 % of the width, the upper end of the comfortable range) */
+        int16_t tr[256], ts[256];
+        for (int d = 0; d < 256; d++) {
+            float a = (float)(g_rhi - (d < g_rlo ? g_rlo : d > g_rhi ? g_rhi : d)) / (g_rhi - g_rlo);
+            float b = (float)((d < g_slo ? g_slo : d > g_shi ? g_shi : d) - g_slo) / (g_shi - g_slo);
+            tr[d] = (int16_t)lroundf(eye * back * a * 16); ts[d] = (int16_t)lroundf(-eye * front * (1.0f + 0.33f * b) * 16); }
+        for (int d = 0; d < 256; d++) tab[d] = tr[d];   /* room pass below reads tab */
         for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3, *pr = g_plate_half + y * 320 * 3; const uint8_t *bd = g_bgd[y], *sd = g_spd[y], *sm = g_smask[y];
             for (int x = 0; x < 320; x++) {                  /* room: backward warp (its depth is smooth, two passes find the source) */
                 #define CL(v) ((v) < 0 ? 0 : (v) > 319 * 16 ? 319 * 16 : (v))
@@ -465,8 +483,8 @@ static void draw_eye_dm(u8 *fb, float back, float front, int eye) {
                 int i = k >> 4, fr = k & 15; const uint8_t *q = pr + i * 3, *q2 = i < 319 ? q + 3 : q;
                 for (int c = 0; c < 3; c++) col[x][c] = (uint8_t)((q[c] * (16 - fr) + q2[c] * fr) >> 4); zb[x] = -1; }
             for (int k = 0; k < 320; k++) { if (!sm[k]) continue;   /* characters: forward, span to the next figure pixel */
-                int a = k * 16 - tab[sd[k]]; const uint8_t *c0 = row + k * 3;
-                if (k < 319 && sm[k + 1]) { int b = (k + 1) * 16 - tab[sd[k + 1]], span = b - a; const uint8_t *c1 = c0 + 3;
+                int a = k * 16 - ts[sd[k]]; const uint8_t *c0 = row + k * 3;
+                if (k < 319 && sm[k + 1]) { int b = (k + 1) * 16 - ts[sd[k + 1]], span = b - a; const uint8_t *c1 = c0 + 3;
                     if (span > 0 && span <= 48) { int x0 = (a + 15) >> 4, x1 = (b + 15) >> 4;
                         for (int x = x0; x < x1; x++) { if (x < 0 || x > 319) continue; int f = ((x * 16 - a) << 8) / span, dz = sd[k] + (((sd[k + 1] - sd[k]) * f) >> 8);
                             if (dz < zb[x]) continue; zb[x] = (int16_t)dz; for (int c = 0; c < 3; c++) col[x][c] = (uint8_t)((c0[c] * (256 - f) + c1[c] * f) >> 8); }
