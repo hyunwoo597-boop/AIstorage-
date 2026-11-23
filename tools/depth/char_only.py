@@ -121,43 +121,39 @@ for key in list(maps):
             for hp, kp in ((lh, kn[0]), (rh, kn[1])):
                 c = hp + (kp - hp) * 0.18 + (hp - hm) * 0.25; r = hw * 0.45
                 W = np.maximum(W, np.exp(-((xx - c[0]) ** 2 + (yy - c[1]) ** 2) / (2 * r * r)))
-    if F.max() > 0:
-        rf = max(3, mh / 16); C = C * (1 - F) + blur(C, rf) * F
-        # the head comes forward with the body: the chest and hips are lifted below, a face left at its old depth sat behind
-        # them on the wall like a flat cut-out (G23A). A smooth dome over the head: forward as much as the chest's base lift
-        # plus a rounded shape (nose/cheeks forward of the hairline)
-        Fd = np.clip(F, 0, 1); Fd = Fd * Fd * (3 - 2 * Fd)
-        C = C + Fd * gain * 0.07 + np.clip(F - 0.4, 0, 1) * gain * 0.04
-    if W.max() > 0.05:
-        r = max(3, mh / 24); bulge = np.clip(C - blur(C, r), 0, None)
-        bulge = bulge / max(np.percentile(bulge[W > 0.3], 95) if (W > 0.3).any() else 1, 1e-3)
-        C = C + W * (1 - F) * gain * (0.07 + 0.09 * np.clip(bulge, 0, 1.5))
-    # neck: head and chest both come forward, the neck between them stayed back as a deep valley (G05: a dark band under the
-    # chin). A tube from the head down to the shoulders is raised to the lower of the two
-    for p in people:
-        k = p['kp']; ok = lambda i: k[i][2] > 0.3; P = lambda i: np.array([k[i][0] * sx, k[i][1] * sy])
-        if not (ok(0) and ok(5) and ok(6)): continue
-        hd, sm = P(0), (P(5) + P(6)) / 2; sw = np.linalg.norm(P(5) - P(6))
-        if sw < 4: continue
-        def lv(pt, r):
-            x, y = int(np.clip(pt[0], 0, mw - 1)), int(np.clip(pt[1], 0, mh - 1)); r = max(1, int(r))
-            return float(np.median(C[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1]))
-        tgt = min(lv(hd, sw * 0.12), lv(sm + (sm - hd) * 0.35, sw * 0.15))
-        T = np.zeros_like(C)
-        for t in np.linspace(0, 1, 12):
-            c = hd + (sm - hd) * t; rr = sw * 0.26
-            T = np.maximum(T, np.exp(-((xx - c[0]) ** 2 + (yy - c[1]) ** 2) / (2 * rr * rr)))
-        C = C + T * np.clip(tgt - C, 0, None)
-    if full:
-        if KEEPBG:                                              # background relief kept, figures lifted clearly in front of what is around them
-            near = blur(D * (1 - fg), max(4, mh / 10)) / np.maximum(blur(1 - fg, max(4, mh / 10)), 1e-3)
-            C = np.maximum(C, near + 0.12); out = D * (1 - fg) + C * fg
-        else:
-            C = np.maximum(C, bgv + 0.06)                       # characters stand in front of the flat background
-            out = bgv * (1 - fg) + C * fg
-        stat['chars'] += 1
+    # each character is ONE body: the whole silhouette (hair, head, body, arms) sits on one level and gets a rounded volume from
+    # its own outline, with the AI map's fine relief on top and the chest / hips lifted. Before, the face, the hair and the body
+    # each kept the AI depth or their own lift and moved separately in 3D (hair behind the face, face behind the chest)
+    from scipy import ndimage as ndi
+    fgb = fg > 0.5
+    if full and people:                                         # the head and hair: inside the head circle and standing out from the room
+        hd = (F > 0.05) & (D > ref[:, None] + 0.06)
+        if fgb.any() and hd.any():                              # only what joins the figure (G05: a ring of wall round the head otherwise)
+            lab0, _ = ndi.label(fgb | hd); keep = np.unique(lab0[fgb]); fgb = np.isin(lab0, keep[keep > 0])
+            fgb = ndi.binary_opening(fgb, iterations=1) | (fg > 0.5)
+    if not fgb.any() or not people:
+        out = np.where(fg > 0, np.maximum(D, 0.03), 0) if not full else D; stat['sprite' if not full else 'flat'] += 1
     else:
-        out = np.where(fg > 0, np.maximum(C, 0.03), 0); stat['sprite'] += 1
+        lab, nl = ndi.label(fgb)
+        dist = ndi.distance_transform_edt(fgb)
+        loc = ndi.maximum_filter(dist, size=int(max(5, mh / 5)))
+        vol = np.sqrt(np.clip(dist / np.maximum(loc, 1), 0, 1))           # 0 at the outline, 1 in the middle of each part
+        relief = np.clip(D - ndi.gaussian_filter(D, max(2, mh / 25)), -0.08, 0.08) * (1 - 0.7 * np.clip(F, 0, 1))   # folds, hair strands; calm on the face
+        if full and KEEPBG:
+            near = blur(D * (1 - fg), max(4, mh / 10)) / np.maximum(blur(1 - fg, max(4, mh / 10)), 1e-3)
+        base = np.zeros_like(D)
+        for i in range(1, nl + 1):
+            m = lab == i
+            if m.sum() < 30: base[m] = np.median(D[m]); continue
+            lv = float(np.median(D[m]))
+            if full: lv = max(lv, float(np.median(near[m])) + 0.12) if KEEPBG else max(lv, bgv + 0.06)
+            base[m] = lv
+        Cf = base + 0.22 * vol + relief + W * (1 - np.clip(F, 0, 1)) * gain * 0.06
+        if full:
+            fs = np.clip(blur(fgb.astype(np.float32), 1.5) * 1.2, 0, 1)
+            out = D * (1 - fs) + np.where(fgb, Cf, D) * fs; stat['chars'] += 1
+        else:
+            out = np.where(fgb, np.maximum(Cf, 0.03), 0); stat['sprite'] += 1
     if name in INSET and name not in ('G65A.GCC', 'OVER3B.GCC'): out = 0.35 + 0.65 * out   # framed picture: in front of the room behind it (the two patches are matched to their base)
     out = np.clip(out, 0, 1); maps[key][2] = out
     if prev: Image.fromarray((np.hstack([D, out, np.maximum(W, F * 0.5)]) * 255).clip(0, 255).astype(np.uint8)).save('%s/%s.png' % (prev, name[:-4]))
