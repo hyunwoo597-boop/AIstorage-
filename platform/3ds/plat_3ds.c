@@ -385,51 +385,57 @@ static void depth_stats(void) {
     int md = 0; for (int d = 1; d < 256; d++) if (h[d] > h[md]) md = d;
     g_bg = h[md] * 5 >= n ? md : lo;
 }
-/* depth map clean-up for the warp (AI maps; DEPTH.PAK from tools/depth/char_only.py: backgrounds flat, faces smoothed, chest
-   and hips lifted):
-   - a figure keeps its own depth right up to its outline: the step to the background becomes a ramp on the background side
-     (max filter before the blur), so the background stretches next to a character instead of the character's face
-   out = B + clamp(d - B, +-40), B = box blur (5 px) of the 1-px max filter of d (depth reads strongest at sharp steps) */
+/* depth map clean-up for the warp: steps are made SHARP. A soft ramp at a character's outline gave the background next
+   to it in-between shifts, so it stretched and smeared beside the figure (a pale "film" round every outline as soon as
+   the slider went up). Where the depth changes a lot within 2 px, each pixel takes the nearer-valued of the local min /
+   max: the figure moves as one piece and the background stays background. Smooth relief (bodies, rooms) is unchanged. */
 static void soften_steps(void) {
-    static uint8_t m[240][320]; static uint16_t t[240 * 320]; static uint32_t c[321];
-    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int v = 0;    /* max filter, horizontal then vertical */
-        for (int k = x - 1; k <= x + 1; k++) if (k >= 0 && k < 320 && g_dmh[y][k] > v) v = g_dmh[y][k]; t[y * 320 + x] = v; }
-    for (int x = 0; x < 320; x++) for (int y = 0; y < 240; y++) { int v = 0;
-        for (int k = y - 1; k <= y + 1; k++) if (k >= 0 && k < 240 && t[k * 320 + x] > v) v = t[k * 320 + x]; m[y][x] = v; }
-    for (int y = 0; y < 240; y++) { c[0] = 0; for (int x = 0; x < 320; x++) c[x + 1] = c[x] + m[y][x];
-        for (int x = 0; x < 320; x++) { int a = x - 2 < 0 ? 0 : x - 2, b = x + 3 > 320 ? 320 : x + 3; t[y * 320 + x] = (uint16_t)((c[b] - c[a]) * 16 / (b - a)); } }
-    static uint32_t cc[241];
-    for (int x = 0; x < 320; x++) { cc[0] = 0; for (int y = 0; y < 240; y++) cc[y + 1] = cc[y] + t[y * 320 + x];
-        for (int y = 0; y < 240; y++) { int a = y - 2 < 0 ? 0 : y - 2, b = y + 3 > 240 ? 240 : y + 3; int bl = (int)((cc[b] - cc[a]) / (b - a)) / 16;
-            int d = g_dmh[y][x] - bl; if (d > 40) d = 40; if (d < -40) d = -40; int o = bl + d; g_dmh[y][x] = (uint8_t)(o < 0 ? 0 : o > 255 ? 255 : o); } }
+    static uint8_t mn[240][320], mx[240][320], t1[240][320], t2[240][320];
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int lo = 255, hi = 0;
+        for (int k = x - 2; k <= x + 2; k++) { if (k < 0 || k > 319) continue; int v = g_dmh[y][k]; if (v < lo) lo = v; if (v > hi) hi = v; }
+        t1[y][x] = (uint8_t)lo; t2[y][x] = (uint8_t)hi; }
+    for (int x = 0; x < 320; x++) for (int y = 0; y < 240; y++) { int lo = 255, hi = 0;
+        for (int k = y - 2; k <= y + 2; k++) { if (k < 0 || k > 239) continue; if (t1[k][x] < lo) lo = t1[k][x]; if (t2[k][x] > hi) hi = t2[k][x]; }
+        mn[y][x] = (uint8_t)lo; mx[y][x] = (uint8_t)hi; }
+    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int v = g_dmh[y][x], lo = mn[y][x], hi = mx[y][x];
+        if (hi - lo >= 24) g_dmh[y][x] = (uint8_t)(v - lo < hi - v ? lo : hi); }
 }
-static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
-    /* shifts in 1/16 pixel: whole-pixel shifts turned most of the fine relief of the depth maps into the same shift (86 %
-       of character pixels unchanged between the old and the detailed maps); the output pixel is mixed from the two
-       neighbouring source pixels instead */
+/* forward warp with a depth test (depth-image-based rendering): every source pixel is moved by its own shift; where two
+   land on the same place the nearer one wins, a continuous surface is drawn as a span between neighbouring pixels, and
+   the gap that opens beside a figure (background that was hidden) is filled from the FARTHER side - the background is
+   extended, the figure's edge is never stretched */
+static void draw_eye_dm(u8 *fb, int back, int front, int eye) {
     int sh1 = g_hi ? 0 : 1; int16_t tab[256];
     for (int d = 0; d < 256; d++) { float v;   /* g_zp: screen plane, set by the slider in draw_scene */
         if (d <= g_zp) { int r = g_zp - g_lo; v = r > 0 ? back * (float)(g_zp - (d < g_lo ? g_lo : d)) / r : 0; }        /* behind the screen */
-        else { int r = g_hi_d - g_zp; if (r < 60) r = 60; v = -front * (float)((d > g_hi_d ? g_hi_d : d) - g_zp) / r; }   /* in front (a small range: little pop) */
-        float t = 0; if (g_tilt_on) { int r = g_hi_d - g_lo; if (r > 40) t = g_tilt * 5.0f * ((d < g_lo ? g_lo : d > g_hi_d ? g_hi_d : d) - g_zp) / r; }   /* motion parallax: near and far slide apart */
-        float sv = eye * v + t, lim = back > front ? back : front; if (sv > lim) sv = lim; if (sv < -lim) sv = -lim;   /* stick never adds to the stereo extremes */
+        else { int r = g_hi_d - g_zp; if (r < 60) r = 60; v = -front * (float)((d > g_hi_d ? g_hi_d : d) - g_zp) / r; }   /* in front */
+        float t = 0; if (g_tilt_on) { int r = g_hi_d - g_lo; if (r > 40) t = g_tilt * 5.0f * ((d < g_lo ? g_lo : d > g_hi_d ? g_hi_d : d) - g_zp) / r; }   /* motion parallax */
+        float sv = eye * v + t, lim = back > front ? back : front; if (sv > lim) sv = lim; if (sv < -lim) sv = -lim;
         tab[d] = (int16_t)lroundf(sv * 16); }
+    static uint8_t col[320][3]; static int16_t zb[320];
     for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3; const uint8_t *dm = g_hi ? g_dmh[y] : g_dm[y >> 1];
+        for (int x = 0; x < 320; x++) zb[x] = -1;
+        /* source pixel k lands at k - shift (the old backward warp read x + shift) */
+        for (int k = 0; k < 320; k++) {
+            int d0 = dm[k >> sh1], a = k * 16 - tab[d0];
+            int k1 = k < 319 ? k + 1 : k, d1 = dm[k1 >> sh1], b = k1 * 16 - tab[d1] + (k1 == k ? 16 : 0);
+            const uint8_t *c0 = row + k * 3, *c1 = row + k1 * 3;
+            int span = b - a, dd = d0 > d1 ? d0 - d1 : d1 - d0;
+            if (span > 0 && span <= 40 && dd < 24) {           /* same surface: fill the pixels between k and k+1 */
+                int x0 = (a + 15) >> 4, x1 = (b + 15) >> 4;
+                for (int x = x0; x < x1; x++) { if (x < 0 || x > 319) continue; int f = ((x * 16 - a) << 8) / span, dz = d0 + (((d1 - d0) * f) >> 8);
+                    if (dz < zb[x]) continue; zb[x] = (int16_t)dz;
+                    for (int c = 0; c < 3; c++) col[x][c] = (uint8_t)((c0[c] * (256 - f) + c1[c] * f) >> 8); }
+            } else {                                            /* an edge (or folded): only the pixel itself */
+                int x = (a + 8) >> 4; if (x >= 0 && x < 320 && d0 >= zb[x]) { zb[x] = (int16_t)d0; col[x][0] = c0[0]; col[x][1] = c0[1]; col[x][2] = c0[2]; } }
+        }
+        /* holes: copy the farther of the two pixels on either side (the uncovered background) */
+        for (int x = 0; x < 320; x++) { if (zb[x] >= 0) continue; int e = x; while (e < 320 && zb[e] < 0) e++;
+            int L = x - 1, R = e; int src = L < 0 ? R : R >= 320 ? L : (zb[L] <= zb[R] ? L : R);
+            for (int j = x; j < e; j++) { if (src >= 0 && src < 320) { col[j][0] = col[src][0]; col[j][1] = col[src][1]; col[j][2] = col[src][2]; } zb[j] = src >= 0 && src < 320 ? zb[src] : 0; }
+            x = e - 1; }
         u8 *p = fb + (40 * 240 + (239 - y)) * 3;
-        for (int x = 0; x < 320; x++, p += 240 * 3) {
-            /* find the source column k with k = x + shift(depth at k). Where that has no single answer the background is
-               being uncovered next to a character: take the farther candidate, so the gap is filled with background
-               instead of a stretched line of the character's edge */
-            #define CL(v) ((v) < 0 ? 0 : (v) > 319 * 16 ? 319 * 16 : (v))
-            int x16 = x * 16;
-            int k1 = CL(x16 + tab[dm[x >> sh1]]);
-            int k2 = CL(x16 + tab[dm[(k1 + 8) >> 4 >> sh1]]);
-            int k = k2;
-            if ((k2 >> 4) != (k1 >> 4)) { int k3 = CL(x16 + tab[dm[(k2 + 8) >> 4 >> sh1]]);
-                if ((k3 >> 4) != (k2 >> 4)) k = dm[(k2 + 8) >> 4 >> sh1] <= dm[(k1 + 8) >> 4 >> sh1] ? k2 : k1; }
-            #undef CL
-            int i = k >> 4, fr = k & 15; const uint8_t *q = row + i * 3, *q2 = i < 319 ? q + 3 : q;
-            p[0] = (uint8_t)((q[2] * (16 - fr) + q2[2] * fr) >> 4); p[1] = (uint8_t)((q[1] * (16 - fr) + q2[1] * fr) >> 4); p[2] = (uint8_t)((q[0] * (16 - fr) + q2[0] * fr) >> 4); } }
+        for (int x = 0; x < 320; x++, p += 240 * 3) { p[0] = col[x][2]; p[1] = col[x][1]; p[2] = col[x][0]; } }
 }
 static void draw_scene(const uint8_t *rgb) {
     static bool stereo_on, ypr;
@@ -461,7 +467,9 @@ static void draw_scene(const uint8_t *rgb) {
            1-2 %): background behind the screen up to 5 px per eye, the figures' near parts (chest, hips: DEPTH.PAK lifts
            them) out of the screen up to 8 px per eye. The screen plane sits near the figures' base, so the body is at the
            screen and its rounded parts come out */
-        int bk = (int)(e * 5.0f + 0.5f), fb2 = (int)(e * (4.0f + 4.0f * q) + 0.5f);
+        /* the per-eye shift is half the disparity the viewer sees: front 5 px per eye = 10 px = 2.5 % of the 400-px screen,
+           back 3 px per eye = 6 px = 1.5 % (the old 8 / 5 px per eye was 4 % - past the comfortable limit, it bent at the top) */
+        int bk = (int)(e * 3.0f + 0.5f), fb2 = (int)(e * (3.0f + 2.0f * q) + 0.5f);
         g_zp = g_lo + (int)((g_sub - g_lo) * 0.85f);
         make_half(rgb, z, true); draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
