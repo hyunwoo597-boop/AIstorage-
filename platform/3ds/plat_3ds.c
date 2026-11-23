@@ -380,12 +380,11 @@ static void depth_stats(void) {
     if (sub < lo) sub = lo; if (sub > hi) sub = hi;
     g_lo = lo; g_hi_d = hi; g_sub = sub;
 }
-/* depth map clean-up for the warp (AI maps):
-   - the fine relief inside a figure (eyes, nose, hair strands) is kept at a quarter: at full strength the eyes and the face
-     outline moved by different amounts and the face looked bent (both eyes saw a different face)
+/* depth map clean-up for the warp (AI maps; DEPTH.PAK from tools/depth/char_only.py: backgrounds flat, faces smoothed, chest
+   and hips lifted):
    - a figure keeps its own depth right up to its outline: the step to the background becomes a ramp on the background side
      (max filter before the blur), so the background stretches next to a character instead of the character's face
-   out = B + clamp(d - B, +-12) / 4, B = box blur (19 px) of the 4-px max filter of d */
+   out = B + clamp(d - B, +-16), B = box blur (19 px) of the 4-px max filter of d */
 static void soften_steps(void) {
     static uint8_t m[240][320]; static uint16_t t[240 * 320]; static uint32_t c[321];
     for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int v = 0;    /* max filter, horizontal then vertical */
@@ -397,7 +396,7 @@ static void soften_steps(void) {
     static uint32_t cc[241];
     for (int x = 0; x < 320; x++) { cc[0] = 0; for (int y = 0; y < 240; y++) cc[y + 1] = cc[y] + t[y * 320 + x];
         for (int y = 0; y < 240; y++) { int a = y - 9 < 0 ? 0 : y - 9, b = y + 10 > 240 ? 240 : y + 10; int bl = (int)((cc[b] - cc[a]) / (b - a)) / 16;
-            int d = g_dmh[y][x] - bl; if (d > 12) d = 12; if (d < -12) d = -12; int o = bl + d / 4; g_dmh[y][x] = (uint8_t)(o < 0 ? 0 : o > 255 ? 255 : o); } }
+            int d = g_dmh[y][x] - bl; if (d > 16) d = 16; if (d < -16) d = -16; int o = bl + d; g_dmh[y][x] = (uint8_t)(o < 0 ? 0 : o > 255 ? 255 : o); } }
 }
 static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
     /* shifts in 1/16 pixel: whole-pixel shifts turned most of the fine relief of the depth maps into the same shift (86 %
