@@ -724,6 +724,11 @@ static bool splash(void) {
     while (go && aptMainLoop()) { hidScanInput(); if (!(hidKeysHeld() & (KEY_A | KEY_TOUCH))) break; gspWaitForVBlank(); }
     gfxSet3D(false); free(raw); return go;
 }
+static void close_files(void) {
+    for (int i = 0; i < 6; i++) if (g_open[i].f) { fclose(g_open[i].f); g_open[i].f = NULL; }
+    if (g_plt) { fclose(g_plt); g_plt = NULL; }
+    fflush(NULL);
+}
 int main(void) {
     gfxInitDefault(); gfxSetDoubleBuffering(GFX_TOP, true); gfxSetDoubleBuffering(GFX_BOTTOM, true);
     osSetSpeedupEnable(true);
@@ -740,5 +745,7 @@ int main(void) {
     if (!vm_init(&vm)) fatal("Archives not found (MES.ARC DATA.ARC BG.ARC).");
     else if (!vm_load_mes(&vm, "MAIN.MES")) fatal("MAIN.MES missing in MES.ARC.");
     else vm_run(&vm);
-    snd_exit(); if (g_romfs) romfsExit(); gfxExit(); return 0;
+    /* quit: the archives stay open in the file cache (and PLATE.PAK) - close them before the RomFS goes, or the C library's
+       exit-time stream cleanup works on handles of an unmounted device and the system reports a crash */
+    snd_exit(); close_files(); if (g_romfs) romfsExit(); gfxExit(); return 0;
 }
