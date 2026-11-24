@@ -36,7 +36,7 @@ button.main { background:var(--acc); color:#fff; border:0; font-weight:600; }
 .jp { white-space:pre-wrap; font-size:15px; margin:3px 0 5px; font-family:"Noto Sans JP","Hiragino Sans","Yu Gothic",sans-serif; }
 textarea { width:100%; font:inherit; font-size:15px; padding:8px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--ink); resize:vertical; min-height:44px; }
 .it.done textarea { background:var(--done); }
-.warn { color:var(--warn); font-size:12px; } .tools a { font-size:12px; color:var(--acc); margin-left:8px; cursor:pointer; text-decoration:underline; }
+.warn { color:var(--warn); font-size:12px; } .autotag { font-size:11px; color:#fff; background:var(--warn); border-radius:6px; padding:0 6px; margin-left:6px; } .tools a { font-size:12px; color:var(--acc); margin-left:8px; cursor:pointer; text-decoration:underline; }
 a.dl { display:block; margin-top:10px; padding:12px; border-radius:12px; background:var(--ok); color:#fff; text-decoration:none; text-align:center; font-weight:600; }
 mark { background:#ffe08a; color:#000; } small { color:var(--sub); font-size:12px; }
 #list:empty::before { content:"게임 파일을 먼저 불러오세요."; color:var(--sub); font-size:14px; }
@@ -57,13 +57,25 @@ mark { background:#ffe08a; color:#000; } small { color:var(--sub); font-size:12p
 
 <div class="card">
   <h2>2. 번역하기</h2>
-  <div class="row"><select id="file"></select><select id="show"><option value="all">전체</option><option value="todo">아직 안 한 것</option><option value="done">번역한 것</option><option value="warn">경고 있는 것</option></select></div>
+  <div class="row"><select id="file"></select><select id="show"><option value="all">전체</option><option value="todo">아직 안 한 것</option><option value="done">번역한 것</option><option value="warn">경고 있는 것</option><option value="auto">자동 번역 (검토 필요)</option></select></div>
   <div class="row"><input type="text" id="q" placeholder="찾기 (원문·번역 모두)"></div>
   <div class="row"><input type="text" id="ra" placeholder="번역문에서 바꿀 말"><input type="text" id="rb" placeholder="바꿀 말"><button id="replAll">보이는 줄 모두 바꾸기</button></div>
   <div id="stat"></div><div class="bar"><i id="prog"></i></div>
   <small>줄바꿈은 그대로 게임의 줄바꿈이 됩니다. 대사창 한 줄은 한글 약 35자이고, 긴 문장은 저절로 다음 줄로 넘어갑니다. 대사창에는 4줄까지 들어갑니다. 한글 음절 11,172자와 일본어 글꼴에 있는 문자(한자·문장부호·영숫자)를 쓸 수 있습니다.</small>
   <div id="list"></div>
   <div class="row"><button id="more" style="display:none">더 보기</button></div>
+</div>
+
+<div class="card">
+  <h2>자동 번역 (일본어 → 한국어)</h2>
+  <p>초벌 번역을 넣어 주는 기능입니다. 자동 번역한 줄은 <b>검토 필요</b> 표시가 붙고, 직접 고치면 표시가 없어집니다. 인터넷 연결이 필요합니다.</p>
+  <div class="row"><select id="eng"><option value="google">구글 번역 (무료, 키 필요 없음)</option><option value="claude">Claude (API 키 필요, 문맥·말투 더 자연스러움)</option></select></div>
+  <div class="row" id="keyRow" style="display:none"><input type="text" id="apikey" placeholder="Anthropic API 키 (sk-ant-…)" autocomplete="off"><select id="model"><option value="claude-sonnet-5-5">Sonnet 5.5</option><option value="claude-haiku-5-5">Haiku 5.5 (저렴)</option><option value="claude-opus-5-5">Opus 5.5 (최고 품질)</option></select></div>
+  <small id="keyNote" style="display:none">키는 이 기기의 브라우저에만 저장되고 Anthropic 서버(api.anthropic.com)로만 보내집니다. 사용 요금은 키 주인에게 청구됩니다.</small>
+  <p style="margin-top:8px">용어집 — 한 줄에 하나씩 <b>일본어=한국어</b> (예: 京子=쿄코). 이름을 항상 같게 옮길 때 씁니다.</p>
+  <textarea id="gloss" rows="3" placeholder="京子=쿄코&#10;麗=레이&#10;河原崎=카와라자키"></textarea>
+  <div class="row"><button class="main" id="autoAll">보이는 줄 중 빈 칸 모두 자동 번역</button><button id="autoStop" style="display:none">멈추기</button></div>
+  <div id="autoLog" class="sub"></div>
 </div>
 
 <div class="card">
@@ -80,10 +92,11 @@ mark { background:#ffe08a; color:#000; } small { color:var(--sub); font-size:12p
 <script>
 var $ = function (id) { return document.getElementById(id); };
 function esc(s) { return s.replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
-var LSKEY = 'kawarazaki_kedit_v1', META = '_KEDIT.JSON';
+var LSKEY = 'kawarazaki_kedit_v1', META = '_KEDIT.JSON', LSAUTO = LSKEY + '_auto', LSOPT = LSKEY + '_opt';
+var auto = {}; try { auto = JSON.parse(localStorage.getItem(LSAUTO) || '{}') || {}; } catch (e) { auto = {}; }
 var ents = null, lines = [], byKey = {}, edits = {}, filtered = [], shown = 0, srcName = '';
 /* lines: { key: 'S1.MES#12', fi, ti, jp } ; edits: key -> Korean text (with \n) */
-function persist() { try { localStorage.setItem(LSKEY, JSON.stringify(edits)); } catch (e) {} }
+function persist() { try { localStorage.setItem(LSKEY, JSON.stringify(edits)); localStorage.setItem(LSAUTO, JSON.stringify(auto)); } catch (e) {} }
 try { edits = JSON.parse(localStorage.getItem(LSKEY) || '{}') || {}; } catch (e) { edits = {}; }
 
 function loadArc(a, name) {
@@ -125,7 +138,7 @@ function render(reset) {
             if (f && e.name !== f) return false;
             var has = tr !== undefined && tr !== '';
             if (sh === 'todo' && has) return false; if (sh === 'done' && !has) return false;
-            if (sh === 'warn' && !(has && warns(tr).length)) return false;
+            if (sh === 'warn' && !(has && warns(tr).length)) return false; if (sh === 'auto' && !(has && auto[L.key])) return false;
             if (q && L.jp.indexOf(q) < 0 && (!tr || tr.indexOf(q) < 0)) return false; return true; });
         shown = 0; $('list').innerHTML = '';
     }
@@ -136,18 +149,77 @@ function render(reset) {
 }
 function item(L, q) {
     var d = document.createElement('div'), tr = edits[L.key]; d.className = 'it' + (tr ? ' done' : '');
-    d.innerHTML = '<div class="meta"><span>' + esc(L.key) + '</span><span class="tools"><a data-a="copy">원문 넣기</a><a data-a="clear">지우기</a></span></div>' +
+    d.innerHTML = '<div class="meta"><span>' + esc(L.key) + '<span class="autotag" style="display:none">검토 필요</span></span><span class="tools"><a data-a="mt">자동 번역</a><a data-a="copy">원문 넣기</a><a data-a="clear">지우기</a></span></div>' +
         '<div class="jp">' + hl(L.jp, q) + '</div><textarea rows="2" placeholder="한국어 번역"></textarea><div class="warn"></div>';
     var ta = d.querySelector('textarea'), wn = d.querySelector('.warn'); ta.value = tr || '';
-    function upd() { var v = ta.value; if (v === '') delete edits[L.key]; else edits[L.key] = v; d.className = 'it' + (v ? ' done' : '');
+    var tag = d.querySelector('.autotag'); tag.style.display = tr && auto[L.key] ? '' : 'none';
+    L.show = function (v) { ta.value = v; wn.textContent = warns(v).join(' · '); d.className = 'it done'; tag.style.display = auto[L.key] ? '' : 'none'; ta.style.height = 'auto'; ta.style.height = Math.max(44, ta.scrollHeight + 2) + 'px'; };
+    function upd(fromMt) { var v = ta.value; if (!fromMt) delete auto[L.key]; tag.style.display = v && auto[L.key] ? '' : 'none';
+        if (v === '') delete edits[L.key]; else edits[L.key] = v; d.className = 'it' + (v ? ' done' : '');
         wn.textContent = v ? warns(v).join(' · ') : ''; persist(); stat();
         ta.style.height = 'auto'; ta.style.height = Math.max(44, ta.scrollHeight + 2) + 'px'; }
-    ta.oninput = upd; wn.textContent = tr ? warns(tr).join(' · ') : '';
+    ta.oninput = function () { upd(false); }; wn.textContent = tr ? warns(tr).join(' · ') : '';
     d.querySelector('[data-a=copy]').onclick = function () { ta.value = L.jp; upd(); ta.focus(); };
     d.querySelector('[data-a=clear]').onclick = function () { ta.value = ''; upd(); };
+    d.querySelector('[data-a=mt]').onclick = async function () {
+        if (ta.value && !confirm('이미 적힌 번역을 자동 번역으로 바꿀까요?')) return;
+        var a = this; a.textContent = '번역 중…';
+        try { var r = await mtBatch([L]); ta.value = r[0]; auto[L.key] = 1; upd(true); } catch (e) { alert('자동 번역 실패: ' + e.message); }
+        a.textContent = '자동 번역'; };
     setTimeout(function () { ta.style.height = Math.max(44, ta.scrollHeight + 2) + 'px'; }, 0);
     return d;
 }
+/* ---------------- automatic translation ---------------- */
+function opt() { return { eng: $('eng').value, key: $('apikey').value.trim(), model: $('model').value, gloss: $('gloss').value }; }
+function saveOpt() { try { localStorage.setItem(LSOPT, JSON.stringify(opt())); } catch (e) {} }
+(function () { try { var o = JSON.parse(localStorage.getItem(LSOPT) || '{}'); if (o.eng) $('eng').value = o.eng; if (o.key) $('apikey').value = o.key; if (o.model) $('model').value = o.model; if (o.gloss) $('gloss').value = o.gloss; } catch (e) {} })();
+function engUi() { var c = $('eng').value === 'claude'; $('keyRow').style.display = c ? '' : 'none'; $('keyNote').style.display = c ? '' : 'none'; }
+$('eng').onchange = function () { engUi(); saveOpt(); }; $('apikey').onchange = $('model').onchange = $('gloss').onchange = saveOpt; engUi();
+function glossary() { var g = []; $('gloss').value.split('\n').forEach(function (l) { var i = l.indexOf('='); if (i > 0) { var a = l.slice(0, i).trim(), b = l.slice(i + 1).trim(); if (a) g.push([a, b]); } });
+    return g.sort(function (x, y) { return y[0].length - x[0].length; }); }
+async function google1(text) {   /* one line; names from the glossary go in already in Korean */
+    var u = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=ja&tl=ko&dt=t&q=' + encodeURIComponent(text);
+    var r = await fetch(u); if (!r.ok) throw new Error('구글 번역 응답 ' + r.status + (r.status === 429 ? ' (요청이 너무 많음 — 잠시 뒤 다시)' : ''));
+    var j = await r.json(); return (j[0] || []).map(function (x) { return x[0]; }).join('');
+}
+async function mtGoogle(lines) {
+    var g = glossary(), out = [];
+    for (var L of lines) { var parts = L.jp.split('\n'), res = [];
+        for (var p of parts) { var t = p; g.forEach(function (x) { t = t.split(x[0]).join(x[1]); }); res.push(t.trim() ? await google1(t) : ''); }
+        out.push(res.join('\n')); }
+    return out;
+}
+async function mtClaude(lines) {
+    var o = opt(); if (!o.key) throw new Error('API 키를 넣어 주세요');
+    var g = glossary().map(function (x) { return x[0] + ' → ' + x[1]; }).join('\n');
+    var sys = 'You translate a Japanese adult visual novel (河原崎家の一族, 1990s mansion mystery/romance) into natural Korean for a fan patch. ' +
+        'Keep each line\'s meaning, tone and speech level (반말/존댓말 as the speaker would use). Keep the speaker prefix and the 『』 quote marks as they are, e.g. 京子『…』 -> 쿄코『…』. ' +
+        'Keep line breaks (\\n) where the source has them. Use … for ellipses. Do not add notes. ' + (g ? 'Always use these name/term renderings:\n' + g + '\n' : '') +
+        'Answer only with a JSON array of strings, one per input line, same order and count.';
+    var r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': o.key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({ model: o.model, max_tokens: 8000, system: sys, messages: [{ role: 'user', content: JSON.stringify(lines.map(function (L) { return L.jp; })) }] }) });
+    var j = await r.json(); if (!r.ok) throw new Error((j.error && j.error.message) || ('응답 ' + r.status));
+    var t = (j.content || []).map(function (c) { return c.text || ''; }).join(''), a = t.indexOf('['), b = t.lastIndexOf(']');
+    var arr = JSON.parse(t.slice(a, b + 1)); if (!Array.isArray(arr) || arr.length !== lines.length) throw new Error('번역 줄 수가 맞지 않습니다');
+    return arr.map(String);
+}
+function mtBatch(lines) { return $('eng').value === 'claude' ? mtClaude(lines) : mtGoogle(lines); }
+var stopAuto = false;
+$('autoStop').onclick = function () { stopAuto = true; };
+$('autoAll').onclick = async function () {
+    var todo = filtered.filter(function (L) { return !edits[L.key]; }); if (!todo.length) { alert('빈 칸이 없습니다.'); return; }
+    if (!confirm(todo.length + '줄을 자동 번역합니다. 계속할까요?')) return;
+    stopAuto = false; $('autoAll').disabled = true; $('autoStop').style.display = ''; var done = 0, size = $('eng').value === 'claude' ? 25 : 1;
+    try {
+        for (var i = 0; i < todo.length && !stopAuto; i += size) {
+            var chunk = todo.slice(i, i + size), res = await mtBatch(chunk);
+            chunk.forEach(function (L, k) { if (edits[L.key]) return; edits[L.key] = res[k]; auto[L.key] = 1; if (L.show) L.show(res[k]); });
+            done += chunk.length; persist(); stat(); $('autoLog').textContent = '자동 번역 ' + done + ' / ' + todo.length + '줄';
+            if (size === 1) await new Promise(function (r) { setTimeout(r, 150); }); }
+        $('autoLog').textContent = (stopAuto ? '멈춤: ' : '끝: ') + done + '줄 번역했습니다. "자동 번역 (검토 필요)" 로 골라 보며 다듬어 주세요.';
+    } catch (e) { $('autoLog').textContent = '자동 번역 중단 (' + done + '줄 완료): ' + e.message; }
+    $('autoAll').disabled = false; $('autoStop').style.display = 'none';
+};
 $('q').oninput = function () { clearTimeout(this._t); this._t = setTimeout(function () { render(true); }, 250); };
 $('file').onchange = $('show').onchange = function () { render(true); };
 $('more').onclick = function () { render(false); };
@@ -167,11 +239,11 @@ $('inGame').onchange = async function () {
 };
 $('inJson').onchange = async function () {
     var f = this.files[0]; if (!f) return;
-    try { var j = JSON.parse(await f.text()); var e = j.edits || j; var n = 0; for (var k in e) if (typeof e[k] === 'string') { edits[k] = e[k]; n++; }
+    try { var j = JSON.parse(await f.text()); var e = j.edits || j; if (j.auto) Object.assign(auto, j.auto); var n = 0; for (var k in e) if (typeof e[k] === 'string') { edits[k] = e[k]; n++; }
         persist(); render(true); alert('번역 ' + n + '줄을 불러왔습니다.'); } catch (er) { alert('작업 파일을 읽을 수 없습니다: ' + er.message); }
 };
 $('saveJson').onclick = function () {
-    var b = new Blob([JSON.stringify({ game: 'kawarazaki', edits: edits }, null, 1)], { type: 'application/json' });
+    var b = new Blob([JSON.stringify({ game: 'kawarazaki', edits: edits, auto: auto }, null, 1)], { type: 'application/json' });
     $('dl').innerHTML = '<a class="dl" download="kawarazaki_번역작업.json" href="' + URL.createObjectURL(b) + '">작업 파일 받기</a>';
 };
 $('build').onclick = function () {
