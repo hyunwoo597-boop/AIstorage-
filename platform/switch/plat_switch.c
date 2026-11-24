@@ -253,7 +253,10 @@ void __appInit(void) {
     if (__nx_win_init) __nx_win_init(); boot_note("window", 0);
     boot_note("init done", 0);
 }
-void __appExit(void) { if (__nx_win_exit) __nx_win_exit(); timeExit(); hidExit(); appletExit(); fsdevUnmountAll(); fsExit(); smExit(); }
+static void exit_note(const char *w) { FILE *f = fopen(DATA_DIR "log.txt", "a"); if (f) { fprintf(f, "exit: %s\n", w); fclose(f); } }
+void __appExit(void) {
+    exit_note("appExit"); if (__nx_win_exit) __nx_win_exit(); exit_note("window service closed");
+    timeExit(); hidExit(); appletExit(); exit_note("applet closed - leaving"); fsdevUnmountAll(); fsExit(); smExit(); }
 int main(int argc, char **argv) {
     boot_note("main", 0);
     mkdir("sdmc:/switch", 0777); mkdir(DATA_DIR, 0777);
@@ -294,9 +297,9 @@ int main(int argc, char **argv) {
         fatal(g_romfs ? "Cannot open the game archives inside the NSP (MES.ARC DATA.ARC BG.ARC)." : "Cannot open the game archives (MES.ARC DATA.ARC BG.ARC)."); if (g_romfs) romfsExit(); return 0; }
     plat_log("archives ok");
     if (sys_set_popup_full(true), vm_load_mes(&vm, "MAIN.MES")) vm_run(&vm); else plat_log("MAIN.MES missing");
-    plat_log("game ended (quit=%d)", vm.quit);
-    snd_exit();
-    if (from_nsp || envIsNso()) {   /* installed (NSP) start - the game as the title's own program (exefs/main), or the older NSPs' loader: the teardown below (SDL video/GL, RomFS, back into the loader) crashed with
+    plat_log("game ended (quit=%d)", vm.quit); exit_note("game ended");
+    snd_exit(); exit_note("sound closed");
+    if (from_nsp) {   /* older NSPs' loader: the teardown below (SDL video/GL, RomFS, back into the loader) crashed with
                          "an error occurred and the software was closed" - the log reached "game ended", the loader never saw the game
                          return. Everything is written already (saves and logs are closed after each write); the system frees the rest */
         plat_log("exit (NSP)");
@@ -305,8 +308,13 @@ int main(int argc, char **argv) {
            an Application (__nx_applet_exit_mode 0) - so leave through it, still without the SDL/GL teardown */
         appletExit();
         svcExitProcess(); }
+    /* the regular way out, as every libnx/SDL application: tear down SDL, then return - libnx closes the services (__appExit)
+       and ends the process. Each step is logged: a skipped teardown + bare process exit was what the system reported as an error */
     if (g_joy) SDL_JoystickClose(g_joy);
-    SDL_DestroyTexture(g_tex); SDL_DestroyRenderer(g_ren); SDL_DestroyWindow(g_win); SDL_Quit();
+    SDL_DestroyTexture(g_tex); SDL_DestroyRenderer(g_ren); exit_note("renderer closed");
+    SDL_DestroyWindow(g_win); exit_note("window closed");
+    SDL_Quit(); exit_note("SDL quit");
     if (g_romfs) romfsExit();
+    exit_note("return to libnx");
     return 0;
 }
