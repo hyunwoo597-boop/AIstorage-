@@ -32,7 +32,7 @@ static uint8_t *arc_load(k_arc *a, const char *name, uint32_t *len) {
 
 /* ------------------------------------------------------------------ state */
 #define NSURF 16
-typedef struct { int w, h; uint8_t *p; } surf_t;          /* RGB888 top-down */
+typedef struct { int w, h; uint8_t *p; uint8_t *a; bool has_a; } surf_t;   /* RGB888 top-down; a = alpha of the last masked picture (OP25 uses it once) */
 static surf_t S[NSURF];
 static uint32_t D[4096];        /* dword vars  (0x50bb0) */
 static uint16_t W[4096];        /* word vars   (0x510e8) */
@@ -92,7 +92,7 @@ static void wait_click(void) {
 
 /* ------------------------------------------------------------------ surfaces */
 static void surf_init(void) {
-    for (int i = 0; i < NSURF; i++) { S[i].w = (i == 2) ? 2048 : 1024; S[i].h = (i == 2) ? 512 : 1024; S[i].p = calloc((size_t)S[i].w * S[i].h, 3); }
+    for (int i = 0; i < NSURF; i++) { S[i].w = (i == 2) ? 2048 : 1024; S[i].h = (i == 2) ? 512 : 1024; S[i].p = calloc((size_t)S[i].w * S[i].h, 3); S[i].a = calloc((size_t)S[i].w * S[i].h, 1); }
 }
 static bool clip(const surf_t *s, int *x, int *y, int *w, int *h) {
     if (*x < 0) { *w += *x; *x = 0; } if (*y < 0) { *h += *y; *y = 0; }
@@ -113,10 +113,14 @@ static void blit(int si, int x1, int y1, int x2, int y2, int di, int dx, int dy,
     for (int y = 0; y < h; y++) {
         uint8_t *sp = tmp ? tmp + (size_t)y * w * 3 : s->p + ((size_t)(y1 + y) * s->w + x1) * 3, *dp = d->p + ((size_t)(dy + y) * d->w + dx) * 3;
         if (mode == 0) memcpy(dp, sp, w * 3);
+        else if (mode == 1 && s->has_a && !tmp) { const uint8_t *ap = s->a + (size_t)(y1 + y) * s->w + x1;
+            for (int x = 0; x < w; x++) { int a = ap[x]; if (a == 255) memcpy(dp + x*3, sp + x*3, 3);
+                else if (a) for (int c = 0; c < 3; c++) dp[x*3+c] = (sp[x*3+c] * a + dp[x*3+c] * (255 - a)) / 255; } }
         else if (mode == 1) { for (int x = 0; x < w; x++) if (!(sp[x*3] == 0 && sp[x*3+1] == 255 && sp[x*3+2] == 0)) memcpy(dp + x*3, sp + x*3, 3); }
         else for (int x = 0; x < w * 3; x++) { uint8_t t = sp[x]; sp[x] = dp[x]; dp[x] = t; }
     }
     free(tmp);
+    if (mode == 1) s->has_a = false;   /* 0x41b253: the mask is used once */
 }
 static void fill(int di, int x1, int y1, int x2, int y2, uint32_t rgb, bool invert) {
     if (di < 0 || di >= NSURF) return; surf_t *d = &S[di]; int x = x1, y = y1, w = x2 - x1 + 1, h = y2 - y1 + 1;
@@ -139,11 +143,10 @@ static void load_pic(const char *name, int px, int py) {
         for (int i = 0; i < im.w; i++) {
             int dx = x + i; if (dx < 0 || dx >= d->w) continue; uint8_t *dp = d->p + ((size_t)dy * d->w + dx) * 3;
             int a = 255; if (im.has_alpha) { int ai = i - (im.ax - im.x); a = (al && ai >= 0 && ai < im.aw) ? al[ai] : 0; }
-            if (a >= 255) { dp[0] = src[i*3+2]; dp[1] = src[i*3+1]; dp[2] = src[i*3]; }
-            else if (a > 0) { dp[0] = (src[i*3+2] * a + dp[0] * (255 - a)) / 255; dp[1] = (src[i*3+1] * a + dp[1] * (255 - a)) / 255; dp[2] = (src[i*3] * a + dp[2] * (255 - a)) / 255; }
+            dp[0] = src[i*3+2]; dp[1] = src[i*3+1]; dp[2] = src[i*3]; d->a[(size_t)dy * d->w + dx] = a;
         }
     }
-    D[8] = x; D[9] = y; D[10] = im.w; D[11] = im.h;
+    d->has_a = im.has_alpha; D[8] = x; D[9] = y; D[10] = im.w; D[11] = im.h;
     free(im.bgr); free(im.alpha); free(b);
 }
 
@@ -357,6 +360,16 @@ static void sys_call(void) {   /* OP02 (0x43e6a0): sub = arg0 */
     case 4: /* cross-fade surface 1 onto the screen */
         for (int a = 0; a < 8 && !quit; a++) { wait_ms(40); }
         blit(1, 0, 0, 639, 479, 0, 0, 0, 0); frame(); break;
+    case 8: {   /* transition: rect (x, y, w, h) of surface 1 dissolves onto the screen */
+        int x = A(1), y = A(2), w = A(3), h = A(4); if (nar < 5) { x = y = 0; w = 640; h = 480; }
+        if (!skip_mode) { uint8_t *old = malloc(640 * 480 * 3); for (int j = 0; j < 480; j++) memcpy(old + j * 1920, S[0].p + (size_t)j * S[0].w * 3, 1920);
+            for (int st = 1; st <= 10 && !quit; st++) {
+                for (int j = y; j < y + h && j < 480; j++) for (int i = x; i < x + w && i < 640; i++) { if (j < 0 || i < 0) continue;
+                    uint8_t *d = S[0].p + ((size_t)j * S[0].w + i) * 3; const uint8_t *a = old + (j * 640 + i) * 3, *b = S[1].p + ((size_t)j * S[1].w + i) * 3;
+                    for (int c = 0; c < 3; c++) d[c] = (a[c] * (10 - st) + b[c] * st) / 10; }
+                if (wait_ms(30)) break; }
+            free(old); }
+        blit(1, x, y, x + w - 1, y + h - 1, 0, x, y, 0); frame(); break; }
     case 24: break;   /* scene record for save/restore (TODO) */
     case 37: V[18] = getenv("K_TITLE") ? atoi(getenv("K_TITLE")) : 1; plat_log("title menu -> %u (stub)", V[18]); break;
     default: plat_log("sys %u (%u %u %u)", f, A(1), A(2), A(3));
