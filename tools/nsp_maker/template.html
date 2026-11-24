@@ -53,7 +53,7 @@ small { color:var(--sub); }
 
 <div class="card">
   <h2><span class="step">+</span>도스판 그림 (선택)</h2>
-  <p>도스판(DOS) 게임 zip 또는 그 안의 <b>SILK0.DAT ~ SILK4.DAT</b> 를 고르면, 게임 중 <b>- 버튼</b>으로 윈도우판 그림과 도스판 그림(16색)을 바꿔 볼 수 있습니다. 약 5.5MB 가 더해집니다.</p>
+  <p id="dosNote">도스판(DOS) 게임 zip 또는 그 안의 <b>SILK0.DAT ~ SILK4.DAT</b> 를 고르면, 게임 중 <b>- 버튼</b>으로 윈도우판 그림과 도스판 그림(16색)을 바꿔 볼 수 있습니다. 약 5.5MB 가 더해집니다.</p>
   <label class="pick">여기를 눌러 도스판 zip 또는 SILK*.DAT 고르기<input type="file" id="inDos" multiple></label>
   <div class="files" id="fDos"></div>
 </div>
@@ -92,6 +92,7 @@ small { color:var(--sub); }
 <script id="fontjp" type="application/octet-stream">__FONTJP64__</script>
 <script id="krmes" type="application/octet-stream">__KRMES64__</script>
 <script id="krbg" type="application/json">__KRBGJSON__</script>
+<script id="dosdata" type="application/json">__DOSJSON__</script>
 <script>
 /*__CORE__*/
 /*__NSPCORE__*/
@@ -162,6 +163,8 @@ $('inDos').onchange = async function () {
         show('fDos', list, miss.length ? '<span class="bad">빠진 파일: ' + miss.join(', ') + '</span>' : '<span class="ok">✔ 도스판 그림 ' + want.length + '개 파일</span>');
     } catch (e) { show('fDos', list, '<span class="bad">' + e.message + '</span>'); }
 };
+var DOS_BUILTIN = JSON.parse($('dosdata').textContent);
+if (Object.keys(DOS_BUILTIN).length) $('dosNote').innerHTML = '도스판 그림(<b>SILK0.DAT ~ SILK4.DAT</b>)이 이 도구에 들어 있어 따로 넣지 않아도 됩니다. 게임 중 <b>- 버튼</b>으로 윈도우판 그림과 도스판 그림(16색)을 바꿔 볼 수 있습니다. 다른 파일을 쓰려면 아래에서 고르세요.';
 var keys = null, gameOk = false;
 function refresh() { $('go').disabled = !(keys && (gameOk || $('small').checked)); }
 $('small').onchange = refresh;
@@ -199,7 +202,8 @@ $('go').onclick = async function () {
         files.push({ name: 'font16.bin', data: b64($(korean ? 'font' : 'fontjp').textContent) });
         if (korean) { var patch = JSON.parse($('patch').textContent); for (var k in patch) files.push({ name: 'patch_' + k, data: b64(patch[k]) }); }
         }
-        dosFiles.forEach(function (f) { files.push(f); });
+        if (dosFiles.length) dosFiles.forEach(function (f) { files.push(f); });
+        else for (var dk in DOS_BUILTIN) files.push({ name: dk, data: b64(DOS_BUILTIN[dk]) });
         if ($('nro').textContent.trim()) files.push({ name: 'NonomuraHospitalHD.nro', data: b64($('nro').textContent) });   /* (예전 구조) NSP 의 로더가 읽던 게임 프로그램 - 지금은 비어 있고 게임은 exefs/main 그 자체 */
         var nsp = await NspCore.buildNsp({ keys: keys, nso: b64($('nso').textContent), npdm: b64($('npdm').textContent), nacp: b64($('nacp').textContent), icon: b64($('icon').textContent), titleId: '01004e4f4e4f0000', files: files },
             function (f, m) { setp(0.05 + 0.95 * f); say(m + '… ' + Math.round(f * 100) + '%'); });
