@@ -15,7 +15,7 @@ core = open(os.path.join(top, 'tools', 'cia_maker_xp', 'core.js'), encoding='utf
 assert '</script' not in core and '</script' not in nspc
 pdir = os.path.join(top, 'assets', 'kr', 'patch'); patch = {n: base64.b64encode(rb(os.path.join(pdir, n))).decode() for n in sorted(os.listdir(pdir))}
 html = open(os.path.join(here, 'template.html'), encoding='utf-8').read()
-html = (html.replace('/*__CORE__*/', core).replace('/*__NSPCORE__*/', nspc).replace('__BASEINFO__', info)
+html = (html.replace('/*__CORE__*/', core).replace('/*__NSPCORE__*/', nspc).replace('__BASEINFO__', (' · ' + info) if info else '')
         .replace('__NSO64__', b64(rb(nso))).replace('__NPDM64__', b64(rb(npdm))).replace('__NACP64__', b64(rb(nacp))).replace('__ICON64__', b64(rb(icon)))
         .replace('__FONT64__', b64(rb(opt.get('--kr-font') or os.path.join(top, 'assets', 'kr', 'font16.bin')))).replace('__FONTJP64__', b64(rb(os.path.join(top, 'assets', 'font16.bin'))))
         .replace('__PATCHJSON__', json.dumps(patch)).replace('__NRO64__', b64(rb(opt['--nro'])) if '--nro' in opt else '')
