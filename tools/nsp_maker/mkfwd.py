@@ -41,8 +41,30 @@ static void flog(const char *msg, u64 v)
 static void __attribute__((noreturn)) fwdAbort(Result rc) { flog("ABORT", rc); diagAbortWithResult(rc); }
 static int g_fromRomfs;
 /* nonoxp.nro from the RomFS of this title -> buf */
+/* an update on the SD card wins: sdmc:/switch/NonomuraHospitalHD/NonomuraHospitalHD.nro, if it is there, is started instead of
+   the copy inside the NSP, so a fix only needs that one file copied (no new NSP to install). The game files still come from
+   the title's RomFS (argv stays "romfs:/..."), and files put in the same SD folder override those too (plat_switch open_data). */
+static int readSdNro(u8 *buf)
+{
+    FsFileSystem sd; if (R_FAILED(fsOpenSdCardFileSystem(&sd))) return 0;
+    FsFile f; int ok = 0;
+    if (R_SUCCEEDED(fsFsOpenFile(&sd, "/switch/NonomuraHospitalHD/NonomuraHospitalHD.nro", FsOpenMode_Read, &f))) {
+        u64 got = 0, fsize = 0; fsFileGetSize(&f, (s64 *)&fsize);
+        if (R_SUCCEEDED(fsFileRead(&f, 0, buf, sizeof(NroStart) + sizeof(NroHeader), FsReadOption_None, &got)) && got == sizeof(NroStart) + sizeof(NroHeader)
+            && ((NroHeader *)(buf + sizeof(NroStart)))->magic == NROHEADER_MAGIC) {
+            u32 psize = ((NroHeader *)(buf + sizeof(NroStart)))->size;
+            if (psize >= sizeof(NroStart) + sizeof(NroHeader) && psize <= fsize && psize <= 0x2000000
+                && R_SUCCEEDED(fsFileRead(&f, sizeof(NroStart) + sizeof(NroHeader), buf + sizeof(NroStart) + sizeof(NroHeader), psize - sizeof(NroStart) - sizeof(NroHeader), FsReadOption_None, &got))
+                && got == psize - sizeof(NroStart) - sizeof(NroHeader)) { ok = 1; flog("NRO from SD card (update), program size", psize); }
+        }
+        fsFileClose(&f);
+    }
+    fsFsClose(&sd);
+    return ok;
+}
 static void readRomfsNro(u8 *buf)
 {
+    if (readSdNro(buf)) return;
     FsStorage st; Result rc = fsOpenDataStorageByCurrentProcess(&st); flog("open RomFS", rc);
     if (R_FAILED(rc)) fwdAbort(MAKERESULT(Module_HomebrewLoader, 401));
     u64 h[10]; rc = fsStorageRead(&st, 0, h, sizeof h); flog("RomFS header", h[0]);
