@@ -441,10 +441,10 @@ static void cg_match(const uint8_t *rgb, const uint8_t *z) {
     for (int by = 0; by < 30; by++) for (int bx = 0; bx < 40; bx++) { int s[3] = { 0, 0, 0 };
         for (int y = by * 16; y < by * 16 + 16; y += 2) for (int x = bx * 16; x < bx * 16 + 16; x += 2) { const uint8_t *q = rgb + (y * 640 + x) * 3; s[0] += q[0]; s[1] += q[1]; s[2] += q[2]; }
         for (int c = 0; c < 3; c++) th[(by * 40 + bx) * 3 + c] = (uint8_t)(s[c] / 64); }
-    int best = -1, bd = 1 << 30;
-    for (uint32_t i = 0; i < g_plt_n; i++) { const uint8_t *t = g_plt_th + i * PLT_TH; int d = 0;   /* blocks that differ (a text window may cover some) */
-        for (int k = 0; k < 1200 && d < bd; k++) d += abs(t[k * 3] - th[k * 3]) + abs(t[k * 3 + 1] - th[k * 3 + 1]) + abs(t[k * 3 + 2] - th[k * 3 + 2]) > 36;
-        if (d < bd) { bd = d; best = (int)i; } }
+    int best = -1, bd = 1 << 30, bs = 1 << 30;
+    for (uint32_t i = 0; i < g_plt_n; i++) { const uint8_t *t = g_plt_th + i * PLT_TH; int d = 0, s = 0;   /* blocks that differ (a text window may cover some) */
+        for (int k = 0; k < 1200 && d <= bd; k++) { int e = abs(t[k * 3] - th[k * 3]) + abs(t[k * 3 + 1] - th[k * 3 + 1]) + abs(t[k * 3 + 2] - th[k * 3 + 2]); d += e > 36; s += e; }
+        if (d < bd || (d == bd && s < bs)) { bd = d; bs = s; best = (int)i; } }   /* a variant (G37A: the head turned) and its base differ in few blocks: the closer one wins */
     if (best < 0 || bd > 1200 * 25 / 100) return;        /* over a quarter of the picture differs: not one of these */
     if (best != g_cg_cur) { fseek(g_plt, g_plt_off[best] + PLT_TH, SEEK_SET);
         if (fread(g_cgmask, 1, sizeof g_cgmask, g_plt) != sizeof g_cgmask || fread(g_cgroom, 1, sizeof g_cgroom, g_plt) != sizeof g_cgroom) { g_cg_cur = -1; return; }
@@ -507,11 +507,11 @@ static void draw_eye_dm(u8 *fb, float back, float front, int eye) {
             float a = (float)(g_rhi - (d < g_rlo ? g_rlo : d > g_rhi ? g_rhi : d)) / (g_rhi - g_rlo);
             float b = (float)((d < g_slo ? g_slo : d > g_shi ? g_shi : d) - g_slo) / (g_shi - g_slo);
             tr[d] = (int16_t)lroundf(eye * back * a * 16); ts[d] = (int16_t)lroundf(-eye * front * (1.0f + 0.33f * b) * 16);
-            if (g_cg_on) {   /* event CG: the people lie on beds, sit on chairs, hold things - a whole-body jump tore them off what
-                                they touch. Here everything follows one depth scale: the room's nearest part at the screen,
-                                deeper = behind, the figures out of the screen in proportion to how far in front of the room they are */
-                float f = g_shi > g_rhi ? (float)((d > g_shi ? g_shi : d) - g_rhi) / (g_shi - g_rhi) : 0; if (f < 0) f = 0;
-                ts[d] = (int16_t)lroundf(-eye * front * (0.25f + 1.08f * f) * 16); } }   /* every figure pixel at least a quarter out: faces resting on a pillow or against the wall still separate */
+            if (g_cg_on) {   /* event CG */
+                /* the masks in PLATE.PAK now hold only the people meant to stand out (the woman on the chair, not the chair or
+                   the old man beside her), so the whole figure comes out of the screen: legs, shoes and hair as much as the
+                   knees - with the old proportional scale only the nearest parts (knees, a wheel) left the screen */
+                ts[d] = (int16_t)lroundf(-eye * front * (0.8f + 0.4f * b) * 16); } }
         for (int d = 0; d < 256; d++) tab[d] = tr[d];   /* room pass below reads tab */
         for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3, *pr = g_plate_half + y * 320 * 3; const uint8_t *bd = g_bgd[y], *sd = g_spd[y], *sm = g_smask[y];
             for (int x = 0; x < 320; x++) {                  /* room: backward warp (its depth is smooth, two passes find the source) */
