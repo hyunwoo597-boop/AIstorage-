@@ -78,6 +78,12 @@ void sys_fix_script(const char *name, uint8_t *code, size_t n) {
         {0x2580, 2, 0, 2}, {0x20f4, 4, 7, 0x63}, {0x215d, 4, 7, 0x63}, {0x212c, 4, 0, 0x63} };
     int done = 0;
     for (size_t i = 0; i < sizeof fx / sizeof fx[0]; i++) { size_t a = 4 + fx[i].addr + fx[i].off; if (a < n && code[a] == fx[i].old) { code[a] = fx[i].now; done++; } }
+#ifdef __SWITCH__
+    /* Switch: no "quit game" item (left column item 3: never highlighted/confirmed/drawn, cursor stops at item 2) */
+    static const struct { uint16_t addr; uint8_t off, old, now; } fq[] = {
+        {0x1ea6, 3, 3, 0x63}, {0x230a, 3, 3, 0x63}, {0x250f, 3, 3, 2}, {0x25b2, 2, 3, 2}, {0x21bf, 4, 7, 0x63} };
+    for (size_t i = 0; i < sizeof fq / sizeof fq[0]; i++) { size_t a = 4 + fq[i].addr + fq[i].off; if (a < n && code[a] == fq[i].old) { code[a] = fq[i].now; done++; } }
+#endif
     plat_log("system menu patch: %d", done);
 }
 /* ---- bottom-screen layouts for the full-screen menus (picked by the hit table the library loaded last) ---- */
