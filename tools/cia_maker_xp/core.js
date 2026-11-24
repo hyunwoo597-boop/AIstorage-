@@ -116,13 +116,30 @@ async function asBlob(x, prog) { return x instanceof RawFile ? await x.toBlob(pr
 
 /* 분할 zip(Disc.z01 + Disc.zip, 무압축 저장)에서 첫 파일의 내용 Blob */
 async function storedZipMember(parts) {
-    var all = new BlobC(parts), h = await rd(all, 0, 64), o = 0;
+    /* central directory first (split zips: entries carry their disk number; members may use data descriptors with
+       size 0 in the local header, and the CD image may not be the first member) - take the biggest stored member */
+    var all = new BlobC(parts), sizes = parts.map(function (p) { return p.size; });
+    var last = parts[parts.length - 1], tl = Math.min(last.size, 66000), tail = await rd(last, last.size - tl, tl), e = -1;
+    for (var i = tl - 22; i >= 0; i--) if (u32(tail, i) === 0x06054b50) { e = i; break; }
+    if (e >= 0) {
+        var cdDisk = u16(tail, e + 6), cdSize = u32(tail, e + 12), cdOff = u32(tail, e + 16), base = 0;
+        for (var d = 0; d < cdDisk && d < sizes.length; d++) base += sizes[d];
+        var cd = await rd(all, base + cdOff, cdSize), best = null;
+        for (var q = 0; q + 46 <= cd.length && u32(cd, q) === 0x02014b50;) {
+            var meth = u16(cd, q + 10), cs = u32(cd, q + 20), nl = u16(cd, q + 28), xl = u16(cd, q + 30), cl = u16(cd, q + 32), disk = u16(cd, q + 34), lo = u32(cd, q + 42);
+            var b2 = 0; for (var d2 = 0; d2 < disk && d2 < sizes.length; d2++) b2 += sizes[d2];
+            if (meth === 0 && (!best || cs > best.cs)) best = { cs: cs, at: b2 + lo };
+            q += 46 + nl + xl + cl;
+        }
+        if (best && best.cs) { var lh = await rd(all, best.at, 30); if (u32(lh, 0) === 0x04034b50) { var st = best.at + 30 + u16(lh, 26) + u16(lh, 28); return all.slice(st, st + best.cs); } }
+    }
+    var h = await rd(all, 0, 64), o = 0;
     if (u32(h, 0) === 0x08074b50) o = 4;
     if (u32(h, o) !== 0x04034b50) return null;
     var method = u16(h, o + 8), csize = u32(h, o + 18), nlen = u16(h, o + 26), xlen = u16(h, o + 28);
-    if (method !== 0) return null;   /* 압축된 zip 은 지원하지 않음(풀어서 이미지로 넣기) */
+    if (method !== 0) return null;
     var start = o + 30 + nlen + xlen;
-    if (csize === 0xffffffff || csize === 0) csize = all.size - start;   /* zip64 또는 크기가 뒤(데이터 설명자)에 있는 분할 zip: 끝까지 (CD 이미지는 LBA 로 찾으므로 뒤에 붙은 zip 정보는 상관없음) */
+    if (csize === 0xffffffff || csize === 0) csize = all.size - start;
     return all.slice(start, start + csize);
 }
 /* files: [{name, blob}] — 원본 게임 쪽 입력. 반환 { 'MES.ARC': Blob, ... } */
@@ -334,7 +351,7 @@ async function buildCia(base, files, prog) {
     return new BlobC([head, romfs, zeros(tailPad), base.subarray(c.metaOff, c.metaOff + c.metaSize)]);
 }
 
-var api = { RawFile: RawFile, asBlob: asBlob, Sha: Sha, sha256: sha256, findGame: findGame, isoFiles: isoFiles, arcList: arcList, arcBuild: arcBuild, wavToAdpcm: wavToAdpcm, musicToAdpcm: musicToAdpcm, buildRomfs: buildRomfs, parseCia: parseCia, buildCia: buildCia, Blob: BlobC };
+var api = { setWant: function (w) { WANT = w; }, RawFile: RawFile, asBlob: asBlob, Sha: Sha, sha256: sha256, findGame: findGame, isoFiles: isoFiles, arcList: arcList, arcBuild: arcBuild, wavToAdpcm: wavToAdpcm, musicToAdpcm: musicToAdpcm, buildRomfs: buildRomfs, parseCia: parseCia, buildCia: buildCia, Blob: BlobC };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 root.XpCore = api;
 })(typeof self !== 'undefined' ? self : this);
