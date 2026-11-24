@@ -1006,6 +1006,9 @@ static void save_cmd(vm_t *vm, uint32_t sub, uint32_t slot, uint32_t start, uint
     case 0:                            /* load everything and restart the saved script (it resumes via its own label variable) */
         if (!plat_save_read(name, tmp, SAVE_SIZE)) { plat_log("load: %s not found", name); return; }
         memcpy(m, tmp, SAVE_SIZE); m[OFF_FLAG - 1] = 0;
+        anim_reset();                  /* the scene before the load (title, another day) may have had a character with blinking eyes /
+                                          a moving mouth: those animations went on over the loaded scene, so only a strip of eyes showed
+                                          where the loaded scene has no one (Switch report) - the loaded script starts its own */
         SET_SYS32(vm, 0, 0); SET_SYS32(vm, 1, 0x100000);               /* engine pointers, not game state (older saves hold 0) */
         SET_SYS16(vm, 2, SYS16(vm, 2) | 8);                               /* leaves any running menu loop */
         snprintf(vm->goto_name, sizeof vm->goto_name, "%s", (char *)m); vm->want_goto = true;
