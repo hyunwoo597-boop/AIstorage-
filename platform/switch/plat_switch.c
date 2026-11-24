@@ -315,6 +315,10 @@ int main(int argc, char **argv) {
     SDL_DestroyWindow(g_win); exit_note("window closed");
     SDL_Quit(); exit_note("SDL quit");
     if (g_romfs) romfsExit();
-    exit_note("return to libnx");
+    /* log of the failing quit: "return to libnx" was the last line, "appExit" never came - the crash is in the C library's exit
+       handlers / destructors that run between main's return and __appExit (left behind by the GPU driver after SDL_Quit).
+       So the services are closed here directly and the process ends, without those handlers */
+    exit_note("closing services"); __appExit();
+    svcExitProcess();
     return 0;
 }
