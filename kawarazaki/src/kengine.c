@@ -5,7 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <strings.h>
+#include <time.h>
 
 /* ------------------------------------------------------------------ archives */
 typedef struct { char name[33]; uint32_t off, size, ls, le; } k_ent;   /* ls/le: AWF loop frames (ls = -1: none) */
@@ -65,10 +67,14 @@ static int sjis_dbcs(uint8_t c) { return (c >= 0x81 && c <= 0x9f) || (c >= 0xe0 
 
 /* ------------------------------------------------------------------ display */
 const uint8_t *k_screen(void) { return scr; }
+static bool wave_on; static int wave_tab[480];   /* SYS 34: rows swing sideways (0x437270, 80 ms timer) */
+static void anim_tick(void);
 static void present(void) {
-    const surf_t *s = &S[0];
+    const surf_t *s = &S[0]; static uint8_t row[640 * 3]; int ph = (int)(plat_ms() / 80);
     for (int y = 0; y < 480; y++) {
         const uint8_t *src = s->p + (size_t)y * s->w * 3; uint8_t *d = scr + y * 640 * 3;
+        if (wave_on) { int sh = wave_tab[((479 - y) - ph % 480 + 960) % 480] / 6; sh = ((sh % 640) + 640) % 640;   /* rows wrap around */
+            memcpy(row + sh * 3, src, (640 - sh) * 3); memcpy(row, src + (640 - sh) * 3, sh * 3); src = row; }
         if (fade_level >= 255) memcpy(d, src, 640 * 3);
         else { int a = fade_level, fr = fade_rgb >> 16 & 255, fg = fade_rgb >> 8 & 255, fb = fade_rgb & 255;
             for (int x = 0; x < 640; x++) { d[x*3] = (src[x*3] * a + fr * (255 - a)) / 255; d[x*3+1] = (src[x*3+1] * a + fg * (255 - a)) / 255; d[x*3+2] = (src[x*3+2] * a + fb * (255 - a)) / 255; } }
@@ -87,7 +93,7 @@ static void compose(void) {   /* message window (surface 6 rows 0-103: frame; pu
     for (int i = 0; i < 640 * 480; i++) { int a = tl_a[i]; if (!a) continue; uint8_t *d = scr + i * 3, *c = tl_c + i * 3;
         d[0] = (c[0] * a + d[0] * (255 - a)) / 255; d[1] = (c[1] * a + d[1] * (255 - a)) / 255; d[2] = (c[2] * a + d[2] * (255 - a)) / 255; }
 }
-static bool frame(void) { present(); compose(); if (!plat_frame(scr, 640, 480)) { quit = true; return false; } return true; }
+static bool frame(void) { anim_tick(); present(); compose(); if (!plat_frame(scr, 640, 480)) { quit = true; return false; } return true; }
 static bool key_down(int k) { return plat_key(k); }
 /* waits ms (0x40eed0): a confirm press or skip mode cuts it short; returns true if cut */
 static bool wait_ms(uint32_t ms) {
@@ -294,6 +300,8 @@ static void run_at(script_t *s, uint32_t at) {   /* nested dispatcher (0x411ae0)
 static void sys_call(void);
 static void sound_ctl(void);
 static void anim(void);
+static void rec_cmd(void); static bool sys_menu(void); static bool save_slot(int slot); static bool load_slot(int slot); static int slot_pick(bool saving); static void ui_dim(void); static bool load_menu(void); static void sys_load(void); static void sys_save(void);
+static bool auto_mode; static char last_txt[96]; static int resume_msg = -1;
 static void menu_run(void);
 static void text(const uint8_t *t);
 static void wait_msg(void);
@@ -306,7 +314,7 @@ static void run(void) {
         if (getenv("K_TRACE")) plat_log("%s %05x op %02x", cur->name, at, op);
         switch (op) {
         case 0x00: { const uint8_t *t = cur->buf + cur->base + pc; size_t n = strlen((const char *)t);
-            if (capture) { if (cap_n < 16) snprintf(cap_txt[cap_n++], 128, "%s", (const char *)t); } else text(t); pc += n + 1; break; }
+            if (capture) { if (cap_n < 16) snprintf(cap_txt[cap_n++], 128, "%s", (const char *)t); } else { snprintf(last_txt, sizeof last_txt, "%s", (const char *)t); text(t); } pc += n + 1; break; }
         case 0x01: pc = cw32(); break;
         case 0x02: sys_call(); break;
         case 0x03: args(); snprintf(goto_name, sizeof goto_name, "%s", AR[0].s); end_flag = 2; break;
@@ -358,7 +366,22 @@ static void run(void) {
 }
 /* OP22: end of a message - wait for a click, then clear the text area */
 static void wait_msg(void) {
-    if (!skip_mode) wait_click();
+#ifdef K_HEADLESS_RAND
+    { static long nmsg; nmsg++; const char *e = getenv("K_TEST_SAVE"); if (e && nmsg == atol(e)) { save_slot(0); plat_log("saved at %s msg %d", cur->name, msg_no); quit = true; return; }
+      e = getenv("K_TEST_UI"); if (e && nmsg == atol(e)) { plat_log("ui"); ui_dim(); slot_pick(true); sys_menu(); }
+      e = getenv("K_TEST_LOAD"); if (e && nmsg == 1) { plat_log("load -> %d", load_slot(0)); return; } }
+#endif
+    if (!skip_mode) {
+        while (!quit && key_down(0)) if (!frame()) return;
+        uint32_t t0 = plat_ms();
+        for (;;) {
+            if (quit || skip_mode || key_down(6)) break;
+            if (key_down(0)) break;
+            if (key_down(1)) { while (!quit && key_down(1)) frame(); if (sys_menu()) return; t0 = plat_ms(); continue; }
+            if (auto_mode && !plat_snd_playing(SND_VOICE) && plat_ms() - t0 > 2500) break;
+            if (plat_snd_playing(SND_VOICE)) t0 = plat_ms();
+            if (!frame()) return; }
+    }
     tl_clear(); D[0] = D[2] + 16; D[1] = D[3];
     frame();
 }
@@ -396,6 +419,47 @@ static void title_menu(void) {
     int r = pick(tm_n, 0, tm_row, tm_draw); V[18] = tm_map[r] + 1; ov_clear(); frame();
     plat_log("title menu -> %u", V[18]);
 }
+/* SYS 35 (0x43a0a0): surface 1 comes onto the screen through the transition mask NN.msk (sequence.ARC, 640x480 levels):
+   step t = 32..352 by 32, a pixel's share of the new picture = t + 16 - level (0..255) */
+static void mask_trans(int n, bool instant) {
+    char nm[16]; snprintf(nm, sizeof nm, "%02d.msk", n % 100); uint32_t len; uint8_t *m = instant || skip_mode ? NULL : arc_load(&A_SEQ, nm, &len);
+    if (m && len >= 640 * 480) {
+        uint8_t *old = malloc(640 * 480 * 3); for (int j = 0; j < 480; j++) memcpy(old + j * 1920, S[0].p + (size_t)j * S[0].w * 3, 1920);
+        for (int t = 32; t < 0x180 && !quit; t += 32) {
+            for (int j = 0; j < 480; j++) { uint8_t *d = S[0].p + (size_t)j * S[0].w * 3; const uint8_t *o = old + j * 1920, *nw = S[1].p + (size_t)j * S[1].w * 3, *mk = m + j * 640;
+                for (int i = 0; i < 640; i++) { int a = t + 16 - mk[i]; if (a < 0) a = 0; if (a > 255) a = 255;
+                    for (int c = 0; c < 3; c++) d[i * 3 + c] = (uint8_t)((o[i * 3 + c] * (255 - a) + nw[i * 3 + c] * a) / 255); } }
+            if (wait_ms(25)) break; }
+        free(old); }
+    free(m);
+    blit(1, 0, 0, 639, 479, 0, 0, 0, 0); frame();
+}
+/* SYS 5 (0x43e83d): the rect D[8..11] of surface 1 fades in over the screen */
+static void xfade_rect(void) {
+    int x = (int)D[8], y = (int)D[9], w = (int)D[10], h = (int)D[11];
+    if (!skip_mode && w > 0 && h > 0) {
+        uint8_t *old = malloc((size_t)w * h * 3);
+        for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) { int X = x + i, Y = y + j; if (X < 0 || Y < 0 || X >= S[0].w || Y >= S[0].h) continue; memcpy(old + ((size_t)j * w + i) * 3, S[0].p + ((size_t)Y * S[0].w + X) * 3, 3); }
+        for (int st = 1; st < 12 && !quit; st++) {
+            for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) { int X = x + i, Y = y + j; if (X < 0 || Y < 0 || X >= 640 || Y >= 480) continue;
+                uint8_t *d = S[0].p + ((size_t)Y * S[0].w + X) * 3; const uint8_t *o = old + ((size_t)j * w + i) * 3, *nw = S[1].p + ((size_t)Y * S[1].w + X) * 3;
+                for (int c = 0; c < 3; c++) d[c] = (uint8_t)((o[c] * (12 - st) + nw[c] * st) / 12); }
+            if (wait_ms(25)) break; }
+        free(old); }
+    blit(1, x, y, x + w - 1, y + h - 1, 0, x, y, 0); frame();
+}
+/* SYS 40 (0x43ad90): picture show spg01..spg04, then spg10..spg19 in turn until a press */
+static void spg_show(void) {
+    static const char *const first[6] = { "spg01", "spg01_1", "spg01_2", "spg02", "spg03", "spg04" };
+    uint32_t keep = D[12]; D[12] = 1;
+    for (int i = 0; i < 6 && !quit; i++) { load_pic(first[i], 0, 0); mask_trans(9, false); }
+    for (int i = 0; !quit; i = (i + 1) % 10) { char n[16]; snprintf(n, sizeof n, "spg%02d", 10 + i); load_pic(n, 0, 0); mask_trans(9, false);
+        if (key_down(0) || key_down(1)) break;
+        uint32_t t0 = plat_ms(); bool hit = false; while (!quit && plat_ms() - t0 < 1500) { if (key_down(0) || key_down(1)) { hit = true; break; } if (!frame()) break; }
+        if (hit) break; }
+    while (!quit && (key_down(0) || key_down(1))) frame();
+    D[12] = keep;
+}
 static void sys_call(void) {   /* OP02 (0x43e6a0): sub = arg0 */
     args(); uint32_t f = A(0);
     switch (f) {
@@ -420,7 +484,19 @@ static void sys_call(void) {   /* OP02 (0x43e6a0): sub = arg0 */
                 if (wait_ms(30)) break; }
             free(old); }
         blit(1, x, y, x + w - 1, y + h - 1, 0, x, y, 0); frame(); break; }
-    case 24: break;   /* scene record for save/restore (TODO) */
+    case 5: xfade_rect(); break;
+    case 24: rec_cmd(); break;                       /* scene record, read back when a save is loaded */
+    case 34: wave_on = A(1) == 1; if (wave_on) for (int i = 0; i < 480; i++) wave_tab[i] = (int)(cos(i * 0.026179938333333333) * 100.0); frame(); break;
+    case 35: mask_trans((int)A(1), A(2) != 0); break;
+    case 36: case 47: case 49: break;                  /* Windows menu bar items */
+    case 38: load_menu(); break;                    /* title: load */
+    case 40: spg_show(); break;
+    case 45: V[18] = rnd(2) + 1; break;
+    case 46: while (!quit && key_down(0)) frame();     /* wait for a press; cancel clears v9 */
+        for (;;) { if (quit || skip_mode) break; if (key_down(0)) break; if (key_down(1)) { V[9] = 0; break; } if (!frame()) break; }
+        while (!quit && (key_down(0) || key_down(1))) frame();
+        break;
+    case 48: if (wait_ms(A(1) * 20)) V[9] = 1; break;
     case 37: title_menu(); break;
     default: plat_log("sys %u (%u %u %u)", f, A(1), A(2), A(3));
     }
@@ -445,7 +521,208 @@ static void sound_ctl(void) {   /* OP32 (0x434570): 0-6 music, 16-22 effect chan
     default: plat_log("snd %u %u %u", A(0), A(1), A(2));
     }
 }
-static void anim(void) { if (AR[0].type == 2) plat_log("anim %s %u", AR[0].s, A(1)); else plat_log("op2e %u %u %u", A(0), A(1), A(2)); }
+/* ------------------------------------------------------------------ animations (OP2E, 0x410570)
+   .ax (sequence.ARC): u32 stream_offset[10][32], draw calls of 7 x u32 from +0x500 (type, sx, sy, w, h, dx, dy), bytecode.
+   The frames come from the sheet in surface 8 (scripts load "...an.bmp" there) and go onto the screen. Same machine as
+   AI5WIN (Nonomura): 0 nop, 1 n wait, 2 n stall, 3 restart, 4/ff end, 5/6 and 7/8 loops, other = draw call ARG. */
+typedef struct { uint32_t state, ip, stall, wait, l1_ip, l1_cnt, l1_init, l2_ip, l2_cnt, l2_init; } an_t;
+enum { AN_RUN = 0, AN_STOPREQ = 1, AN_HALT = 0xff };
+static uint8_t *ax; static uint32_t ax_len; static an_t AN[10][32]; static uint32_t an_t0; static bool an_any;
+static uint32_t ax32(uint32_t o) { return o + 4 <= ax_len ? rd32(ax + o) : 0xff; }
+static void anim_halt_all(void) { for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) AN[a][b].state = AN_HALT; an_any = false; }
+static void anim_draw(uint32_t n) {
+    uint32_t r = 0x500 + n * 28; if (r + 28 > ax_len) return;
+    int t = (int)ax32(r), sx = (int)ax32(r + 4), sy = (int)ax32(r + 8), w = (int)ax32(r + 12), h = (int)ax32(r + 16), dx = (int)ax32(r + 20), dy = (int)ax32(r + 24);
+    bool ha = S[8].has_a; S[8].has_a = false;                     /* sheets are G24n: green key */
+    if (t == 0 || t == 5) blit(8, sx, sy, sx + w - 1, sy + h - 1, 0, dx, dy, 0);
+    else if (t == 1) blit(8, sx, sy, sx + w - 1, sy + h - 1, 0, dx, dy, 1);
+    S[8].has_a = ha;
+}
+static void anim_step(int a, int b) {
+    an_t *s = &AN[a][b]; uint32_t base = ax32((uint32_t)(a * 32 + b) * 4);
+    if (s->stall) { s->stall--; return; }
+    if (s->wait) { if (s->state == AN_STOPREQ) s->state = AN_HALT; s->wait--; return; }
+    if (base + s->ip >= ax_len) { s->state = AN_HALT; return; }
+    uint8_t op = ax[base + s->ip++];
+#define ARG() (s->ip += 4, ax32(base + s->ip - 4))
+    switch (op) {
+    case 0: break;
+    case 1: if (s->state == AN_STOPREQ) s->state = AN_HALT; s->wait = ARG(); break;
+    case 2: s->stall = ARG(); break;
+    case 3: s->ip = 0; break;
+    case 4: case 0xff: s->state = AN_HALT; break;
+    case 5: s->l1_cnt = s->l1_init = ARG(); s->l1_ip = s->ip; break;
+    case 6: if (!s->l1_init || --s->l1_cnt) s->ip = s->l1_ip; break;
+    case 7: s->l2_cnt = s->l2_init = ARG(); s->l2_ip = s->ip; break;
+    case 8: if (!s->l2_init || --s->l2_cnt) s->ip = s->l2_ip; break;
+    default: anim_draw(ARG()); break;
+    }
+#undef ARG
+}
+static void anim_ticks(int n) {
+    while (n-- > 0) { bool any = false;
+        for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (AN[a][b].state != AN_HALT) { anim_step(a, b); any = true; }
+        an_any = any; if (!any) break; }
+}
+static void anim_tick(void) {   /* 60 steps a second, run from every frame */
+    uint32_t now = plat_ms(); if (!an_any) { an_t0 = now; return; }
+    int n = (int)((now - an_t0) * 60 / 1000); if (n <= 0) return; an_t0 += (uint32_t)n * 1000 / 60; if (n > 6) n = 6; anim_ticks(n);
+}
+static void anim_start(int a, int b) { if (!ax) return; an_t *s = &AN[a % 10][b & 31]; memset(s, 0, sizeof *s); s->state = AN_RUN; if (!an_any) an_t0 = plat_ms(); an_any = true; }
+static void anim(void) {
+    if (AR[0].type == 2) {   /* load: v14 = 0 loaded, 1 missing */
+        anim_halt_all(); free(ax); ax = arc_load(&A_SEQ, AR[0].s, &ax_len); V[14] = ax ? 0 : 1;
+        if (!ax) { ax_len = 0; plat_log("no animation %s", AR[0].s); } return; }
+    switch (A(0)) {
+    case 1: anim_start((int)A(1), (int)A(2)); break;                                   /* start a stream */
+    case 2: if (ax) { an_t *s = &AN[A(1) % 10][A(2) & 31]; if (s->state != AN_HALT) s->state = AN_STOPREQ; } break;
+    case 3: anim_start((int)A(1), (int)A(2));                                          /* run one to its end (0x409c60) */
+        while (!quit && AN[A(1) % 10][A(2) & 31].state != AN_HALT) { if (skip_mode) { anim_ticks(1); continue; } if (!frame()) break; }
+        break;
+    case 7: for (int a = 0; a < 10; a++) for (int b = 0; b < 32; b++) if (AN[a][b].state != AN_HALT) AN[a][b].state = AN_STOPREQ; break;
+    case 10: case 11: anim_halt_all(); break;
+    default: break;                                                                     /* 26 etc.: nothing in this version */
+    }
+}
+
+/* ------------------------------------------------------------------ scene record (SYS 24, 0x43e010 -> 0x43d3e0)
+   0 clear, 1 remove id, 4 set id = (name, 6 values), 5 id present -> v18, 6 name, 7 value. A loaded save redraws the
+   scene from these (0x43f6c0): 0 room, 1-5 pictures, 8 .ax, 9 its sheet, 10 its stream, 14 music, 16-18 loops, 19 wave. */
+#define NREC 32
+typedef struct { uint16_t id; char name[64]; uint16_t p[6]; } rec_t;
+static rec_t REC[NREC]; static int nrec;
+static void rec_del(int id) { for (int i = 0; i < nrec; i++) if (REC[i].id == id) { memmove(&REC[i], &REC[i + 1], (size_t)(nrec - i - 1) * sizeof *REC); nrec--; i--; } }
+static rec_t *rec_get(int id) { for (int i = 0; i < nrec; i++) if (REC[i].id == id) return &REC[i]; return NULL; }
+static void rec_cmd(void) {
+    int id = (int)(A(2) & 255); rec_t *r;
+    switch (A(1)) {
+    case 0: nrec = 0; break;
+    case 1: rec_del(id); break;
+    case 4: rec_del(id); if (nrec == NREC) { memmove(REC, REC + 1, (NREC - 1) * sizeof *REC); nrec--; }
+        r = &REC[nrec++]; memset(r, 0, sizeof *r); r->id = (uint16_t)id; if (nar > 3 && AR[3].type == 2) snprintf(r->name, sizeof r->name, "%s", AR[3].s);
+        for (int k = 0; k < 6; k++) r->p[k] = (uint16_t)A(4 + k); break;
+    case 5: r = rec_get(id); V[18] = r ? r->id : 0xffff; break;
+    case 7: r = rec_get(id); if (r) V[18] = r->p[A(3) % 6]; break;
+    default: break;
+    }
+}
+static void play_awf(int slot, const char *name, bool loop);
+static void snd_start(int slot);
+static void scene_restore(void) {   /* redraw what the records say, in their order */
+    anim_halt_all(); wave_on = false; tl_clear(); ov_clear(); fade_level = 255;
+    for (int k = 0; k < NSURF; k++) if (k != 6 && k != 7) { memset(S[k].p, 0, (size_t)S[k].w * S[k].h * 3); S[k].has_a = false; }
+    for (int i = 0; i < nrec; i++) { rec_t *r = &REC[i]; int id = r->id; uint32_t keep = D[12];
+        if (id == 0) { D[12] = 1; load_pic(r->name, -1, -1); blit(1, 0, 0, 639, 479, 2, 0, 0, 0); }
+        else if (id >= 1 && id <= 5) { D[12] = 3; load_pic(r->name, -1, -1); int x = (int)D[8], y = (int)D[9], w = (int)D[10], h = (int)D[11];
+            bool ha = S[3].has_a; blit(3, x, y, x + w - 1, y + h - 1, 1, x, y, 1); S[3].has_a = ha;
+            if (id == 1) blit(3, x, y, x + w - 1, y + h - 1, 2, x, y, 1); }
+        else if (id == 9) { D[12] = 8; load_pic(r->name, -1, -1); }
+        else if (id == 8) { free(ax); ax = arc_load(&A_SEQ, r->name, &ax_len); if (!ax) ax_len = 0; }
+        else if (id == 14 && r->name[0]) { play_awf(SND_BGM, r->name, true); snd_start(SND_BGM); }
+        else if (id >= 16 && id <= 18 && r->name[0]) { play_awf(SND_SE + id - 16, r->name, true); snd_start(SND_SE + id - 16); }
+        else if (id == 19) { wave_on = r->p[0] == 1; for (int j = 0; j < 480; j++) wave_tab[j] = (int)(cos(j * 0.026179938333333333) * 100.0); }
+        D[12] = keep; }
+    blit(1, 0, 0, 639, 479, 0, 0, 0, 0);
+    for (int i = 0; i < nrec; i++) if (REC[i].id == 10) anim_start(0, REC[i].p[0]);
+}
+
+/* ------------------------------------------------------------------ saves (port's own: 20 slots + global flags)
+   slot: script, message number (the script's own table, OP35), window, all variables, scene records, a line of text.
+   Global (kept across games and loads, like the original's FLAG0000): endings seen 130-199, music 1500-1599, 2000- */
+#define NSAVE 20
+typedef struct { char magic[4]; char script[32]; int32_t msg; uint8_t win; uint32_t text_rgb, when; char label[96];
+    uint8_t F[8192]; uint16_t W[4096]; uint32_t D[4096], V[32]; int32_t nrec; rec_t rec[NREC]; } save_t;
+
+static bool global_flag(int i) { return (i >= 260 && i < 400) || (i >= 3000 && i < 3200) || (i >= 1500 && i < 1600) || (i >= 4000); }
+static void sys_save(void) { static uint8_t g[4096]; for (int i = 0; i < 8192; i++) { int f = getF(i); if (i & 1) g[i >> 1] = (g[i >> 1] & 0xf0) | f; else g[i >> 1] = (g[i >> 1] & 0x0f) | f << 4; }
+    plat_save_write("KSYS.DAT", g, sizeof g); }
+static void sys_load(void) { static uint8_t g[4096]; if (!plat_save_read("KSYS.DAT", g, sizeof g)) return;
+    for (int i = 0; i < 8192; i++) if (global_flag(i)) { int f = i & 1 ? g[i >> 1] & 15 : g[i >> 1] >> 4; if (f > getF(i)) setF(i, f); } }
+static void save_name(char *b, int slot) { snprintf(b, 16, "KSAVE%02d.DAT", slot + 1); }
+static bool save_peek(int slot, save_t *s) { char n[16]; save_name(n, slot); return plat_save_read(n, s, sizeof *s) && !memcmp(s->magic, "KWS1", 4); }
+static bool save_slot(int slot) {
+    static save_t s; memset(&s, 0, sizeof s); memcpy(s.magic, "KWS1", 4); snprintf(s.script, sizeof s.script, "%s", cur ? cur->name : "");
+    s.msg = msg_no; s.win = win_open; s.text_rgb = text_rgb; s.when = (uint32_t)time(NULL); snprintf(s.label, sizeof s.label, "%s", last_txt);
+    memcpy(s.F, F, sizeof F); memcpy(s.W, W, sizeof W); memcpy(s.D, D, sizeof D); memcpy(s.V, V, sizeof V); s.nrec = nrec; memcpy(s.rec, REC, sizeof REC);
+    char n[16]; save_name(n, slot); sys_save(); return plat_save_write(n, &s, sizeof s);
+}
+static bool load_slot(int slot) {
+    static save_t s; if (!save_peek(slot, &s) || s.msg < 0) return false;
+    for (int i = 0; i < 8192; i++) { int sv = (s.F[i >> 1] >> (i & 1 ? 0 : 4)) & 15; if (!global_flag(i) || sv > getF(i)) setF(i, sv); }
+    memcpy(W, s.W, sizeof W); memcpy(D, s.D, sizeof D); memcpy(V, s.V, sizeof V); text_rgb = s.text_rgb;
+    nrec = s.nrec < 0 || s.nrec > NREC ? 0 : s.nrec; memcpy(REC, s.rec, sizeof REC);
+    for (int k = 0; k < SND_SLOTS; k++) plat_snd_stop(k);
+    scene_restore(); win_open = s.win; frame();
+    snprintf(goto_name, sizeof goto_name, "%s", s.script); resume_msg = s.msg; end_flag = 2; skip_mode = false;
+    return true;
+}
+
+/* ------------------------------------------------------------------ the port's menu (B / + during text) */
+static void ui_text(int x, int y, const char *t, uint32_t rgb) {
+    uint32_t k12 = D[12], k0 = D[0], k1 = D[1], k2 = D[2], k4 = D[4], kc = text_rgb, k16 = D[16];
+    D[12] = 0; D[0] = D[2] = (uint32_t)x; D[1] = (uint32_t)y; D[4] = 632; text_rgb = rgb; D[16] = 0; text_noframe = true;
+    text((const uint8_t *)t); text_noframe = false;
+    D[12] = k12; D[0] = k0; D[1] = k1; D[2] = k2; D[4] = k4; text_rgb = kc; D[16] = k16;
+}
+static void ui_dim(void) { for (int i = 0; i < 640 * 480; i++) { ov_a[i] = 170; ov_c[i * 3] = 0; ov_c[i * 3 + 1] = 0; ov_c[i * 3 + 2] = 16; } }
+static int ui_n, ui_y0, ui_h; static const char *ui_lbl[24]; static const char *ui_head;
+static int ui_row(int x, int y) { (void)x; int r = (y - ui_y0) / ui_h; return y >= ui_y0 && r < ui_n ? r : -1; }
+static void ui_draw(int sel, bool pressed) {
+    tl_clear(); if (ui_head) ui_text(48, ui_y0 - 32, ui_head, 0xffff80);
+    for (int i = 0; i < ui_n; i++) ui_text(64, ui_y0 + i * ui_h + (ui_h - 16) / 2, ui_lbl[i], i == sel ? (pressed ? 0xff8080 : 0x00ffff) : 0xffffff);
+}
+static int ui_list(const char *head, const char **lbl, int n, int sel) {   /* -1 = cancelled */
+    ui_head = head; ui_n = n; ui_h = n > 12 ? 20 : 32; ui_y0 = (480 - n * ui_h) / 2 + (head ? 12 : 0);
+    for (int i = 0; i < n; i++) ui_lbl[i] = lbl[i];
+    while (!quit && (key_down(1) || key_down(0))) frame();
+    int px, py, lx = -1, ly = -1; bool pu = true, pd = true, held = true;
+    for (;;) {
+        if (quit) return -1;
+        if (key_down(1)) { while (!quit && key_down(1)) frame(); return -1; }
+        plat_cursor(&px, &py, false); if (px != lx || py != ly) { int r = ui_row(px, py); if (r >= 0) sel = r; lx = px; ly = py; }
+        bool up = key_down(2), dn = key_down(3), ok = key_down(0);
+        if (up && !pu) sel = (sel + n - 1) % n; if (dn && !pd) sel = (sel + 1) % n; pu = up; pd = dn;
+        if (ok && !held) { ui_draw(sel, true); frame(); wait_ms(100); while (!quit && key_down(0)) frame(); return sel; }
+        held = ok; ui_draw(sel, false); if (!frame()) return -1;
+    }
+}
+static int slot_pick(bool saving) {
+    static char lines[NSAVE][128]; const char *lbl[NSAVE]; static save_t s;
+    for (int i = 0; i < NSAVE; i++) {
+        if (save_peek(i, &s)) { time_t t = (time_t)s.when; struct tm *m = localtime(&t); char lb[40]; int n = 0;
+            for (const uint8_t *p = (const uint8_t *)s.label; *p && n < 32; ) { int d = sjis_dbcs(*p) ? 2 : 1; if (n + d > 32) break; memcpy(lb + n, p, d); n += d; p += d; } lb[n] = 0;
+            snprintf(lines[i], sizeof lines[i], "%02d %02d/%02d %02d:%02d %s", i + 1, m ? m->tm_mon + 1 : 0, m ? m->tm_mday : 0, m ? m->tm_hour : 0, m ? m->tm_min : 0, lb); }
+        else snprintf(lines[i], sizeof lines[i], "%02d " "\x81\x7c\x81\x7c\x20\x8b\xf3\x82\xab\x20\x81\x7c\x81\x7c", i + 1);
+        lbl[i] = lines[i]; }
+    return ui_list(saving ? "\x82\xc7\x82\xb1\x82\xc9\x83\x5a\x81\x5b\x83\x75\x82\xb5\x82\xdc\x82\xb7\x82\xa9\x81\x48" : "\x82\xc7\x82\xea\x82\xf0\x83\x8d\x81\x5b\x83\x68\x82\xb5\x82\xdc\x82\xb7\x82\xa9\x81\x48", lbl, NSAVE, 0);
+}
+static bool ui_confirm(void) { const char *l[2] = { "\x82\xcd\x82\xa2", "\x82\xa2\x82\xa2\x82\xa6" }; return ui_list("\x82\xe6\x82\xeb\x82\xb5\x82\xa2\x82\xc5\x82\xb7\x82\xa9\x81\x48", l, 2, 1) == 0; }
+static void ui_close(void) { tl_clear(); ov_clear(); }
+/* returns true when the game moved elsewhere (a load or back to the title) */
+static bool load_menu(void) {
+    ui_dim(); for (;;) { int sl = slot_pick(false); if (sl < 0) break; save_t *s = malloc(sizeof *s); bool ok = save_peek(sl, s); free(s);
+        if (ok && ui_confirm()) { ui_close(); if (load_slot(sl)) return true; ui_dim(); } }
+    ui_close(); frame(); return false;
+}
+static bool sys_menu(void) {
+    uint32_t keep_rgb = text_rgb; uint8_t *ka = malloc(sizeof tl_a), *kc = malloc(sizeof tl_c); memcpy(ka, tl_a, sizeof tl_a); memcpy(kc, tl_c, sizeof tl_c);
+    bool moved = false; int sel = 0;
+    for (;;) {
+        static char l2[64], l3[64]; snprintf(l2, sizeof l2, "%s%s", "\x8a\xf9\x93\xc7\x83\x58\x83\x4c\x83\x62\x83\x76", skip_mode ? "\x81\x46\x82\x6e\x82\x6d" : "\x81\x46\x82\x6e\x82\x65\x82\x65"); snprintf(l3, sizeof l3, "%s%s", "\x83\x49\x81\x5b\x83\x67\x83\x82\x81\x5b\x83\x68", auto_mode ? "\x81\x46\x82\x6e\x82\x6d" : "\x81\x46\x82\x6e\x82\x65\x82\x65");
+        const char *lbl[6] = { "\x83\x5a\x81\x5b\x83\x75", "\x83\x8d\x81\x5b\x83\x68", l2, l3, "\x83\x5e\x83\x43\x83\x67\x83\x8b\x82\xc9\x96\xdf\x82\xe9", "\x96\xdf\x82\xe9" };
+        ui_dim(); sel = ui_list(NULL, lbl, 6, sel);
+        if (sel < 0 || sel == 5) break;
+        if (sel == 0) { int sl = slot_pick(true); if (sl >= 0) { save_t *s = malloc(sizeof *s); bool used = save_peek(sl, s); free(s); if (!used || ui_confirm()) save_slot(sl); } }
+        else if (sel == 1) { if (load_menu()) { moved = true; break; } }
+        else if (sel == 2) { skip_mode = !skip_mode; if (skip_mode) break; }
+        else if (sel == 3) { auto_mode = !auto_mode; if (auto_mode) break; }
+        else if (sel == 4) { if (ui_confirm()) { anim_halt_all(); wave_on = false; for (int k = 0; k < SND_SLOTS; k++) plat_snd_stop(k); sys_save();
+                win_open = false; ui_close(); snprintf(goto_name, sizeof goto_name, "start.mes"); resume_msg = -1; end_flag = 2; skip_mode = auto_mode = false; moved = true; break; } }
+    }
+    ui_close(); if (!moved) { memcpy(tl_a, ka, sizeof tl_a); memcpy(tl_c, kc, sizeof tl_c); } free(ka); free(kc); text_rgb = keep_rgb; frame();
+    return moved;
+}
+
 /* OP14: choices. Each item's code sets v16 and prints its label (TXT) - run them in capture mode, show the labels in the window */
 static int ch_n, ch_val[16]; static char ch_lbl[16][128];
 static int ch_row(int x, int y) { (void)x; for (int i = 0; i < ch_n; i++) if (y >= (int)D[3] + i * 20 && y < (int)D[3] + i * 20 + 18) return i; return -1; }
@@ -462,7 +739,13 @@ static void menu_run(void) {
         snprintf(ch_lbl[ch_n], 128, "%s", cap_txt[0]); ch_val[ch_n] = V[16]; ch_n++;
     }
     if (!ch_n) { V[18] = 0; return; }
-    int r = pick(ch_n, 0, ch_row, ch_draw); V[18] = r + 1; V[16] = ch_val[r];
+    int r;
+#ifdef K_HEADLESS_RAND                         /* test driver: random choices to walk every branch */
+    { extern int khl_choice(int n); r = khl_choice(ch_n); }
+#else
+    r = pick(ch_n, 0, ch_row, ch_draw);
+#endif
+    V[18] = r + 1; V[16] = ch_val[r];
     tl_clear(); D[0] = D[2] + 16; D[1] = D[3]; frame(); plat_log("choice -> %u", V[18]);
 }
 
@@ -471,14 +754,16 @@ bool k_init(void) {
     arc_open(&A_SEQ, 40); arc_open(&A_VOICE, 40); for (int i = 0; i < 4; i++) arc_open(&A_AWF[i], 52);
     surf_init();
     font_len = plat_file_size("kfont16.bin"); if (font_len) { font = malloc(font_len); plat_read_at("kfont16.bin", 0, font, font_len); }
-    D[16] = 0; return true;
+    D[16] = 0; sys_load(); return true;
 }
 void k_run(const char *first) {
     snprintf(goto_name, sizeof goto_name, "%s", first);
     while (!quit && goto_name[0]) {
         script_t *s = load_script(goto_name); goto_name[0] = 0; if (!s) break;
         plat_log("script %s", s->name);
-        cur = s; pc = 0; end_flag = 0; run();
+        cur = s; pc = 0; end_flag = 0;
+        if (resume_msg >= 0 && (uint32_t)resume_msg < rd32(s->buf)) pc = rd32(s->buf + 4 + 4 * resume_msg); resume_msg = -1;
+        sys_save(); run();
         if (end_flag == 2) { end_flag = 0; continue; }
     }
 }
