@@ -200,7 +200,7 @@ $('go').onclick = async function () {
         if (korean) { var patch = JSON.parse($('patch').textContent); for (var k in patch) files.push({ name: 'patch_' + k, data: b64(patch[k]) }); }
         }
         dosFiles.forEach(function (f) { files.push(f); });
-        if ($('nro').textContent.trim()) files.push({ name: 'NonomuraHospitalHD.nro', data: b64($('nro').textContent) });   /* 게임 프로그램: NSP 의 로더(nx-hbloader)가 읽어 실행 */
+        if ($('nro').textContent.trim()) files.push({ name: 'NonomuraHospitalHD.nro', data: b64($('nro').textContent) });   /* (예전 구조) NSP 의 로더가 읽던 게임 프로그램 - 지금은 비어 있고 게임은 exefs/main 그 자체 */
         var nsp = await NspCore.buildNsp({ keys: keys, nso: b64($('nso').textContent), npdm: b64($('npdm').textContent), nacp: b64($('nacp').textContent), icon: b64($('icon').textContent), titleId: '01004e4f4e4f0000', files: files },
             function (f, m) { setp(0.05 + 0.95 * f); say(m + '… ' + Math.round(f * 100) + '%'); });
         setp(1); say('완료: ' + mb(nsp.size));

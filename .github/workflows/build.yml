@@ -124,7 +124,9 @@ jobs:
           python3 tools/cia_maker_xp/build.py out/nonoxp.cia out/NonomuraHospitalHD_cia_maker.html "$(date -u +%Y-%m-%d) 판"
           python3 tools/nsp_maker/nacp_langs.py out/nonoxp.nacp
           python3 tools/nsp_launcher/build.py out/fwd_main out/fwd.npdm out/nonoxp.nacp assets/icon_switch.jpg out/NonomuraHospitalHD_nsp_launcher.html "$(date -u +%Y-%m-%d) 판"
-          python3 tools/nsp_maker/build.py out/fwdr_main out/fwd.npdm out/nonoxp.nacp --nro out/NonomuraHospitalHD.nro assets/icon_switch.jpg out/NonomuraHospitalHD_nsp_maker.html "$(date -u +%Y-%m-%d) 판"
+          python3 tools/nsp_maker/mkfwd.py npdm out/main.npdm out/app.npdm 01004e4f4e4f0000
+          # the game itself is the title's program (exefs/main), like a regular game: fixes are exefs/main in the title folder
+          python3 tools/nsp_maker/build.py out/main out/app.npdm out/nonoxp.nacp assets/icon_switch.jpg out/NonomuraHospitalHD_nsp_maker.html "$(date -u +%Y-%m-%d) 판"
           ls -l out
       - name: Publish binaries as release "nonoxp-latest"
         uses: softprops/action-gh-release@v2
