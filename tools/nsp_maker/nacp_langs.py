@@ -10,7 +10,7 @@ for i in range(16):
     flags |= 1 << i
 ko = 12 * 0x300                                              # Korean slot: the Korean title
 d[ko:ko + 0x300] = bytes(0x300)
-d[ko:ko + 0x200] = '노노무라 병원의 사람들 HD'.encode('utf-8').ljust(0x200, b'\0')
+d[ko:ko + 0x200] = (sys.argv[2] if len(sys.argv) > 2 else '노노무라 병원의 사람들 HD').encode('utf-8').ljust(0x200, b'\0')
 d[ko + 0x200:ko + 0x300] = '디시인사이드 스위치CFW 갤러리 -루카-'.encode('utf-8').ljust(0x100, b'\0')
 struct.pack_into('<I', d, 0x302C, flags)
 open(p, 'wb').write(d); print('nacp languages: all 16 slots, flags %04x' % flags)

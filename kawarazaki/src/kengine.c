@@ -8,7 +8,7 @@
 #include <strings.h>
 
 /* ------------------------------------------------------------------ archives */
-typedef struct { char name[33]; uint32_t off, size; } k_ent;
+typedef struct { char name[33]; uint32_t off, size, ls, le; } k_ent;   /* ls/le: AWF loop frames (ls = -1: none) */
 typedef struct { const char *file; int n; k_ent *e; } k_arc;
 static k_arc A_MES = {"mes.ARC"}, A_GCC = {"gcc.ARC"}, A_SEQ = {"sequence.ARC"}, A_VOICE = {"voice.ARC"};
 static k_arc A_AWF[4] = {{"bgm.AWF"}, {"effect.AWF"}, {"effect2.AWF"}, {"effect3.AWF"}};
@@ -17,7 +17,7 @@ static bool arc_open(k_arc *a, int esz) {
     uint8_t h[4]; if (!plat_read_at(a->file, 0, h, 4)) { plat_log("missing %s", a->file); return false; }
     a->n = rd32(h); uint8_t *t = malloc((size_t)a->n * esz); if (!plat_read_at(a->file, 4, t, a->n * esz)) return false;
     a->e = calloc(a->n, sizeof(k_ent));
-    for (int i = 0; i < a->n; i++) { memcpy(a->e[i].name, t + i * esz, 32); a->e[i].off = rd32(t + i * esz + 32); a->e[i].size = rd32(t + i * esz + 36); }
+    for (int i = 0; i < a->n; i++) { memcpy(a->e[i].name, t + i * esz, 32); a->e[i].off = rd32(t + i * esz + 32); a->e[i].size = rd32(t + i * esz + 36); if (esz >= 52) { a->e[i].ls = rd32(t + i * esz + 40); a->e[i].le = rd32(t + i * esz + 44); } }
     free(t); return true;
 }
 static k_ent *arc_find(k_arc *a, const char *name) {
@@ -43,6 +43,14 @@ static int fade_level = 255; static uint32_t fade_rgb;   /* display fade: 255 = 
 static uint32_t text_rgb = 0xffffff;     /* 0x50ca4 */
 static bool win_open; static uint8_t tl_a[640 * 480], tl_c[640 * 480 * 3];   /* text layer over the screen (coverage, colour) */
 static void tl_clear(void) { memset(tl_a, 0, sizeof tl_a); }
+static uint8_t ov_a[640 * 480], ov_c[640 * 480 * 3];   /* UI overlay (title menu) */
+static void ov_clear(void) { memset(ov_a, 0, sizeof ov_a); }
+static void ov_pic(int si, int sx, int sy, int w, int h, int dx, int dy) {   /* surface rect with its alpha onto the overlay */
+    surf_t *s = &S[si];
+    for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) { int x = dx + i, y = dy + j, u = sx + i, v = sy + j;
+        if (x < 0 || y < 0 || x >= 640 || y >= 480 || u >= s->w || v >= s->h) continue;
+        int a = s->a[(size_t)v * s->w + u]; if (!a) continue; int k = y * 640 + x; memcpy(ov_c + k * 3, s->p + ((size_t)v * s->w + u) * 3, 3); ov_a[k] = a; } }
+static bool capture; static char cap_txt[16][128]; static int cap_n;
 static int msg_no = -1; static bool skip_mode; static bool quit;
 
 typedef struct { const char *name; uint8_t *buf; uint32_t len; uint32_t base; } script_t;
@@ -74,6 +82,8 @@ static void compose(void) {   /* message window (surface 6 rows 0-103: frame; pu
                 if (s[0] == 255 && s[1] == 0 && s[2] == 0) { d[0] = (d[0] * 96 + 64 * 160) >> 8; d[1] = (d[1] * 96 + 64 * 160) >> 8; d[2] = (d[2] * 96 + 64 * 160) >> 8; }
                 else memcpy(d, s, 3); } }
     }
+    for (int i = 0; i < 640 * 480; i++) { int a = ov_a[i]; if (!a) continue; uint8_t *d = scr + i * 3, *c = ov_c + i * 3;
+        d[0] = (c[0] * a + d[0] * (255 - a)) / 255; d[1] = (c[1] * a + d[1] * (255 - a)) / 255; d[2] = (c[2] * a + d[2] * (255 - a)) / 255; }
     for (int i = 0; i < 640 * 480; i++) { int a = tl_a[i]; if (!a) continue; uint8_t *d = scr + i * 3, *c = tl_c + i * 3;
         d[0] = (c[0] * a + d[0] * (255 - a)) / 255; d[1] = (c[1] * a + d[1] * (255 - a)) / 255; d[2] = (c[2] * a + d[2] * (255 - a)) / 255; }
 }
@@ -170,6 +180,7 @@ static void draw_glyph(int di, int x, int y, const uint8_t *cell, int w) {
         }
     }
 }
+static bool text_noframe;
 static void text(const uint8_t *t) {
     int di = D[12] & 15; int cw = D[17] ? (int)D[17] : 16, lh = D[18] ? (int)D[18] : 16;
     while (*t && !quit) {
@@ -183,16 +194,27 @@ static void text(const uint8_t *t) {
         if (D[0] + w - 1 > D[4]) { D[0] = D[2]; D[1] += lh; }
         if (cell) draw_glyph(di, D[0], D[1], cell, dbcs ? 16 : 8);
         D[0] += w; t += dbcs ? 2 : 1;
-        if (!skip_mode && D[16]) { if (wait_ms(D[16])) skip_mode = skip_mode; }
+        if (!skip_mode && D[16] && !text_noframe) wait_ms(D[16]);
     }
-    frame();
+    if (!text_noframe) frame();
 }
 
 /* ------------------------------------------------------------------ sound */
+/* AWF banks hold bare PCM16: bgm.AWF stereo 44.1 kHz, effect*.AWF mono 22.05 kHz (AI.exe 0x446174 / 0x4463c3).
+   Wrapped into a RIFF/WAVE (with a smpl loop) for the platform mixer. */
+static void wr32(uint8_t *p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
+static struct { uint8_t *b; size_t n; bool loop; } pend[SND_SLOTS];
 static void play_awf(int slot, const char *name, bool loop) {
     for (int i = 0; i < 4; i++) { k_ent *e = arc_find(&A_AWF[i], name); if (!e) continue;
-        uint8_t *b = malloc(e->size); if (!plat_read_at(A_AWF[i].file, e->off, b, e->size)) { free(b); return; }
-        plat_snd_play(slot, b, e->size, 255, loop); return; }
+        int ch = i == 0 ? 2 : 1, rate = i == 0 ? 44100 : 22050; bool lp = loop || e->ls != 0xffffffffu;
+        uint32_t ls = e->ls == 0xffffffffu ? 0 : e->ls, le = e->ls == 0xffffffffu ? e->size / (2 * ch) : e->le;
+        size_t hl = 12 + 24 + (lp ? 8 + 60 : 0) + 8; uint8_t *b = malloc(hl + e->size); uint8_t *p = b;
+        memcpy(p, "RIFF", 4); wr32(p + 4, (uint32_t)(hl - 8 + e->size)); memcpy(p + 8, "WAVE", 4); p += 12;
+        memcpy(p, "fmt ", 4); wr32(p + 4, 16); p[8] = 1; p[9] = 0; p[10] = ch; p[11] = 0; wr32(p + 12, rate); wr32(p + 16, rate * 2 * ch); p[20] = 2 * ch; p[21] = 0; p[22] = 16; p[23] = 0; p += 24;
+        if (lp) { memcpy(p, "smpl", 4); wr32(p + 4, 60); memset(p + 8, 0, 60); wr32(p + 8 + 28, 1); wr32(p + 8 + 44, ls); wr32(p + 8 + 48, le ? le - 1 : 0); p += 68; }
+        memcpy(p, "data", 4); wr32(p + 4, e->size); p += 8;
+        if (!plat_read_at(A_AWF[i].file, e->off, p, e->size)) { free(b); return; }
+        free(pend[slot].b); pend[slot].b = b; pend[slot].n = hl + e->size; pend[slot].loop = lp; return; }
     plat_log("no sound %s", name);
 }
 
@@ -273,6 +295,7 @@ static void sys_call(void);
 static void sound_ctl(void);
 static void anim(void);
 static void menu_run(void);
+static void text(const uint8_t *t);
 static void wait_msg(void);
 static int end_flag;
 static void run(void) {
@@ -282,7 +305,8 @@ static void run(void) {
         uint32_t at = pc; uint8_t op = cb();
         if (getenv("K_TRACE")) plat_log("%s %05x op %02x", cur->name, at, op);
         switch (op) {
-        case 0x00: { const uint8_t *t = cur->buf + cur->base + pc; size_t n = strlen((const char *)t); text(t); pc += n + 1; break; }
+        case 0x00: { const uint8_t *t = cur->buf + cur->base + pc; size_t n = strlen((const char *)t);
+            if (capture) { if (cap_n < 16) snprintf(cap_txt[cap_n++], 128, "%s", (const char *)t); } else text(t); pc += n + 1; break; }
         case 0x01: pc = cw32(); break;
         case 0x02: sys_call(); break;
         case 0x03: args(); snprintf(goto_name, sizeof goto_name, "%s", AR[0].s); end_flag = 2; break;
@@ -346,6 +370,32 @@ static void fade(int to, uint32_t rgb) {   /* display fade, ~0.5 s */
     for (int i = 1; i <= 16 && !quit; i++) { fade_level = from + (to - from) * i / 16; if (!skip_mode) wait_ms(30); else frame(); }
     fade_level = to;
 }
+/* simple pointer/pad menu: returns the chosen index; hover via d-pad or pointer over rows */
+static int pick(int n, int cur0, int (*row_at)(int x, int y), void (*draw)(int sel, bool pressed)) {
+    int sel = cur0, px, py, lx = -1, ly = -1; bool held = true;
+    if (getenv("K_PICK")) { static const char *p; if (!p) p = getenv("K_PICK"); int v = atoi(p); const char *c = strchr(p, ','); p = c ? c + 1 : p + strlen(p); if (v >= 0 && v < n) { draw(v, true); frame(); return v; } }
+    for (;;) {
+        if (quit) return sel;
+        plat_cursor(&px, &py, false);
+        if (px != lx || py != ly) { int r = row_at(px, py); if (r >= 0) sel = r; lx = px; ly = py; }
+        bool up = key_down(2), dn = key_down(3), ok = key_down(0);
+        static bool pu, pd; if (up && !pu) sel = (sel + n - 1) % n; if (dn && !pd) sel = (sel + 1) % n; pu = up; pd = dn;
+        if (ok && !held) { draw(sel, true); frame(); wait_ms(120); return sel; }
+        held = ok; draw(sel, false); if (!frame()) return sel;
+    }
+}
+/* title menu (SYS 37): items from title_pt (surface 7), 3 rows per item (normal, hover, pressed), logo below them */
+static int tm_n, tm_map[6];
+static int tm_row(int x, int y) { (void)x; for (int i = 0; i < tm_n; i++) if (y >= 232 + i * 40 && y < 268 + i * 40 && x >= 168 && x < 472) return i; return -1; }
+static void tm_draw(int sel, bool pressed) {
+    ov_clear(); ov_pic(7, 0, 768, 584, 120, 28, 40);
+    for (int i = 0; i < tm_n; i++) ov_pic(7, 0, tm_map[i] * 108 + (i == sel ? (pressed ? 72 : 36) : 0), 584, 36, 28, 232 + i * 40);
+}
+static void title_menu(void) {
+    tm_n = 0; for (int i = 0; i < 6; i++) if (i < 5 || getF(150)) tm_map[tm_n++] = i;
+    int r = pick(tm_n, 0, tm_row, tm_draw); V[18] = tm_map[r] + 1; ov_clear(); frame();
+    plat_log("title menu -> %u", V[18]);
+}
 static void sys_call(void) {   /* OP02 (0x43e6a0): sub = arg0 */
     args(); uint32_t f = A(0);
     switch (f) {
@@ -371,18 +421,49 @@ static void sys_call(void) {   /* OP02 (0x43e6a0): sub = arg0 */
             free(old); }
         blit(1, x, y, x + w - 1, y + h - 1, 0, x, y, 0); frame(); break; }
     case 24: break;   /* scene record for save/restore (TODO) */
-    case 37: V[18] = getenv("K_TITLE") ? atoi(getenv("K_TITLE")) : 1; plat_log("title menu -> %u (stub)", V[18]); break;
+    case 37: title_menu(); break;
     default: plat_log("sys %u (%u %u %u)", f, A(1), A(2), A(3));
     }
 }
-static void sound_ctl(void) { plat_log("snd %u %u %u", A(0), A(1), A(2)); }
+static void snd_start(int slot) { if (pend[slot].b) { uint8_t *c = malloc(pend[slot].n); memcpy(c, pend[slot].b, pend[slot].n); plat_snd_play(slot, c, pend[slot].n, 255, pend[slot].loop); } }
+static void snd_wait(int slot) { while (!quit && plat_snd_playing(slot)) { if (skip_mode || key_down(0)) break; if (!frame()) break; } }
+static void sound_ctl(void) {   /* OP32 (0x434570): 0-6 music, 16-22 effect channel A(1), 32-34 voice */
+    int ch = SND_SE + (A(1) % 3);
+    switch (A(0)) {
+    case 0: snd_start(SND_BGM); break;
+    case 1: plat_snd_stop(SND_BGM); break;
+    case 2: snd_start(SND_BGM); break;                       /* fade in */
+    case 3: plat_snd_fade(SND_BGM, A(1) ? A(1) : 1000); break;
+    case 4: plat_snd_fade(SND_BGM, A(1) ? A(1) : 1000); snd_wait(SND_BGM); break;
+    case 6: snd_wait(SND_BGM); break;
+    case 16: snd_start(ch); break;
+    case 17: plat_snd_stop(ch); break;
+    case 18: case 19: plat_snd_fade(ch, A(2) ? A(2) : 500); break;
+    case 22: snd_wait(ch); break;
+    case 32: plat_snd_stop(SND_VOICE); break;
+    case 33: snd_wait(SND_VOICE); break;
+    default: plat_log("snd %u %u %u", A(0), A(1), A(2));
+    }
+}
 static void anim(void) { if (AR[0].type == 2) plat_log("anim %s %u", AR[0].s, A(1)); else plat_log("op2e %u %u %u", A(0), A(1), A(2)); }
+/* OP14: choices. Each item's code sets v16 and prints its label (TXT) - run them in capture mode, show the labels in the window */
+static int ch_n, ch_val[16]; static char ch_lbl[16][128];
+static int ch_row(int x, int y) { (void)x; for (int i = 0; i < ch_n; i++) if (y >= (int)D[3] + i * 20 && y < (int)D[3] + i * 20 + 18) return i; return -1; }
+static void ch_draw(int sel, bool pressed) {
+    tl_clear();
+    for (int i = 0; i < ch_n; i++) { D[0] = D[2] + 16; D[1] = D[3] + i * 20; uint32_t keep = text_rgb;
+        text_rgb = i == sel ? (pressed ? 0xff8080 : 0x00ffff) : 0xffffff; uint32_t sp = D[16]; D[16] = 0; capture = false; text_noframe = true; text((const uint8_t *)ch_lbl[i]); text_noframe = false; D[16] = sp; text_rgb = keep; }
+}
 static void menu_run(void) {
-    menu_t *m = &menus[A(0) & 15]; plat_log("menu %u (%d items) -> first", A(0), m->n);
+    menu_t *m = &menus[A(0) & 15]; ch_n = 0;
     for (int k = 0; k < m->n; k++) {
         if (m->cond[k]) { script_t *os = cur; uint32_t op = pc; cur = m->s; pc = m->cond[k]; uint32_t c = expr(); cur = os; pc = op; if (!c) continue; }
-        run_at(m->s, m->addr[k]); break;
+        capture = true; cap_n = 0; cap_txt[0][0] = 0; run_at(m->s, m->addr[k]); capture = false;
+        snprintf(ch_lbl[ch_n], 128, "%s", cap_txt[0]); ch_val[ch_n] = V[16]; ch_n++;
     }
+    if (!ch_n) { V[18] = 0; return; }
+    int r = pick(ch_n, 0, ch_row, ch_draw); V[18] = r + 1; V[16] = ch_val[r];
+    tl_clear(); D[0] = D[2] + 16; D[1] = D[3]; frame(); plat_log("choice -> %u", V[18]);
 }
 
 bool k_init(void) {

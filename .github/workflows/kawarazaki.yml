@@ -1,0 +1,32 @@
+name: Build Kawarazaki (Switch)
+on:
+  push:
+    branches: [kawarazaki-switch]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  switch:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Switch libraries
+        run: for i in 1 2 3; do dkp-pacman -Sy --noconfirm --needed switch-dev switch-sdl2 switch-libvorbis switch-libogg && break; sleep 20; done
+      - name: Build
+        run: |
+          set -e
+          cd kawarazaki
+          make -f Makefile.switch
+          elf2nso kawarazaki.elf main
+          npdmtool exefs.json main.npdm
+          python3 ../tools/nsp_maker/nacp_langs.py kawarazaki.nacp '카와라자키가의 일족' || true
+          ls -l kawarazaki.nro kawarazaki.nacp main main.npdm
+      - name: Publish binaries to branch kawarazaki-bin
+        run: |
+          set -e
+          git config --global --add safe.directory '*'
+          mkdir pub && cp kawarazaki/kawarazaki.nro kawarazaki/kawarazaki.nacp kawarazaki/main kawarazaki/main.npdm pub/ && cd pub
+          git init -q && git config user.name ci && git config user.email ci@x
+          git add . && git commit -qm "build ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/kawarazaki-bin
