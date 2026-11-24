@@ -292,7 +292,7 @@ int main(int argc, char **argv) {
     if (sys_set_popup_full(true), vm_load_mes(&vm, "MAIN.MES")) vm_run(&vm); else plat_log("MAIN.MES missing");
     plat_log("game ended (quit=%d)", vm.quit);
     snd_exit();
-    if (from_nsp) {   /* installed (NSP) start: the teardown below (SDL video/GL, RomFS, back into the loader) crashed with
+    if (from_nsp || envIsNso()) {   /* installed (NSP) start - the game as the title's own program (exefs/main), or the older NSPs' loader: the teardown below (SDL video/GL, RomFS, back into the loader) crashed with
                          "an error occurred and the software was closed" - the log reached "game ended", the loader never saw the game
                          return. Everything is written already (saves and logs are closed after each write); the system frees the rest */
         plat_log("exit (NSP)");
