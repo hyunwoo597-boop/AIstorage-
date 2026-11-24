@@ -117,7 +117,11 @@ bool plat_key(int key) {
     const int dz = 16000;
     switch (key) {
     case 0: return g_btn[JA] || g_click > 0;
-    case 1: return g_btn[JB] || g_btn[JPLUS];
+    case 1: {   /* cancel. In the dialogue/choice loop it opens the system menu: only + there (B opened the menu when a player
+                   meant "back"); B keeps working as "back" in menus, save/load screens and the message log - as on the 3DS */
+        const ui_text *u = g_vm ? sys_ui_text(g_vm) : NULL; bool story = u && u->loop == 100 && !u->backlog && (u->dialogue_visible || u->menu_visible);
+        if (story) return g_btn[JPLUS];
+        return g_btn[JB] || g_btn[JPLUS]; }
     case 2: return g_btn[JUP] || g_ax[1] < -dz;
     case 3: return g_btn[JDOWN] || g_ax[1] > dz;
     case 4: return g_btn[JLEFT] || g_ax[0] < -dz;
