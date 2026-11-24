@@ -512,6 +512,10 @@ static void draw_eye_dm(u8 *fb, float back, float front, int eye) {
                    the old man beside her), so the whole figure comes out of the screen: legs, shoes and hair as much as the
                    knees - with the old proportional scale only the nearest parts (knees, a wheel) left the screen */
                 ts[d] = (int16_t)lroundf(-eye * front * (0.8f + 0.4f * b) * 16); } }
+        /* plate style (user's choice): no warping inside a layer - the room is one flat plate a little behind the screen,
+           every figure one flat plate in front of it, like a pop-up book. The AI relief made faces, hands and outlines
+           bend or smear; a plate moves as a whole and stays exactly the 2D picture */
+        for (int d = 0; d < 256; d++) { tr[d] = (int16_t)lroundf(eye * back * 0.6f * 16); ts[d] = (int16_t)lroundf(-eye * front * 16); }
         for (int d = 0; d < 256; d++) tab[d] = tr[d];   /* room pass below reads tab */
         for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3, *pr = g_plate_half + y * 320 * 3; const uint8_t *bd = g_bgd[y], *sd = g_spd[y], *sm = g_smask[y];
             for (int x = 0; x < 320; x++) {                  /* room: backward warp (its depth is smooth, two passes find the source) */
@@ -544,6 +548,7 @@ static void draw_eye_dm(u8 *fb, float back, float front, int eye) {
             u8 *p = fb + (40 * 240 + (239 - y)) * 3;
             for (int x = 0; x < 320; x++, p += 240 * 3) { p[0] = col[x][2]; p[1] = col[x][1]; p[2] = col[x][0]; } }
         return; }
+    for (int d = 0; d < 256; d++) tab[d] = 0;   /* plate style: a scene without separate layers stays one flat picture at the screen */
     for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3; const uint8_t *dm = g_hi ? g_dmh[y] : g_dm[y >> 1];
         for (int x = 0; x < 320; x++) zb[x] = -1;
         /* source pixel k lands at k - shift (the old backward warp read x + shift) */
