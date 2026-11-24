@@ -191,6 +191,11 @@ static void text(const uint8_t *t) {
     int di = D[12] & 15; int cw = D[17] ? (int)D[17] : 16, lh = D[18] ? (int)D[18] : 16;
     while (*t && !quit) {
         if (t[0] == 0x81 && t[1] == 0x93) { D[0] = D[2]; D[1] += lh; t += 2; continue; }   /* '％' = new line */
+        if (t[0] == 0xfd && t[1] >= 0x40 && t[2] >= 0x40) {   /* Korean patch: FD hi lo = Hangul syllable (hi-0x40)*188 + lo-0x40 */
+            unsigned k = (unsigned)(t[1] - 0x40) * 188 + (t[2] - 0x40); const size_t hb = 4 + 256 * 128 + (size_t)47 * 189 * 256;
+            if (D[0] + cw - 1 > D[4]) { D[0] = D[2]; D[1] += lh; }
+            if (font && k < 11172 && font_len >= hb + 4 + (k + 1) * 256 && !memcmp(font + hb, "KHG1", 4)) draw_glyph(di, D[0], D[1], font + hb + 4 + k * 256, 16);
+            D[0] += cw; t += 3; if (!skip_mode && D[16] && !text_noframe) wait_ms(D[16]); continue; }
         int dbcs = sjis_dbcs(*t), w = dbcs ? cw : cw / 2; const uint8_t *cell = NULL;
         if (font) {
             if (dbcs) { int l = t[0], tr = t[1]; int li = l <= 0x9f ? l - 0x81 : l - 0xe0 + 31;
@@ -690,7 +695,7 @@ static int slot_pick(bool saving) {
     static char lines[NSAVE][128]; const char *lbl[NSAVE]; static save_t s;
     for (int i = 0; i < NSAVE; i++) {
         if (save_peek(i, &s)) { time_t t = (time_t)s.when; struct tm *m = localtime(&t); char lb[40]; int n = 0;
-            for (const uint8_t *p = (const uint8_t *)s.label; *p && n < 32; ) { int d = sjis_dbcs(*p) ? 2 : 1; if (n + d > 32) break; memcpy(lb + n, p, d); n += d; p += d; } lb[n] = 0;
+            for (const uint8_t *p = (const uint8_t *)s.label; *p && n < 32; ) { int d = *p == 0xfd ? 3 : sjis_dbcs(*p) ? 2 : 1; if (n + d > 32) break; memcpy(lb + n, p, d); n += d; p += d; } lb[n] = 0;
             snprintf(lines[i], sizeof lines[i], "%02d %02d/%02d %02d:%02d %s", i + 1, m ? m->tm_mon + 1 : 0, m ? m->tm_mday : 0, m ? m->tm_hour : 0, m ? m->tm_min : 0, lb); }
         else snprintf(lines[i], sizeof lines[i], "%02d " "\x81\x7c\x81\x7c\x20\x8b\xf3\x82\xab\x20\x81\x7c\x81\x7c", i + 1);
         lbl[i] = lines[i]; }
