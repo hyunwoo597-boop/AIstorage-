@@ -300,6 +300,10 @@ int main(int argc, char **argv) {
                          "an error occurred and the software was closed" - the log reached "game ended", the loader never saw the game
                          return. Everything is written already (saves and logs are closed after each write); the system frees the rest */
         plat_log("exit (NSP)");
+        /* a bare svcExitProcess was still reported by the system as "an error occurred" (log: exit (NSP) reached). An application
+           has to tell the applet manager it is leaving (official software: UnlockExit + Exit); libnx's appletExit does that for
+           an Application (__nx_applet_exit_mode 0) - so leave through it, still without the SDL/GL teardown */
+        appletExit();
         svcExitProcess(); }
     if (g_joy) SDL_JoystickClose(g_joy);
     SDL_DestroyTexture(g_tex); SDL_DestroyRenderer(g_ren); SDL_DestroyWindow(g_win); SDL_Quit();
