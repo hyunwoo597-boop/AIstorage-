@@ -42,7 +42,7 @@ mark { background:#ffe08a; color:#000; } small { color:var(--sub); font-size:12p
 #list:empty::before { content:"게임 파일을 먼저 불러오세요."; color:var(--sub); font-size:14px; }
 </style>
 </head>
-<body>
+<body translate="no" class="notranslate">
 <main>
 <h1>河原崎家の一族 대사 편집기</h1>
 <p class="sub">일본어 대사 옆에 한국어를 적어 넣고 mes.ARC 를 만들어 스위치 포팅판에 넣는 도구입니다. 파일은 이 기기 안에서만 처리됩니다.<br>제작자 : 디시인사이드 스위치CFW 갤러리 -루카-</p>
@@ -75,6 +75,11 @@ mark { background:#ffe08a; color:#000; } small { color:var(--sub); font-size:12p
   <p style="margin-top:8px">용어집 — 한 줄에 하나씩 <b>일본어=한국어</b> (예: 京子=쿄코). 이름을 항상 같게 옮길 때 씁니다.</p>
   <textarea id="gloss" rows="3" placeholder="京子=쿄코&#10;麗=레이&#10;河原崎=카와라자키"></textarea>
   <div class="row"><button class="main" id="autoAll">보이는 줄 중 빈 칸 모두 자동 번역</button><button id="autoStop" style="display:none">멈추기</button></div>
+  <h2 style="margin-top:14px">휴대폰 브라우저 번역 쓰기 (무료)</h2>
+  <p>크롬 또는 삼성 인터넷의 "페이지 번역"으로 일본어 원문만 번역한 뒤, 그 결과를 빈 칸에 가져옵니다. 편집기 글자와 내가 쓴 번역은 번역되지 않게 막아 두었습니다.<br>
+  ① 위에서 파일·보기를 골라 번역할 줄을 화면에 띄우기 → ② 크롬: 오른쪽 위 ⋮ → <b>번역…</b> (삼성 인터넷: ≡ → 번역) → 한국어 선택 → ③ 아래로 쭉 내려 원문이 다 한국어로 바뀐 걸 확인 → ④ 아래 버튼. 한 번에 80줄씩 보이니 "더 보기"로 늘리면 더 많이 할 수 있습니다.</p>
+  <label style="font-size:13px"><input type="checkbox" id="glossView"> 원문에 용어집 이름을 미리 넣어 보여 주기 (이름 번역을 맞출 때)</label>
+  <div class="row"><button class="main" id="grab">화면에 번역된 원문을 빈 칸에 가져오기</button></div>
   <div id="autoLog" class="sub"></div>
 </div>
 
@@ -147,12 +152,17 @@ function render(reset) {
     $('more').style.display = shown < filtered.length ? '' : 'none'; $('more').textContent = '더 보기 (' + (filtered.length - shown) + '줄 남음)';
     stat();
 }
+function jpHtml(s, q) {
+    if ($('glossView') && $('glossView').checked) glossary().forEach(function (x) { s = s.split(x[0]).join(x[1]); });
+    return s.split('\n').map(function (l) { return '<div class="jl">' + (hl(l, q) || '&nbsp;') + '</div>'; }).join('');
+}
 function item(L, q) {
     var d = document.createElement('div'), tr = edits[L.key]; d.className = 'it' + (tr ? ' done' : '');
     d.innerHTML = '<div class="meta"><span>' + esc(L.key) + '<span class="autotag" style="display:none">검토 필요</span></span><span class="tools"><a data-a="mt">자동 번역</a><a data-a="copy">원문 넣기</a><a data-a="clear">지우기</a></span></div>' +
-        '<div class="jp">' + hl(L.jp, q) + '</div><textarea rows="2" placeholder="한국어 번역"></textarea><div class="warn"></div>';
+        '<div class="jp" translate="yes" lang="ja">' + jpHtml(L.jp, q) + '</div><textarea rows="2" placeholder="한국어 번역"></textarea><div class="warn"></div>';
     var ta = d.querySelector('textarea'), wn = d.querySelector('.warn'); ta.value = tr || '';
     var tag = d.querySelector('.autotag'); tag.style.display = tr && auto[L.key] ? '' : 'none';
+    L.el = d;
     L.show = function (v) { ta.value = v; wn.textContent = warns(v).join(' · '); d.className = 'it done'; tag.style.display = auto[L.key] ? '' : 'none'; ta.style.height = 'auto'; ta.style.height = Math.max(44, ta.scrollHeight + 2) + 'px'; };
     function upd(fromMt) { var v = ta.value; if (!fromMt) delete auto[L.key]; tag.style.display = v && auto[L.key] ? '' : 'none';
         if (v === '') delete edits[L.key]; else edits[L.key] = v; d.className = 'it' + (v ? ' done' : '');
@@ -219,6 +229,18 @@ $('autoAll').onclick = async function () {
         $('autoLog').textContent = (stopAuto ? '멈춤: ' : '끝: ') + done + '줄 번역했습니다. "자동 번역 (검토 필요)" 로 골라 보며 다듬어 주세요.';
     } catch (e) { $('autoLog').textContent = '자동 번역 중단 (' + done + '줄 완료): ' + e.message; }
     $('autoAll').disabled = false; $('autoStop').style.display = 'none';
+};
+$('glossView').onchange = function () { render(true); };
+$('grab').onclick = function () {
+    var n = 0, same = 0;
+    filtered.slice(0, shown).forEach(function (L) {
+        if (!L.el || !document.body.contains(L.el) || edits[L.key]) return;
+        var t = Array.from(L.el.querySelectorAll('.jl')).map(function (e) { return e.innerText.replace(/\u00a0/g, ' ').trim(); }).join('\n').trim();
+        if (!/[\uac00-\ud7a3]/.test(t)) { same++; return; }       /* not translated (yet) */
+        edits[L.key] = t; auto[L.key] = 1; L.show(t); n++; });
+    persist(); stat();
+    $('autoLog').textContent = n ? n + '줄을 가져왔습니다.' + (same ? ' 아직 번역 안 된 줄 ' + same + '줄은 건너뛰었습니다 (화면을 끝까지 내려 번역되게 한 뒤 다시 누르세요).' : '') :
+        '가져올 번역이 없습니다. 먼저 브라우저 메뉴에서 페이지를 한국어로 번역해 주세요.';
 };
 $('q').oninput = function () { clearTimeout(this._t); this._t = setTimeout(function () { render(true); }, 250); };
 $('file').onchange = $('show').onchange = function () { render(true); };
