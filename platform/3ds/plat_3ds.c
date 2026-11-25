@@ -126,7 +126,7 @@ static inline void put(u8 *fb, int x, int y, int r, int g, int b) { u8 *p = fb +
 /* stereoscopic 3D: the engine tags every screen pixel as backdrop or sprite (sys_scene_depth). With the 3D slider up, the
    backdrop is pushed behind the screen (up to BACK_MAX px per eye) and characters/overlays come slightly forward
    (up to FRONT_MAX px per eye, opposite direction). Backdrop hidden behind a sprite is filled from the nearest backdrop. */
-enum { BACK_MAX = 11, FRONT_MAX = 5 };
+enum { BACK_MAX = 7, FRONT_MAX = 3 };
 static const uint8_t *g_fade; static int g_fade_a;
 static inline void avg2(const uint8_t *r0, const uint8_t *r1, int sx, int *r, int *g, int *b) {
     const uint8_t *a = r0 + sx * 6, *c = r1 + sx * 6; *r = (a[0] + a[3] + c[0] + c[3]) >> 2; *g = (a[1] + a[4] + c[1] + c[4]) >> 2; *b = (a[2] + a[5] + c[2] + c[5]) >> 2;
@@ -368,7 +368,6 @@ static void make_half(const uint8_t *rgb, const uint8_t *z, bool fx) {
    screen plane sits between the far end and the subject (centre of the picture), so flat scenes still get full
    depth, the subject comes a little forward and only the nearest parts reach the front limit */
 static bool g_tilt_on = true; static float g_tilt; static int g_toast;   /* circle pad: look around (motion parallax) */
-static int g_bg;
 static void depth_stats(void) {
     int h[256] = { 0 }, hc[256] = { 0 }, n = 0, nc = 0;
     for (int y = 0; y < 120; y++) for (int x = 0; x < 160; x++) { int d = g_hi ? g_dmh[y * 2][x * 2] : g_dm[y][x]; h[d]++; n++;
@@ -380,211 +379,46 @@ static void depth_stats(void) {
     if (hi - lo < 40) { int m = (lo + hi) / 2; lo = m - 20; hi = m + 20; }   /* nearly flat picture: keep it nearly flat */
     if (sub < lo) sub = lo; if (sub > hi) sub = hi;
     g_lo = lo; g_hi_d = hi; g_sub = sub;
-    /* background level: the flat background plane of DEPTH.PAK (tools/depth/char_only.py) is the most common depth; it is put
-       on the screen plane, so it does not move between the eyes (no stretching) and only the characters come forward */
-    int md = 0; for (int d = 1; d < 256; d++) if (h[d] > h[md]) md = d;
-    g_bg = h[md] * 5 >= n ? md : lo;
 }
-/* depth map clean-up for the warp: steps are made SHARP. A soft ramp at a character's outline gave the background next
-   to it in-between shifts, so it stretched and smeared beside the figure (a pale "film" round every outline as soon as
-   the slider went up). Where the depth changes a lot within 2 px, each pixel takes the nearer-valued of the local min /
-   max: the figure moves as one piece and the background stays background. Smooth relief (bodies, rooms) is unchanged. */
+/* big depth steps (character outline against the background) become ramps ~12 px wide, small relief stays: at full slider
+   the shift difference across an outline was larger than the outline's soft edge, so pixels folded over each other and
+   showed as a pale ghost line. out = blur + (depth - blur) limited to +-12 levels */
 static void soften_steps(void) {
-    /* 1) the figure's depth grows 1 px outward: the AI map stops a little inside the drawn outline, and the outline pixels
-          that kept the background depth stayed behind as a ghost line when the figure moved (afterimage at the edges)
-       2) at a step the side is chosen from the 3x3-smoothed depth against the middle of the local range, so the edge follows a
-          smooth contour (per-pixel choices made a ragged, stair-stepped edge) */
-    static uint8_t m[240][320], t1[240][320], t2[240][320], mn[240][320], mx[240][320];
-    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int v = 0; for (int k = x - 1; k <= x + 1; k++) if (k >= 0 && k < 320 && g_dmh[y][k] > v) v = g_dmh[y][k]; t1[y][x] = (uint8_t)v; }
-    for (int x = 0; x < 320; x++) for (int y = 0; y < 240; y++) { int v = 0; for (int k = y - 1; k <= y + 1; k++) if (k >= 0 && k < 240 && t1[k][x] > v) v = t1[k][x]; m[y][x] = (uint8_t)v; }
-    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int lo = 255, hi = 0;
-        for (int k = x - 2; k <= x + 2; k++) { if (k < 0 || k > 319) continue; int v = m[y][k]; if (v < lo) lo = v; if (v > hi) hi = v; }
-        t1[y][x] = (uint8_t)lo; t2[y][x] = (uint8_t)hi; }
-    for (int x = 0; x < 320; x++) for (int y = 0; y < 240; y++) { int lo = 255, hi = 0;
-        for (int k = y - 2; k <= y + 2; k++) { if (k < 0 || k > 239) continue; if (t1[k][x] < lo) lo = t1[k][x]; if (t2[k][x] > hi) hi = t2[k][x]; }
-        mn[y][x] = (uint8_t)lo; mx[y][x] = (uint8_t)hi; }
-    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int lo = mn[y][x], hi = mx[y][x];
-        if (hi - lo < 24) {   /* inside a surface: 5x3 box (wider across - that is the shift direction): small bumps of the AI map made the texture ripple at full slider */
-            int s = 0, n = 0; for (int j = -1; j <= 1; j++) for (int k = -2; k <= 2; k++) { int yy = y + j, xx = x + k; if (yy < 0 || yy > 239 || xx < 0 || xx > 319) continue; s += m[yy][xx]; n++; }
-            g_dmh[y][x] = (uint8_t)(s / n); continue; }
-        int s = 0, n = 0; for (int j = -1; j <= 1; j++) for (int k = -1; k <= 1; k++) { int yy = y + j, xx = x + k; if (yy < 0 || yy > 239 || xx < 0 || xx > 319) continue; s += m[yy][xx]; n++; }
-        g_dmh[y][x] = (uint8_t)(s * 2 >= (lo + hi) * n ? hi : lo); }
+    static uint16_t t[240 * 320]; static uint32_t c[321];
+    for (int y = 0; y < 240; y++) { c[0] = 0; for (int x = 0; x < 320; x++) c[x + 1] = c[x] + g_dmh[y][x];
+        for (int x = 0; x < 320; x++) { int a = x - 6 < 0 ? 0 : x - 6, b = x + 7 > 320 ? 320 : x + 7; t[y * 320 + x] = (uint16_t)((c[b] - c[a]) * 16 / (b - a)); } }
+    static uint32_t cc[241];
+    for (int x = 0; x < 320; x++) { cc[0] = 0; for (int y = 0; y < 240; y++) cc[y + 1] = cc[y] + t[y * 320 + x];
+        for (int y = 0; y < 240; y++) { int a = y - 6 < 0 ? 0 : y - 6, b = y + 7 > 240 ? 240 : y + 7; int bl = (int)((cc[b] - cc[a]) / (b - a)) / 16;
+            int d = g_dmh[y][x] - bl; if (d > 12) d = 12; if (d < -12) d = -12; g_dmh[y][x] = (uint8_t)(bl + d); } }
 }
-/* forward warp with a depth test (depth-image-based rendering): every source pixel is moved by its own shift; where two
-   land on the same place the nearer one wins, a continuous surface is drawn as a span between neighbouring pixels, and
-   the gap that opens beside a figure (background that was hidden) is filled from the FARTHER side - the background is
-   extended, the figure's edge is never stretched */
-/* scenes with standing characters over a room: two layers, as the engine itself draws them. The room comes from the bare
-   background (sys_scene_plate) with the room's own depth carried under the characters (filled across each row), so it has
-   no holes; the characters are the engine's exact sprite pixels (from the layer map), moved with their own depth smoothed
-   inside the figure only. No guessed edges, no torn faces, no ghost outlines, nothing to fill in. */
-static uint8_t g_smask[240][320], g_bgd[240][320], g_spd[240][320]; static int g_rlo, g_rhi, g_slo, g_shi;
-/* event CGs (people drawn into the picture, no separate room): PLATE.PAK (optional, made offline - tools/depth/mkplate.py)
-   holds for each such CG the room with the people removed by AI inpainting and the figure mask, so CGs are drawn as two
-   layers too and their characters come cleanly out of the screen.
-   "PLT1" | u32 n | n x { char name[16], u32 offset } | per entry: thumbnail 40x30 RGB, mask 320x240, room 320x240 RGB
-   The picture on screen is recognised by its thumbnail (no name tracking through the engine's copies). */
-#define PLT_TH (40 * 30 * 3)
-static FILE *g_plt; static uint32_t g_plt_n; static uint8_t *g_plt_th; static uint32_t *g_plt_off;
-static bool g_cg_on; static int g_cg_cur = -1; static uint8_t g_cgmask[240][320], g_cgroom[240 * 320 * 3];
-static void cg_match(const uint8_t *rgb, const uint8_t *z) {
-    g_cg_on = false;
-    if (!g_plt_th) { static bool tried; if (tried) return; tried = true;
-        g_plt = open_data("PLATE.PAK"); if (!g_plt) return; uint8_t h[8];
-        if (fread(h, 1, 8, g_plt) != 8 || memcmp(h, "PLT1", 4)) { fclose(g_plt); g_plt = NULL; return; }
-        g_plt_n = h[4] | h[5] << 8 | h[6] << 16 | (uint32_t)h[7] << 24; if (!g_plt_n || g_plt_n > 4096) { fclose(g_plt); g_plt = NULL; return; }
-        g_plt_off = malloc(g_plt_n * 4); g_plt_th = malloc(g_plt_n * PLT_TH); if (!g_plt_off || !g_plt_th) { g_plt_th = NULL; return; }
-        for (uint32_t i = 0; i < g_plt_n; i++) { uint8_t e[20]; if (fread(e, 1, 20, g_plt) != 20) { g_plt_th = NULL; return; } g_plt_off[i] = e[16] | e[17] << 8 | e[18] << 16 | (uint32_t)e[19] << 24; }
-        for (uint32_t i = 0; i < g_plt_n; i++) { fseek(g_plt, g_plt_off[i], SEEK_SET); if (fread(g_plt_th + i * PLT_TH, 1, PLT_TH, g_plt) != PLT_TH) { g_plt_th = NULL; return; } } }
-    for (int i = 0; i < 640 * 480; i += 997) if (z[i] == 1 || z[i] >= 128) return;   /* only full pictures (no sprite layer) */
-    uint8_t th[PLT_TH];                                   /* scene thumbnail: 16x16 block averages */
-    for (int by = 0; by < 30; by++) for (int bx = 0; bx < 40; bx++) { int s[3] = { 0, 0, 0 };
-        for (int y = by * 16; y < by * 16 + 16; y += 2) for (int x = bx * 16; x < bx * 16 + 16; x += 2) { const uint8_t *q = rgb + (y * 640 + x) * 3; s[0] += q[0]; s[1] += q[1]; s[2] += q[2]; }
-        for (int c = 0; c < 3; c++) th[(by * 40 + bx) * 3 + c] = (uint8_t)(s[c] / 64); }
-    int best = -1, bd = 1 << 30, bs = 1 << 30;
-    for (uint32_t i = 0; i < g_plt_n; i++) { const uint8_t *t = g_plt_th + i * PLT_TH; int d = 0, s = 0;   /* blocks that differ (a text window may cover some) */
-        for (int k = 0; k < 1200 && d <= bd; k++) { int e = abs(t[k * 3] - th[k * 3]) + abs(t[k * 3 + 1] - th[k * 3 + 1]) + abs(t[k * 3 + 2] - th[k * 3 + 2]); d += e > 36; s += e; }
-        if (d < bd || (d == bd && s < bs)) { bd = d; bs = s; best = (int)i; } }   /* a variant (G37A: the head turned) and its base differ in few blocks: the closer one wins */
-    if (best < 0 || bd > 1200 * 25 / 100) return;        /* over a quarter of the picture differs: not one of these */
-    if (best != g_cg_cur) { fseek(g_plt, g_plt_off[best] + PLT_TH, SEEK_SET);
-        if (fread(g_cgmask, 1, sizeof g_cgmask, g_plt) != sizeof g_cgmask || fread(g_cgroom, 1, sizeof g_cgroom, g_plt) != sizeof g_cgroom) { g_cg_cur = -1; return; }
-        g_cg_cur = best; }
-    g_cg_on = true;
-}
-static void build_plate_layers(const uint8_t *z) {
-    static uint16_t t[240][320]; static uint8_t c[240][320];
-    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int n = 0; const uint8_t *q = z + (y * 2) * 640 + x * 2;
-        n += q[0] == 1 || q[0] >= 128; n += q[1] == 1 || q[1] >= 128; n += q[640] == 1 || q[640] >= 128; n += q[641] == 1 || q[641] >= 128;
-        g_smask[y][x] = g_cg_on ? g_cgmask[y][x] > 127 : n >= 2; }
-    #define DEPTH_AT(yy, xx) (g_hi ? g_dmh[yy][xx] : g_dm[(yy) >> 1][(xx) >> 1])
-    for (int y = 0; y < 240; y++) { int last = -1;       /* room depth under the characters: straight line between the room on both sides */
-        for (int x = 0; x <= 320; x++) { if (x < 320 && g_smask[y][x]) continue;
-            int a = last, b = x < 320 ? x : -1; int da = a >= 0 ? DEPTH_AT(y, a) : (b >= 0 ? DEPTH_AT(y, b) : g_bg), db = b >= 0 ? DEPTH_AT(y, b) : da;
-            for (int k = a + 1; k < (b >= 0 ? b : 320); k++) { int w = (b >= 0 ? b : 320) - a; g_bgd[y][k] = (uint8_t)(da + (db - da) * (k - a) / (w > 0 ? w : 1)); }
-            if (b >= 0) g_bgd[y][b] = (uint8_t)DEPTH_AT(y, b); last = b; } }
-    for (int x = 0; x < 320; x++) for (int y = 1; y < 239; y++) if (g_smask[y][x]) c[y][x] = (uint8_t)((g_bgd[y - 1][x] + 2 * g_bgd[y][x] + g_bgd[y + 1][x]) >> 2);   /* soften row-to-row */
-    for (int y = 1; y < 239; y++) for (int x = 0; x < 320; x++) if (g_smask[y][x]) g_bgd[y][x] = c[y][x];
-    /* figure depth: 7x7 average over figure pixels only (the AI relief stays, its small steps that tore faces go) */
-    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { int sm = 0, n = 0;
-        for (int k = x - 3; k <= x + 3; k++) if (k >= 0 && k < 320 && g_smask[y][k]) { sm += DEPTH_AT(y, k); n++; }
-        t[y][x] = (uint16_t)(n ? (sm * 16 / n) : 0); c[y][x] = (uint8_t)n; }
-    for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) { if (!g_smask[y][x]) { g_spd[y][x] = 0; continue; } int sm = 0, n = 0;
-        for (int k = y - 3; k <= y + 3; k++) if (k >= 0 && k < 240 && c[k][x]) { sm += t[k][x]; n++; }
-        int v = n ? sm / (16 * n) : DEPTH_AT(y, x); if (v < g_bgd[y][x] + 4) v = g_bgd[y][x] + 4; g_spd[y][x] = (uint8_t)(v > 255 ? 255 : v); }
-    #undef DEPTH_AT
-    { int hr[256] = { 0 }, hs[256] = { 0 }, nr = 0, ns = 0;      /* depth ranges of the room and of the characters (2nd..98th percentile) */
-      for (int y = 0; y < 240; y += 2) for (int x = 0; x < 320; x += 2) { hr[g_bgd[y][x]]++; nr++; if (g_smask[y][x]) { hs[g_spd[y][x]]++; ns++; } }
-      int c = 0; g_rlo = 0; for (int d = 0; d < 256; d++) { c += hr[d]; if (c * 100 <= nr * 2) g_rlo = d; }
-      c = 0; g_rhi = 255; for (int d = 255; d >= 0; d--) { c += hr[d]; if (c * 100 <= nr * 15) g_rhi = d; }   /* room's near part: 85th percentile (the floor at the bottom edge is nearer still and stays at the screen) */
-      c = 0; g_slo = 0; for (int d = 0; d < 256; d++) { c += hs[d]; if (c * 100 <= ns * 2) g_slo = d; }
-      c = 0; g_shi = 255; for (int d = 255; d >= 0; d--) { c += hs[d]; if (c * 100 <= ns * 2) g_shi = d; }
-      if (g_rhi - g_rlo < 20) g_rhi = g_rlo + 20; if (g_shi - g_slo < 20) g_shi = g_slo + 20; }
-}
-static uint8_t g_plate_half[240 * 320 * 3]; static bool g_plate_on;
-static void make_plate(void) {   /* 320x240 copy of the bare background, if the engine has one for this scene */
-    const uint8_t *pl = sys_scene_plate(); g_plate_on = pl != NULL;
-    if (!pl) { if (g_cg_on) { memcpy(g_plate_half, g_cgroom, sizeof g_cgroom); g_plate_on = true; } return; }
-    for (int y = 0; y < 240; y++) { const uint8_t *r0 = pl + (y * 2) * 640 * 3, *r1 = r0 + 640 * 3; uint8_t *o = g_plate_half + y * 320 * 3;
-        for (int x = 0; x < 320; x++, o += 3) { int r, g, b; avg2(r0, r1, x, &r, &g, &b); o[0] = r; o[1] = g; o[2] = b; } }
-}
-static void draw_eye_dm(u8 *fb, float back, float front, int eye) {
+static void draw_eye_dm(u8 *fb, int back, int front, int eye) {   /* backward warp with the depth map */
+    /* shifts in 1/16 pixel: whole-pixel shifts turned most of the fine relief of the depth maps into the same shift (86 %
+       of character pixels unchanged between the old and the detailed maps); the output pixel is mixed from the two
+       neighbouring source pixels instead */
     int sh1 = g_hi ? 0 : 1; int16_t tab[256];
     for (int d = 0; d < 256; d++) { float v;   /* g_zp: screen plane, set by the slider in draw_scene */
         if (d <= g_zp) { int r = g_zp - g_lo; v = r > 0 ? back * (float)(g_zp - (d < g_lo ? g_lo : d)) / r : 0; }        /* behind the screen */
-        else { int r = g_hi_d - g_zp; if (r < 60) r = 60; v = -front * (float)((d > g_hi_d ? g_hi_d : d) - g_zp) / r; }   /* in front */
-        float t = 0; if (g_tilt_on) { int r = g_hi_d - g_lo; if (r > 40) t = g_tilt * 5.0f * ((d < g_lo ? g_lo : d > g_hi_d ? g_hi_d : d) - g_zp) / r; }   /* motion parallax */
-        float sv = eye * v + t, lim = back > front ? back : front; if (sv > lim) sv = lim; if (sv < -lim) sv = -lim;
+        else { int r = g_hi_d - g_zp; v = r > 0 ? -front * (float)((d > g_hi_d ? g_hi_d : d) - g_zp) / r : 0; }         /* in front */
+        float t = 0; if (g_tilt_on) { int r = g_hi_d - g_lo; if (r > 40) t = g_tilt * 5.0f * ((d < g_lo ? g_lo : d > g_hi_d ? g_hi_d : d) - g_zp) / r; }   /* motion parallax: near and far slide apart */
+        float sv = eye * v + t, lim = back > front ? back : front; if (sv > lim) sv = lim; if (sv < -lim) sv = -lim;   /* stick never adds to the stereo extremes */
         tab[d] = (int16_t)lroundf(sv * 16); }
-    static uint8_t col[320][3]; static int16_t zb[320];
-    if (g_plate_on) {                                    /* two layers: room (bare background) + characters */
-        /* the characters come clearly out of the screen as a whole: every figure pixel is in front by the full pop-out
-           (front) plus up to a third more for its own relief (nose, chest), while the room goes from the screen plane (its
-           nearest part, just behind the figures) to `back` behind. The two layers are drawn separately, so a strong
-           separation does not tear or smear the outlines. Full slider: 4.5 + 1.5 px in front, 2.5 px behind per eye
-           = 12 px crossed (3 % of the width, the upper end of the comfortable range) */
-        int16_t tr[256], ts[256];
-        for (int d = 0; d < 256; d++) {
-            float a = (float)(g_rhi - (d < g_rlo ? g_rlo : d > g_rhi ? g_rhi : d)) / (g_rhi - g_rlo);
-            float b = (float)((d < g_slo ? g_slo : d > g_shi ? g_shi : d) - g_slo) / (g_shi - g_slo);
-            tr[d] = (int16_t)lroundf(eye * back * a * 16); ts[d] = (int16_t)lroundf(-eye * front * (1.0f + 0.33f * b) * 16);
-            if (g_cg_on) {   /* event CG */
-                /* the masks in PLATE.PAK now hold only the people meant to stand out (the woman on the chair, not the chair or
-                   the old man beside her), so the whole figure comes out of the screen: legs, shoes and hair as much as the
-                   knees - with the old proportional scale only the nearest parts (knees, a wheel) left the screen */
-                ts[d] = (int16_t)lroundf(-eye * front * (0.8f + 0.4f * b) * 16); } }
-        /* plate style (user's choice): no warping inside a layer - the room is one flat plate a little behind the screen,
-           every figure one flat plate in front of it, like a pop-up book. The AI relief made faces, hands and outlines
-           bend or smear; a plate moves as a whole and stays exactly the 2D picture */
-        for (int d = 0; d < 256; d++) { tr[d] = (int16_t)lroundf(eye * back * 0.6f * 16); ts[d] = (int16_t)lroundf(-eye * front * 16); }
-        for (int d = 0; d < 256; d++) tab[d] = tr[d];   /* room pass below reads tab */
-        for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3, *pr = g_plate_half + y * 320 * 3; const uint8_t *bd = g_bgd[y], *sd = g_spd[y], *sm = g_smask[y];
-            for (int x = 0; x < 320; x++) {                  /* room: backward warp (its depth is smooth, two passes find the source) */
-                #define CL(v) ((v) < 0 ? 0 : (v) > 319 * 16 ? 319 * 16 : (v))
-                int k = CL(x * 16 + tab[bd[x]]); k = CL(x * 16 + tab[bd[(k + 8) >> 4]]);
-                #undef CL
-                int i = k >> 4, fr = k & 15; const uint8_t *q = pr + i * 3, *q2 = i < 319 ? q + 3 : q;
-                for (int c = 0; c < 3; c++) col[x][c] = (uint8_t)((q[c] * (16 - fr) + q2[c] * fr) >> 4); zb[x] = -1; }
-            for (int k = 0; k < 320; k++) { if (!sm[k]) continue;   /* characters: forward, span to the next figure pixel */
-                int a = k * 16 - ts[sd[k]]; const uint8_t *c0 = row + k * 3;
-                if (k < 319 && sm[k + 1]) { int b = (k + 1) * 16 - ts[sd[k + 1]], span = b - a; const uint8_t *c1 = c0 + 3;
-                    if (span > 0 && span <= 48) { int x0 = (a + 15) >> 4, x1 = (b + 15) >> 4;
-                        for (int x = x0; x < x1; x++) { if (x < 0 || x > 319) continue; int f = ((x * 16 - a) << 8) / span, dz = sd[k] + (((sd[k + 1] - sd[k]) * f) >> 8);
-                            if (dz < zb[x]) continue; zb[x] = (int16_t)dz; for (int c = 0; c < 3; c++) col[x][c] = (uint8_t)((c0[c] * (256 - f) + c1[c] * f) >> 8); }
-                        continue; } }
-                int x = (a + 8) >> 4; if (x >= 0 && x < 320 && sd[k] >= zb[x]) { zb[x] = sd[k]; col[x][0] = c0[0]; col[x][1] = c0[1]; col[x][2] = c0[2]; } }
-            for (int x = 1; x < 319; x++) { if (zb[x] >= 0 || zb[x - 1] < 0) continue;   /* cracks of 1-3 px inside a figure (its depth
-                changes fast, e.g. an arm across the body): blend across instead of showing the room through */
-                int e = x; while (e < 320 && e - x < 12 && zb[e] < 0) e++;
-                if (e >= 320 || zb[e] < 0) continue;
-                int L = x - 1, R = e;
-                if (e - x <= 3 && abs(zb[R] - zb[L]) <= 40) {
-                    for (int j = x; j < e; j++) { int f = (j - x + 1) * 256 / (e - x + 1); for (int c = 0; c < 3; c++) col[j][c] = (uint8_t)((col[L][c] * (256 - f) + col[R][c] * f) >> 8); zb[j] = zb[L]; } }
-                else {   /* a part of the body in front of another (an arm across the chest) moved more: the gap shows the
-                            farther body part, continued by mirroring it - not the room behind the whole figure */
-                    bool right = zb[R] < zb[L];
-                    for (int j = x; j < e; j++) { int q = right ? R + (e - 1 - j) : L - (j - x); if (q < 0 || q > 319 || zb[q] < 0) q = right ? R : L;
-                        col[j][0] = col[q][0]; col[j][1] = col[q][1]; col[j][2] = col[q][2]; zb[j] = zb[q]; } }
-                x = e; }
-            u8 *p = fb + (40 * 240 + (239 - y)) * 3;
-            for (int x = 0; x < 320; x++, p += 240 * 3) { p[0] = col[x][2]; p[1] = col[x][1]; p[2] = col[x][0]; } }
-        return; }
-    for (int d = 0; d < 256; d++) tab[d] = 0;   /* plate style: a scene without separate layers stays one flat picture at the screen */
     for (int y = 0; y < 240; y++) { const uint8_t *row = g_half + y * 320 * 3; const uint8_t *dm = g_hi ? g_dmh[y] : g_dm[y >> 1];
-        for (int x = 0; x < 320; x++) zb[x] = -1;
-        /* source pixel k lands at k - shift (the old backward warp read x + shift) */
-        for (int k = 0; k < 320; k++) {
-            int d0 = dm[k >> sh1], a = k * 16 - tab[d0];
-            int k1 = k < 319 ? k + 1 : k, d1 = dm[k1 >> sh1], b = k1 * 16 - tab[d1] + (k1 == k ? 16 : 0);
-            const uint8_t *c0 = row + k * 3, *c1 = row + k1 * 3;
-            int span = b - a, dd = d0 > d1 ? d0 - d1 : d1 - d0;
-            if (span > 0 && span <= 40 && dd < 24) {           /* same surface: fill the pixels between k and k+1 */
-                int x0 = (a + 15) >> 4, x1 = (b + 15) >> 4;
-                for (int x = x0; x < x1; x++) { if (x < 0 || x > 319) continue; int f = ((x * 16 - a) << 8) / span, dz = d0 + (((d1 - d0) * f) >> 8);
-                    if (dz < zb[x]) continue; zb[x] = (int16_t)dz;
-                    for (int c = 0; c < 3; c++) col[x][c] = (uint8_t)((c0[c] * (256 - f) + c1[c] * f) >> 8); }
-            } else {                                            /* an edge (or folded): only the pixel itself */
-                int x = (a + 8) >> 4; if (x >= 0 && x < 320 && d0 >= zb[x]) { zb[x] = (int16_t)d0; col[x][0] = c0[0]; col[x][1] = c0[1]; col[x][2] = c0[2]; } }
-        }
-        /* holes: the background uncovered beside a moved character */
-        for (int x = 0; x < 320; x++) { if (zb[x] >= 0) continue; int e = x; while (e < 320 && zb[e] < 0) e++;
-            int L = x - 1, R = e; bool right = L < 0 ? true : R >= 320 ? false : zb[R] <= zb[L];
-            if (e - x <= 2 && L >= 0 && R < 320 && abs(zb[L] - zb[R]) < 24) {   /* a crack inside one surface, not uncovered background: blend across */
-                for (int j = x; j < e; j++) { int f = (j - L) * 256 / (R - L); for (int c = 0; c < 3; c++) col[j][c] = (uint8_t)((col[L][c] * (256 - f) + col[R][c] * f) >> 8); zb[j] = zb[L]; }
-                x = e - 1; continue; }
-            if (g_plate_on) {                               /* the real bare background (sys_scene_plate), moved like the background beside it */
-                int db = L < 0 ? zb[R] : R >= 320 ? zb[L] : (right ? zb[R] : zb[L]); if (db < 0) db = 0; if (db > 255) db = 255;
-                const uint8_t *pr = g_plate_half + y * 320 * 3;
-                for (int j = x; j < e; j++) { int k = j * 16 + tab[db]; if (k < 0) k = 0; if (k > 319 * 16) k = 319 * 16;
-                    int i = k >> 4, fr = k & 15; const uint8_t *q = pr + i * 3, *q2 = i < 319 ? q + 3 : q;
-                    for (int c = 0; c < 3; c++) col[j][c] = (uint8_t)((q[c] * (16 - fr) + q2[c] * fr) >> 4); zb[j] = (int16_t)db; }
-                x = e - 1; continue; }
-            /* the background is continued by mirroring the pixels beyond the gap (a copied single pixel made streaks) */
-            for (int j = x; j < e; j++) { int q = right ? R + (e - 1 - j) : L - (j - x);
-                if (right ? (q >= 320 || zb[q] < 0 || zb[q] > zb[R] + 12) : (q < 0 || zb[q] < 0 || zb[q] > zb[L] + 12)) q = right ? R : L;   /* stay on the background */
-                if (q >= 0 && q < 320) { col[j][0] = col[q][0]; col[j][1] = col[q][1]; col[j][2] = col[q][2]; zb[j] = zb[q]; } else zb[j] = 0; }
-            x = e - 1; }
         u8 *p = fb + (40 * 240 + (239 - y)) * 3;
-        for (int x = 0; x < 320; x++, p += 240 * 3) { p[0] = col[x][2]; p[1] = col[x][1]; p[2] = col[x][0]; } }
+        for (int x = 0; x < 320; x++, p += 240 * 3) {
+            /* find the source column k with k = x + shift(depth at k). Where that has no single answer the background is
+               being uncovered next to a character: take the farther candidate, so the gap is filled with background
+               instead of a stretched line of the character's edge */
+            #define CL(v) ((v) < 0 ? 0 : (v) > 319 * 16 ? 319 * 16 : (v))
+            int x16 = x * 16;
+            int k1 = CL(x16 + tab[dm[x >> sh1]]);
+            int k2 = CL(x16 + tab[dm[(k1 + 8) >> 4 >> sh1]]);
+            int k = k2;
+            if ((k2 >> 4) != (k1 >> 4)) { int k3 = CL(x16 + tab[dm[(k2 + 8) >> 4 >> sh1]]);
+                if ((k3 >> 4) != (k2 >> 4)) k = dm[(k2 + 8) >> 4 >> sh1] <= dm[(k1 + 8) >> 4 >> sh1] ? k2 : k1; }
+            #undef CL
+            int i = k >> 4, fr = k & 15; const uint8_t *q = row + i * 3, *q2 = i < 319 ? q + 3 : q;
+            p[0] = (uint8_t)((q[2] * (16 - fr) + q2[2] * fr) >> 4); p[1] = (uint8_t)((q[1] * (16 - fr) + q2[1] * fr) >> 4); p[2] = (uint8_t)((q[0] * (16 - fr) + q2[0] * fr) >> 4); } }
 }
 static void draw_scene(const uint8_t *rgb) {
     static bool stereo_on, ypr;
@@ -607,26 +441,14 @@ static void draw_scene(const uint8_t *rgb) {
           else if (full_picture(z) && sys_has_depth()) memset(g_dm, 150, sizeof g_dm);   /* no map (notices, opening text, menus): one flat plane, lettering stays clean */
           else if (full_picture(z)) { build_dm(rgb); build_room(rgb);   /* event CG or empty background: the nearer of both guesses */
             for (int i = 0; i < 19200; i++) { int r = (int)(g_room[i] * 0.6f * 255); if (r > g_dm[i / 160][i % 160]) g_dm[i / 160][i % 160] = (uint8_t)r; } }
-          else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); soften_steps(); g_hi = true; } } g_dm_sig = sig; depth_stats(); cg_match(rgb, z); build_plate_layers(z); }
+          else { build_dm_layers(rgb, z); if (g_lo_chars) { build_dm_hi_layers(z); soften_steps(); g_hi = true; } } g_dm_sig = sig; depth_stats(); }
         /* slider curve: 32 steps (no jitter); the effect rises quickly at the bottom (s^0.7), the depth behind the screen
-           grows to 14 px and the pop-out grows faster in the upper half (3..8 px); as the slider goes up the screen plane
+           grows to 10 px and the pop-out grows faster in the upper half (2..6 px); as the slider goes up the screen plane
            moves from halfway (subject slightly forward) towards the far end (subject clearly in front of the screen) */
         float q = (int)(sl * 32.0f + 0.5f) / 32.0f, e = powf(q, 0.7f);
-        /* depth budget (stereo conversion practice: about 3 % of the width in all, crossed parallax up to 2-3 %, uncrossed
-           1-2 %): background behind the screen up to 5 px per eye, the figures' near parts (chest, hips: DEPTH.PAK lifts
-           them) out of the screen up to 8 px per eye. The screen plane sits near the figures' base, so the body is at the
-           screen and its rounded parts come out */
-        /* the per-eye shift is half the disparity the viewer sees: front 5 px per eye = 10 px = 2.5 % of the 400-px screen,
-           back 3 px per eye = 6 px = 1.5 % (the old 8 / 5 px per eye was 4 % - past the comfortable limit, it bent at the top) */
-        /* why it looked flat: (1) the budget had been cut twice and rounded to whole pixels - at full slider only 2 px behind and
-           3 px in front per eye; (2) the screen plane sat at the figures' own body (85 % of the way to them), so a character
-           stood ON the screen and only its chest came out. Now the screen plane is near the room just behind the figures (30 %),
-           so the whole character comes out of the screen, and the shifts are not rounded: full slider = 2.5 px behind and
-           4.5 px in front per eye (9 px = 2.3 % of the width crossed, inside the comfortable 2-3 %); the layered drawing keeps
-           the outlines clean at this depth */
-        float bk = e * 3.0f, fb2 = e * 5.2f;   /* user: a little stronger (was 2.5 / 4.5) */
-        g_zp = g_lo + (int)((g_sub - g_lo) * 0.30f);
-        make_half(rgb, z, true); make_plate(); if (g_fade) g_plate_on = false; draw_eye_dm(fb, bk, fb2, 1);
+        int bk = (int)(e * 9.0f + 0.5f), fb2 = (int)(e * (2.0f + 3.0f * q) + 0.5f);
+        g_zp = g_lo + (int)((g_sub - g_lo) * (0.55f - 0.25f * q));
+        make_half(rgb, z, true); draw_eye_dm(fb, bk, fb2, 1);
         u8 *fr = gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL); memset(fr, 0, 400 * 240 * 3);
         draw_eye_dm(fr, bk, fb2, -1); return;
     }
@@ -729,9 +551,8 @@ static bool splash(void) {
     while (go && aptMainLoop()) { hidScanInput(); if (!(hidKeysHeld() & (KEY_A | KEY_TOUCH))) break; gspWaitForVBlank(); }
     gfxSet3D(false); free(raw); return go;
 }
-static void close_files(void) {
+static void close_files(void) {   /* quit fix (24ba657): close the cached archives before the RomFS goes */
     for (int i = 0; i < 6; i++) if (g_open[i].f) { fclose(g_open[i].f); g_open[i].f = NULL; }
-    if (g_plt) { fclose(g_plt); g_plt = NULL; }
     fflush(NULL);
 }
 int main(void) {
@@ -750,7 +571,5 @@ int main(void) {
     if (!vm_init(&vm)) fatal("Archives not found (MES.ARC DATA.ARC BG.ARC).");
     else if (!vm_load_mes(&vm, "MAIN.MES")) fatal("MAIN.MES missing in MES.ARC.");
     else vm_run(&vm);
-    /* quit: the archives stay open in the file cache (and PLATE.PAK) - close them before the RomFS goes, or the C library's
-       exit-time stream cleanup works on handles of an unmounted device and the system reports a crash */
     snd_exit(); close_files(); if (g_romfs) romfsExit(); gfxExit(); return 0;
 }
